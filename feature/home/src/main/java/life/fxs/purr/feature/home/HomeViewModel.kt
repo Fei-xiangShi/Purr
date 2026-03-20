@@ -79,7 +79,7 @@ class HomeViewModel @Inject constructor(
                     if (_uiState.value.isCallable && pairId != null) {
                         _effects.emit(HomeEffect.NavigateToCall(pairId))
                     } else {
-                        _effects.emit(HomeEffect.ShowError("Partner is currently unavailable"))
+                        _effects.emit(HomeEffect.ShowError("当前无法发起通话"))
                     }
                 }
             }
@@ -97,8 +97,8 @@ class HomeViewModel @Inject constructor(
 }
 
 private fun AppError.toMessage(): String = when (this) {
-    is AppError.Network -> message ?: "Network error"
+    is AppError.Network -> message ?: "网络错误"
     is AppError.Unauthorized -> message
     is AppError.Validation -> message
-    is AppError.Unexpected -> throwable?.message ?: "Unexpected error"
+    is AppError.Unexpected -> throwable?.message ?: "发生未知错误"
 }

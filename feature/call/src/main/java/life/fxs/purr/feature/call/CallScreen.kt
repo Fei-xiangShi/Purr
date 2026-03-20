@@ -13,9 +13,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,9 +32,16 @@ import io.livekit.android.compose.ui.audio.AudioBarVisualizer
 import io.livekit.android.room.Room
 import io.livekit.android.room.track.Track
 import kotlinx.coroutines.flow.collect
+import life.fxs.purr.core.designsystem.component.PurrPanel
+import life.fxs.purr.core.designsystem.component.PurrPrimaryButton
+import life.fxs.purr.core.designsystem.component.PurrScreen
+import life.fxs.purr.core.designsystem.component.PurrSectionTitle
+import life.fxs.purr.core.designsystem.component.PurrSecondaryButton
 import life.fxs.purr.core.designsystem.component.PurrStatusChip
 import life.fxs.purr.core.media.livekit.CallRoomStateProvider
 import life.fxs.purr.core.model.AudioRoute
+import life.fxs.purr.domain.call.model.LocalAudioState
+import life.fxs.purr.domain.call.model.RecordingState
 
 @Composable
 fun CallScreenRoute(
@@ -107,64 +112,107 @@ fun CallScreen(
     onEndCall: () -> Unit,
     onBack: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Text(
-            text = "Call",
-            style = MaterialTheme.typography.headlineLarge,
+    val session = state.session
+    val remoteName = session?.participantIdentity?.remote ?: "通话对象"
+    val canConnect = !state.isLoading && (state.screenState == CallScreenState.Idle || state.screenState == CallScreenState.Ended)
+    val canManageActiveCall = !state.isLoading && state.screenState == CallScreenState.Active
+    val canEndCall = !state.isLoading && state.screenState != CallScreenState.Idle && state.screenState != CallScreenState.Ended
+
+    PurrScreen {
+        PurrSectionTitle(
+            eyebrow = "通话",
+            title = screenTitle(state.screenState),
+            subtitle = "",
+            modifier = Modifier.fillMaxWidth(),
         )
-        Text(
-            text = "State: ${state.screenState}",
-            style = MaterialTheme.typography.titleMedium,
-        )
-        if (state.isLoading) {
-            PurrStatusChip(label = "Updating call state")
-        }
-        PurrStatusChip(label = "Route: ${state.activeRoute}")
-        PurrStatusChip(label = "Mic: ${state.localAudioState}")
-        PurrStatusChip(label = "Recording: ${state.recordingState}")
-        PurrStatusChip(label = if (state.isForegroundServiceActive) "Foreground service active" else "Foreground service idle")
-        room?.let { activeRoom ->
-            LiveKitRoomStatus(room = activeRoom)
-            RemoteAudioVisualizer(room = activeRoom)
-        }
 
-        Button(
-            onClick = onConnect,
-            enabled = !state.isLoading && (state.screenState == CallScreenState.Idle || state.screenState == CallScreenState.Ended),
+        PurrPanel(
+            title = remoteName,
+            subtitle = session?.roomName ?: "",
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.34f),
         ) {
-            Text("Connect call")
+            PurrStatusChip(
+                label = "状态",
+                detail = state.screenState.toDisplayLabel(),
+                accentColor = state.screenState.accentColor(),
+            )
+            if (state.isLoading) {
+                PurrStatusChip(
+                    label = "处理中",
+                    detail = "",
+                    accentColor = MaterialTheme.colorScheme.primary,
+                )
+            }
+            PurrStatusChip(
+                label = "麦克风",
+                detail = state.localAudioState.toDisplayLabel(),
+                accentColor = if (state.localAudioState is LocalAudioState.Muted) {
+                    MaterialTheme.colorScheme.secondary
+                } else {
+                    MaterialTheme.colorScheme.tertiary
+                },
+            )
+            PurrStatusChip(
+                label = "录音",
+                detail = state.recordingState.toDisplayLabel(),
+                accentColor = if (state.recordingState is RecordingState.Recording) {
+                    MaterialTheme.colorScheme.tertiary
+                } else {
+                    MaterialTheme.colorScheme.secondary
+                },
+            )
+            PurrStatusChip(
+                label = "前台服务",
+                detail = if (state.isForegroundServiceActive) "运行中" else "未运行",
+                accentColor = if (state.isForegroundServiceActive) {
+                    MaterialTheme.colorScheme.tertiary
+                } else {
+                    MaterialTheme.colorScheme.secondary
+                },
+            )
         }
 
-        Button(
-            onClick = onMuteToggle,
-            enabled = !state.isLoading && state.screenState == CallScreenState.Active,
-        ) {
-            Text("Toggle mute")
+        PurrPanel(title = "操作") {
+            PurrPrimaryButton(
+                text = if (state.screenState == CallScreenState.Ended) "重新连接" else "开始通话",
+                onClick = onConnect,
+                enabled = canConnect,
+            )
+            PurrSecondaryButton(
+                text = if (state.localAudioState is LocalAudioState.Muted) "取消静音" else "静音",
+                onClick = onMuteToggle,
+                enabled = canManageActiveCall,
+            )
+            PurrPrimaryButton(
+                text = "结束通话",
+                onClick = onEndCall,
+                enabled = canEndCall,
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            PurrSecondaryButton(
+                text = "返回",
+                onClick = onBack,
+            )
         }
 
-        state.availableRoutes.forEach { route ->
-            Button(
-                onClick = { onRouteSelect(route) },
-                enabled = !state.isLoading && state.screenState == CallScreenState.Active,
-            ) {
-                Text("Route: ${route.name}")
+        PurrPanel(title = "音频输出") {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                state.availableRoutes.forEach { route ->
+                    PurrSecondaryButton(
+                        text = route.toButtonLabel(selected = route == state.activeRoute),
+                        onClick = { onRouteSelect(route) },
+                        enabled = canManageActiveCall,
+                    )
+                }
             }
         }
 
-        Button(
-            onClick = onEndCall,
-            enabled = !state.isLoading && state.screenState != CallScreenState.Idle && state.screenState != CallScreenState.Ended,
-        ) {
-            Text("End call")
-        }
-
-        Button(onClick = onBack) {
-            Text("Back")
+        room?.let { activeRoom ->
+            LiveKitRoomStatus(room = activeRoom)
+            PurrPanel(title = "远端音频") {
+                RemoteAudioVisualizer(room = activeRoom)
+            }
         }
     }
 }
@@ -172,7 +220,16 @@ fun CallScreen(
 @OptIn(Beta::class)
 @Composable
 private fun RemoteAudioVisualizer(room: Room) {
-    val remoteIdentity = room.remoteParticipants.keys.firstOrNull() ?: return
+    val remoteIdentity = room.remoteParticipants.keys.firstOrNull()
+    if (remoteIdentity == null) {
+        Text(
+            text = "等待对方接入音频",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+
     val trackReferences = rememberParticipantTrackReferences(
         sources = listOf(Track.Source.MICROPHONE),
         participantIdentity = remoteIdentity,
@@ -182,11 +239,72 @@ private fun RemoteAudioVisualizer(room: Room) {
     val audioTrackReference = trackReferences.firstOrNull()
     if (audioTrackReference != null) {
         Text(
-            text = "Remote participant connected",
+            text = "已连接远端音频",
             style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
         )
         AudioBarVisualizer(audioTrackRef = audioTrackReference)
+    } else {
+        Text(
+            text = "已连接，等待远端音频流",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
+}
+
+private fun screenTitle(state: CallScreenState): String = when (state) {
+    CallScreenState.Idle -> "准备通话"
+    CallScreenState.Dialing -> "正在呼叫"
+    CallScreenState.Connecting -> "正在连接"
+    CallScreenState.Active -> "通话中"
+    CallScreenState.Reconnecting -> "重连中"
+    CallScreenState.Ending -> "正在结束"
+    CallScreenState.Ended -> "通话结束"
+}
+
+@Composable
+private fun CallScreenState.accentColor() = when (this) {
+    CallScreenState.Active -> MaterialTheme.colorScheme.tertiary
+    CallScreenState.Ended -> MaterialTheme.colorScheme.secondary
+    CallScreenState.Reconnecting -> MaterialTheme.colorScheme.secondary
+    else -> MaterialTheme.colorScheme.primary
+}
+
+private fun CallScreenState.toDisplayLabel(): String = when (this) {
+    CallScreenState.Idle -> "空闲"
+    CallScreenState.Dialing -> "呼叫中"
+    CallScreenState.Connecting -> "连接中"
+    CallScreenState.Active -> "通话中"
+    CallScreenState.Reconnecting -> "重连中"
+    CallScreenState.Ending -> "结束中"
+    CallScreenState.Ended -> "已结束"
+}
+
+private fun LocalAudioState.toDisplayLabel(): String = when (this) {
+    LocalAudioState.Disabled -> "已关闭"
+    LocalAudioState.Enabling -> "开启中"
+    LocalAudioState.Enabled -> "已开启"
+    LocalAudioState.Muted -> "已静音"
+    is LocalAudioState.Error -> reason ?: "异常"
+}
+
+private fun RecordingState.toDisplayLabel(): String = when (this) {
+    RecordingState.NotRecording -> "未录音"
+    RecordingState.Starting -> "启动中"
+    RecordingState.Recording -> "录音中"
+    RecordingState.Stopping -> "停止中"
+    is RecordingState.Failed -> reason ?: "失败"
+}
+
+private fun AudioRoute.toButtonLabel(selected: Boolean): String {
+    val label = when (this) {
+        AudioRoute.Earpiece -> "听筒"
+        AudioRoute.Speaker -> "扬声器"
+        AudioRoute.Bluetooth -> "蓝牙"
+        AudioRoute.WiredHeadset -> "有线耳机"
+    }
+    return if (selected) "$label · 当前使用" else label
 }
 
 private fun Context.findActivity(): Activity? = when (this) {

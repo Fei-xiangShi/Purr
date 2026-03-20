@@ -76,7 +76,7 @@ class CallViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
-            emitError(AppError.Validation("Microphone permission is required for calls"))
+            emitError(AppError.Validation("通话需要麦克风权限"))
             if (result.permanentlyDenied) {
                 _effects.emit(CallEffect.OpenAppSettings)
             }
@@ -198,8 +198,8 @@ private fun CallConnectionState.toScreenState(): CallScreenState = when (this) {
 }
 
 private fun AppError.toMessage(): String = when (this) {
-    is AppError.Network -> message ?: "Network error"
+    is AppError.Network -> message ?: "网络错误"
     is AppError.Unauthorized -> message
     is AppError.Validation -> message
-    is AppError.Unexpected -> throwable?.message ?: "Unexpected error"
+    is AppError.Unexpected -> throwable?.message ?: "发生未知错误"
 }

@@ -35,7 +35,7 @@ class AuthViewModel @Inject constructor(
         val username = _state.value.username.trim()
         val password = _state.value.password
         if (username.isBlank() || password.isBlank()) {
-            _state.value = _state.value.copy(errorMessage = "Username and password are required")
+            _state.value = _state.value.copy(errorMessage = "请输入用户名和密码")
             return
         }
 
@@ -57,8 +57,8 @@ class AuthViewModel @Inject constructor(
 }
 
 private fun AppError.toMessage(): String = when (this) {
-    is AppError.Network -> message ?: "Network error"
+    is AppError.Network -> message ?: "网络错误"
     is AppError.Unauthorized -> message
     is AppError.Validation -> message
-    is AppError.Unexpected -> throwable?.message ?: "Unexpected error"
+    is AppError.Unexpected -> throwable?.message ?: "发生未知错误"
 }

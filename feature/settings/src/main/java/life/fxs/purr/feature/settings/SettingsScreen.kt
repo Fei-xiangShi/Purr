@@ -1,23 +1,21 @@
 package life.fxs.purr.feature.settings
 
 import android.widget.Toast
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.collect
+import life.fxs.purr.core.designsystem.component.PurrPanel
+import life.fxs.purr.core.designsystem.component.PurrPrimaryButton
+import life.fxs.purr.core.designsystem.component.PurrScreen
+import life.fxs.purr.core.designsystem.component.PurrSectionTitle
+import life.fxs.purr.core.designsystem.component.PurrSecondaryButton
+import life.fxs.purr.core.designsystem.component.PurrStatusChip
 
 @Composable
 fun SettingsScreenRoute(
@@ -50,27 +48,43 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onLogout: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(
-            text = "Settings",
-            style = MaterialTheme.typography.headlineMedium,
+    PurrScreen {
+        PurrSectionTitle(
+            eyebrow = "设置",
+            title = "账户设置",
+            subtitle = "",
+            modifier = Modifier,
         )
-        Text(state.self?.displayName ?: "Not signed in")
-        Text(state.self?.userId ?: "")
-        Button(
-            onClick = onLogout,
-            enabled = !state.isLoading,
+
+        PurrPanel(
+            title = state.self?.displayName ?: "未登录",
+            subtitle = state.self?.userId ?: "",
+            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.38f),
         ) {
-            Text(if (state.isLoading) "Signing out..." else "Logout")
+            PurrStatusChip(
+                label = if (state.self != null) "已登录" else "未登录",
+                detail = if (state.isLoading) "处理中" else "",
+                accentColor = if (state.self != null) {
+                    MaterialTheme.colorScheme.tertiary
+                } else {
+                    MaterialTheme.colorScheme.secondary
+                },
+            )
         }
-        Button(onClick = onBack) {
-            Text("Back")
+
+        PurrPanel(title = "操作") {
+            PurrPrimaryButton(
+                text = if (state.isLoading) "退出中..." else "退出登录",
+                onClick = onLogout,
+                enabled = !state.isLoading,
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            PurrSecondaryButton(
+                text = "返回",
+                onClick = onBack,
+                enabled = !state.isLoading,
+            )
         }
     }
 }

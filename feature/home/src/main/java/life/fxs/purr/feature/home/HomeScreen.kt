@@ -1,11 +1,6 @@
 package life.fxs.purr.feature.home
 
 import android.widget.Toast
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -13,11 +8,16 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.collect
+import life.fxs.purr.core.designsystem.component.PurrPanel
+import life.fxs.purr.core.designsystem.component.PurrPrimaryButton
+import life.fxs.purr.core.designsystem.component.PurrScreen
+import life.fxs.purr.core.designsystem.component.PurrSectionTitle
+import life.fxs.purr.core.designsystem.component.PurrSecondaryButton
 import life.fxs.purr.core.designsystem.component.PurrStatusChip
+import life.fxs.purr.core.model.CallSessionSummary
 
 @Composable
 fun HomeScreenRoute(
@@ -40,6 +40,7 @@ fun HomeScreenRoute(
     HomeScreen(
         state = state,
         onStartCall = { viewModel.onIntent(HomeIntent.StartCall) },
+        onRefreshStatus = { viewModel.onIntent(HomeIntent.RefreshStatus) },
         onOpenSettings = onOpenSettings,
     )
 }
@@ -48,42 +49,104 @@ fun HomeScreenRoute(
 fun HomeScreen(
     state: HomeState,
     onStartCall: () -> Unit,
+    onRefreshStatus: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Text(
-            text = "Purr",
-            style = MaterialTheme.typography.headlineLarge,
+    val selfName = state.self?.displayName ?: "用户"
+    val partnerName = state.partner?.displayName ?: "暂无配对对象"
+
+    PurrScreen {
+        PurrSectionTitle(
+            eyebrow = "首页",
+            title = "你好，$selfName",
+            subtitle = "",
+            modifier = Modifier,
         )
-        state.self?.let { self ->
-            Text(
-                text = "Signed in as ${self.displayName}",
-                style = MaterialTheme.typography.titleMedium,
+
+        PurrPanel(
+            title = partnerName,
+            subtitle = state.partner?.userId ?: "",
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.34f),
+        ) {
+            state.self?.let { self ->
+                PurrStatusChip(
+                    label = "当前账号",
+                    detail = self.displayName,
+                    accentColor = MaterialTheme.colorScheme.tertiary,
+                )
+            }
+            PurrStatusChip(
+                label = if (state.partner?.isOnline == true) "对方在线" else "对方离线",
+                detail = if (state.isCallable) "可通话" else "暂不可通话",
+                accentColor = if (state.partner?.isOnline == true) {
+                    MaterialTheme.colorScheme.tertiary
+                } else {
+                    MaterialTheme.colorScheme.secondary
+                },
+            )
+            if (state.isLoading) {
+                PurrStatusChip(
+                    label = "刷新中",
+                    detail = "",
+                    accentColor = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+
+        PurrPanel(title = "操作") {
+            PurrPrimaryButton(
+                text = if (state.isCallable) "发起通话" else "暂不可通话",
+                onClick = onStartCall,
+                enabled = !state.isLoading && state.isCallable,
+            )
+            PurrSecondaryButton(
+                text = if (state.isLoading) "刷新中..." else "刷新状态",
+                onClick = onRefreshStatus,
+                enabled = !state.isLoading,
+            )
+            PurrSecondaryButton(
+                text = "设置",
+                onClick = onOpenSettings,
             )
         }
-        Text(
-            text = state.partner?.displayName ?: "Waiting for paired partner",
-            style = MaterialTheme.typography.titleLarge,
+
+        state.lastSessionSummary?.let { summary ->
+            LastSessionPanel(summary = summary)
+        }
+    }
+}
+
+@Composable
+private fun LastSessionPanel(summary: CallSessionSummary) {
+    PurrPanel(title = "最近一次通话") {
+        PurrStatusChip(
+            label = "时长",
+            detail = summary.durationSeconds?.toReadableDuration() ?: "同步中",
+            accentColor = MaterialTheme.colorScheme.primary,
         )
         PurrStatusChip(
-            label = if (state.isCallable) "Ready to call" else "Partner unavailable",
+            label = "录音",
+            detail = if (summary.recordingActive) "已开启" else "未开启",
+            accentColor = if (summary.recordingActive) {
+                MaterialTheme.colorScheme.tertiary
+            } else {
+                MaterialTheme.colorScheme.secondary
+            },
         )
-        if (state.isLoading) {
-            PurrStatusChip(label = "Refreshing pair status")
-        }
-        Button(
-            onClick = onStartCall,
-            enabled = !state.isLoading && state.isCallable,
-        ) {
-            Text("Start call")
-        }
-        Button(onClick = onOpenSettings) {
-            Text("Settings")
-        }
+        Text(
+            text = "通话 #${summary.callId}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+private fun Long.toReadableDuration(): String {
+    val minutes = this / 60
+    val seconds = this % 60
+    return if (minutes > 0) {
+        "${minutes}分${seconds}秒"
+    } else {
+        "${seconds}秒"
     }
 }
