@@ -1,10 +1,18 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.io.FileInputStream
 import java.util.Properties
 
 val appConfigProperties = Properties().apply {
     val appConfigFile = project.file("config.properties")
     if (appConfigFile.exists()) {
         appConfigFile.inputStream().use(::load)
+    }
+}
+
+val signingProperties = Properties().apply {
+    val signingFile = project.file("signing.properties")
+    if (signingFile.exists()) {
+        load(FileInputStream(signingFile))
     }
 }
 
@@ -30,6 +38,18 @@ android {
     namespace = "life.fxs.purr"
     compileSdk = 35
 
+    signingConfigs {
+        create("release") {
+            val storeFilePath = signingProperties.getProperty("storeFile", "").trim()
+            if (storeFilePath.isNotEmpty()) {
+                storeFile = file(storeFilePath)
+                storePassword = signingProperties.getProperty("storePassword", "")
+                keyAlias = signingProperties.getProperty("keyAlias", "")
+                keyPassword = signingProperties.getProperty("keyPassword", "")
+            }
+        }
+    }
+
     defaultConfig {
         applicationId = "life.fxs.purr"
         minSdk = 29
@@ -49,6 +69,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
