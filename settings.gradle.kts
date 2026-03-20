@@ -1,0 +1,37 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven("https://jitpack.io")
+    }
+}
+
+rootProject.name = "purr"
+
+enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
+
+include(
+    ":app",
+    ":core:common",
+    ":core:model",
+    ":core:network",
+    ":core:media",
+    ":core:designsystem",
+    ":domain:account",
+    ":domain:call",
+    ":data:account",
+    ":data:call",
+    ":feature:auth",
+    ":feature:home",
+    ":feature:call",
+    ":feature:settings",
+)

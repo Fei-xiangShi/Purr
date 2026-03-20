@@ -1,0 +1,22 @@
+# Gradle
+.gradle/
+.kotlin/
+**/build/
+
+# Local configuration
+local.properties
+app/config.properties
+purr-server/.env
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Android Studio artifacts
+captures/
+.externalNativeBuild/
+.cxx/

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Purr</string>
+    <string name="call_notification_channel_name">Call activity</string>
+    <string name="call_notification_content">Purr call is active</string>
+</resources>
