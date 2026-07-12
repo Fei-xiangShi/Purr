@@ -26,6 +26,7 @@ include(
     ":core:common",
     ":core:model",
     ":core:network",
+    ":core:presentation",
     ":core:media",
     ":core:designsystem",
     ":domain:account",

@@ -57,7 +57,7 @@ class CallViewModelTest {
         coEvery { toggleMuteUseCase.invoke(any()) } returns AppResult.Success(Unit)
         coEvery { selectAudioRouteUseCase.invoke(any()) } returns AppResult.Success(Unit)
         coEvery { disconnectCallUseCase.invoke() } returns AppResult.Success(Unit)
-        coEvery { loadCallRecordingsUseCase.invoke() } returns AppResult.Success(emptyList())
+        coEvery { loadCallRecordingsUseCase.invoke(any()) } returns AppResult.Success(emptyList())
     }
 
     @After
@@ -176,7 +176,7 @@ class CallViewModelTest {
             sizeBytes = 1_024L,
             failureReason = null,
         )
-        coEvery { loadCallRecordingsUseCase.invoke() } returns AppResult.Success(listOf(recording))
+        coEvery { loadCallRecordingsUseCase.invoke("call-1") } returns AppResult.Success(listOf(recording))
         coEvery { createRecordingDownloadUseCase.invoke("call-1", "recording-1") } returns AppResult.Success(
             RecordingDownload("recording-1", "https://storage.example/signed", 10_000L),
         )
@@ -190,7 +190,7 @@ class CallViewModelTest {
         advanceUntilIdle()
 
         assertThat(viewModel.state.value.recordings).containsExactly(recording)
-        coVerify(exactly = 1) { loadCallRecordingsUseCase.invoke() }
+        coVerify(exactly = 1) { loadCallRecordingsUseCase.invoke("call-1") }
 
         viewModel.onIntent(CallIntent.PlayRecording("recording-1"))
         advanceUntilIdle()

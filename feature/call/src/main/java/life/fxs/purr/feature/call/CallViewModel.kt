@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.model.AudioRoute
+import life.fxs.purr.core.presentation.toUserMessage
 import life.fxs.purr.domain.call.model.CallConnectionState
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.LocalAudioState
@@ -204,17 +205,18 @@ class CallViewModel @Inject constructor(
     }
 
     private fun loadRecordings() {
-        if (_state.value.session == null || _state.value.isRecordingsLoading) return
+        val callId = _state.value.session?.callId ?: return
+        if (_state.value.isRecordingsLoading) return
         viewModelScope.launch {
             _state.value = _state.value.copy(isRecordingsLoading = true, recordingsError = null)
-            when (val result = loadCallRecordingsUseCase()) {
+            when (val result = loadCallRecordingsUseCase(callId)) {
                 is AppResult.Success -> _state.value = _state.value.copy(
                     recordings = result.value,
                     isRecordingsLoading = false,
                 )
                 is AppResult.Failure -> _state.value = _state.value.copy(
                     isRecordingsLoading = false,
-                    recordingsError = result.error.toMessage(),
+                    recordingsError = result.error.toUserMessage(),
                 )
             }
         }
@@ -239,7 +241,7 @@ class CallViewModel @Inject constructor(
                 )
                 is AppResult.Failure -> _state.value = _state.value.copy(
                     playbackLoadingRecordingId = null,
-                    recordingsError = result.error.toMessage(),
+                    recordingsError = result.error.toUserMessage(),
                 )
             }
         }
@@ -259,7 +261,7 @@ class CallViewModel @Inject constructor(
     }
 
     private suspend fun emitError(error: AppError) {
-        _effects.emit(CallEffect.ShowMessage(error.toMessage()))
+        _effects.emit(CallEffect.ShowMessage(error.toUserMessage()))
     }
 
     private fun updateState(session: CallSession) {
@@ -292,11 +294,4 @@ private fun CallConnectionState.toScreenState(): CallScreenState = when (this) {
     CallConnectionState.Reconnecting -> CallScreenState.Reconnecting
     CallConnectionState.Disconnected -> CallScreenState.Ended
     is CallConnectionState.Failed -> CallScreenState.Ended
-}
-
-private fun AppError.toMessage(): String = when (this) {
-    is AppError.Network -> message ?: "网络错误"
-    is AppError.Unauthorized -> message
-    is AppError.Validation -> message
-    is AppError.Unexpected -> throwable?.message ?: "发生未知错误"
 }

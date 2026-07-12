@@ -9,8 +9,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.common.AppResult
+import life.fxs.purr.core.presentation.toUserMessage
 import life.fxs.purr.domain.account.usecase.LoginUseCase
 
 @HiltViewModel
@@ -47,18 +47,11 @@ class AuthViewModel @Inject constructor(
                     _effects.emit(AuthEffect.NavigateHome)
                 }
                 is AppResult.Failure -> {
-                    val message = result.error.toMessage()
+                    val message = result.error.toUserMessage()
                     _state.value = _state.value.copy(isLoading = false, errorMessage = message)
                     _effects.emit(AuthEffect.ShowError(message))
                 }
             }
         }
     }
-}
-
-private fun AppError.toMessage(): String = when (this) {
-    is AppError.Network -> message ?: "网络错误"
-    is AppError.Unauthorized -> message
-    is AppError.Validation -> message
-    is AppError.Unexpected -> throwable?.message ?: "发生未知错误"
 }

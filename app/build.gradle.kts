@@ -21,11 +21,16 @@ fun normalizedBaseUrl(value: String): String = value.trim().let {
     if (it.isNotEmpty() && !it.endsWith("/")) "$it/" else it
 }
 
+val purrProductionBaseUrl = normalizedBaseUrl(
+    providers.gradleProperty("PURR_PRODUCTION_BASE_URL").get(),
+)
 val purrBaseUrl = normalizedBaseUrl(
     providers.gradleProperty("purrBaseUrl")
-        .orElse(appConfigProperties.getProperty("purr.baseUrl") ?: "")
+        .orElse(appConfigProperties.getProperty("purr.baseUrl") ?: purrProductionBaseUrl)
         .get(),
 )
+val purrVersionCode = providers.gradleProperty("PURR_VERSION_CODE").get().toInt()
+val purrVersionName = providers.gradleProperty("PURR_VERSION_NAME").get()
 
 plugins {
     alias(libs.plugins.android.application)
@@ -54,8 +59,8 @@ android {
         applicationId = "life.fxs.purr"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = purrVersionCode
+        versionName = purrVersionName
         buildConfigField("String", "PURR_BASE_URL", "\"$purrBaseUrl\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -68,6 +73,7 @@ android {
         }
         release {
             manifestPlaceholders["usesCleartextTraffic"] = "false"
+            buildConfigField("String", "PURR_BASE_URL", "\"$purrProductionBaseUrl\"")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -105,8 +111,8 @@ val validateReleaseConfiguration by tasks.registering {
     group = "verification"
     description = "Validates HTTPS API and signing inputs before packaging a release."
     doLast {
-        require(purrBaseUrl.startsWith("https://")) {
-            "Release builds require purrBaseUrl to use https://"
+        require(purrProductionBaseUrl.startsWith("https://")) {
+            "Release builds require PURR_PRODUCTION_BASE_URL to use https://"
         }
         require(releaseStoreFilePath.isNotEmpty()) {
             "Release builds require app/signing.properties with a storeFile"

@@ -23,16 +23,11 @@ import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.core.network.api.PurrCallApi
 import life.fxs.purr.core.network.model.CallStatusDto
 import life.fxs.purr.core.network.model.SessionResponseDto
-import life.fxs.purr.core.network.model.CallRecordingDto
-import life.fxs.purr.core.network.model.CallRecordingsResponseDto
-import life.fxs.purr.core.network.model.RecordingDownloadDto
-import life.fxs.purr.core.network.model.RecordingLibraryResponseDto
 import life.fxs.purr.data.call.livekit.LiveKitCallDataSource
 import life.fxs.purr.domain.call.model.CallConnectionState
 import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.PrepareCallParams
 import life.fxs.purr.domain.call.model.RecordingState
-import life.fxs.purr.domain.call.model.CallRecordingStatus
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -94,38 +89,6 @@ class CallRepositoryImplTest {
                 endedAtEpochMillis = 2L,
             ),
         )
-        coEvery { api.getRecordings("call-1") } returns CallRecordingsResponseDto(
-            recordings = listOf(
-                CallRecordingDto(
-                    recordingId = "recording-1",
-                    callId = "call-1",
-                    status = "stopped",
-                    downloadAvailable = true,
-                    startedAtEpochMillis = 1L,
-                    endedAtEpochMillis = 2_001L,
-                    durationMillis = 2_000L,
-                    sizeBytes = 1_024L,
-                ),
-            ),
-        )
-        coEvery { api.createRecordingDownload("call-1", "recording-1") } returns RecordingDownloadDto(
-            recordingId = "recording-1",
-            url = "https://storage.example/recording.ogg?signature=test",
-            expiresAtEpochMillis = 10_000L,
-        )
-        coEvery { api.getRecordingLibrary(20, null) } returns RecordingLibraryResponseDto(
-            recordings = listOf(
-                CallRecordingDto(
-                    recordingId = "recording-1",
-                    callId = "call-1",
-                    status = "stopped",
-                    downloadAvailable = true,
-                    durationMillis = 2_000L,
-                ),
-            ),
-            nextCursor = "next-page",
-        )
-
         val repository = CallRepositoryImpl(
             api = api,
             liveKitCallDataSource = liveKitCallDataSource,
@@ -145,29 +108,8 @@ class CallRepositoryImplTest {
         assertThat(session?.uiSnapshot?.remoteParticipantConnected).isEqualTo(false)
         assertThat(session?.uiSnapshot?.isForegroundServiceActive).isEqualTo(false)
 
-        val recordings = repository.loadRecordings()
-        assertThat(recordings).isInstanceOf(AppResult.Success::class.java)
-        val recording = (recordings as AppResult.Success).value.single()
-        assertThat(recording.status).isEqualTo(CallRecordingStatus.Available)
-        assertThat(recording.downloadAvailable).isTrue()
-        assertThat(recording.durationMillis).isEqualTo(2_000L)
-
-        val download = repository.createRecordingDownload("call-1", "recording-1")
-        assertThat(download).isInstanceOf(AppResult.Success::class.java)
-        assertThat((download as AppResult.Success).value.url)
-            .isEqualTo("https://storage.example/recording.ogg?signature=test")
-
-        val library = repository.loadRecordingLibrary(null)
-        assertThat(library).isInstanceOf(AppResult.Success::class.java)
-        val libraryValue = (library as AppResult.Success).value
-        assertThat(libraryValue.nextCursor).isEqualTo("next-page")
-        assertThat(libraryValue.recordings.single().callId).isEqualTo("call-1")
-
         coVerify(exactly = 1) { liveKitCallDataSource.disconnect() }
         coVerify(exactly = 1) { callServiceController.stopForegroundCall() }
         coVerify(exactly = 1) { callAudioFocusManager.abandonFocus() }
-        coVerify(exactly = 1) { api.getRecordings("call-1") }
-        coVerify(exactly = 1) { api.createRecordingDownload("call-1", "recording-1") }
-        coVerify(exactly = 1) { api.getRecordingLibrary(20, null) }
     }
 }

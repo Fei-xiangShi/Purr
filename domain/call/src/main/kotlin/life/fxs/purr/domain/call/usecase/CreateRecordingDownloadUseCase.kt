@@ -1,11 +1,11 @@
 package life.fxs.purr.domain.call.usecase
 
 import javax.inject.Inject
-import life.fxs.purr.domain.call.repository.CallRepository
+import life.fxs.purr.domain.call.repository.RecordingRepository
 
 class CreateRecordingDownloadUseCase @Inject constructor(
-    private val callRepository: CallRepository,
+    private val recordingRepository: RecordingRepository,
 ) {
     suspend operator fun invoke(callId: String, recordingId: String) =
-        callRepository.createRecordingDownload(callId, recordingId)
+        recordingRepository.createRecordingDownload(callId, recordingId)
 }

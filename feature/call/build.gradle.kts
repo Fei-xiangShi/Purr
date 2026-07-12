@@ -41,6 +41,7 @@ kotlin {
 dependencies {
     implementation(projects.core.common)
     implementation(projects.core.model)
+    implementation(projects.core.presentation)
     implementation(projects.core.media)
     implementation(projects.core.designsystem)
     implementation(projects.domain.call)

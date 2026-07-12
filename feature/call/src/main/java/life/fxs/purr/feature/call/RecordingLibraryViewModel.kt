@@ -9,8 +9,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.common.AppResult
+import life.fxs.purr.core.presentation.toUserMessage
 import life.fxs.purr.domain.call.usecase.CreateRecordingDownloadUseCase
 import life.fxs.purr.domain.call.usecase.LoadRecordingLibraryUseCase
 
@@ -77,7 +77,7 @@ class RecordingLibraryViewModel @Inject constructor(
                 is AppResult.Failure -> _state.value = _state.value.copy(
                     isLoading = false,
                     isLoadingMore = false,
-                    errorMessage = result.error.toDisplayMessage(),
+                    errorMessage = result.error.toUserMessage(),
                 )
             }
         }
@@ -100,16 +100,9 @@ class RecordingLibraryViewModel @Inject constructor(
                 )
                 is AppResult.Failure -> _state.value = _state.value.copy(
                     playbackLoadingRecordingId = null,
-                    errorMessage = result.error.toDisplayMessage(),
+                    errorMessage = result.error.toUserMessage(),
                 )
             }
         }
     }
-}
-
-private fun AppError.toDisplayMessage(): String = when (this) {
-    is AppError.Network -> message ?: "网络错误"
-    is AppError.Unauthorized -> message
-    is AppError.Validation -> message
-    is AppError.Unexpected -> throwable?.message ?: "发生未知错误"
 }

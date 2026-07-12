@@ -12,9 +12,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.model.SelfProfile
+import life.fxs.purr.core.presentation.toUserMessage
 import life.fxs.purr.domain.account.usecase.LogoutUseCase
 import life.fxs.purr.domain.account.usecase.ObserveAuthSessionUseCase
 
@@ -50,7 +50,7 @@ class SettingsViewModel @Inject constructor(
                 }
                 is AppResult.Failure -> {
                     _state.value = _state.value.copy(isLoading = false)
-                    _effects.emit(SettingsEffect.ShowMessage(result.error.toMessage()))
+                    _effects.emit(SettingsEffect.ShowMessage(result.error.toUserMessage()))
                 }
             }
         }
@@ -65,11 +65,4 @@ data class SettingsState(
 sealed interface SettingsEffect {
     data object LoggedOut : SettingsEffect
     data class ShowMessage(val message: String) : SettingsEffect
-}
-
-private fun AppError.toMessage(): String = when (this) {
-    is AppError.Network -> message ?: "网络错误"
-    is AppError.Unauthorized -> message
-    is AppError.Validation -> message
-    is AppError.Unexpected -> throwable?.message ?: "发生未知错误"
 }

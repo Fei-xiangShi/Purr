@@ -15,8 +15,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.common.AppResult
+import life.fxs.purr.core.presentation.toUserMessage
 import life.fxs.purr.domain.account.usecase.ObserveAuthSessionUseCase
 import life.fxs.purr.domain.account.usecase.ObservePairBondUseCase
 import life.fxs.purr.domain.account.usecase.RefreshPairBondUseCase
@@ -135,7 +135,7 @@ class HomeViewModel @Inject constructor(
                     val incomingCall = _uiState.value.incomingCall ?: return@launch
                     when (val result = declineIncomingCallUseCase(incomingCall.callId)) {
                         is AppResult.Success -> Unit
-                        is AppResult.Failure -> _effects.emit(HomeEffect.ShowError(result.error.toMessage()))
+                        is AppResult.Failure -> _effects.emit(HomeEffect.ShowError(result.error.toUserMessage()))
                     }
                 }
             }
@@ -149,7 +149,7 @@ class HomeViewModel @Inject constructor(
         when (val result = refreshPairBondUseCase()) {
             is AppResult.Success -> Unit
             is AppResult.Failure -> if (showError) {
-                _effects.emit(HomeEffect.ShowError(result.error.toMessage()))
+                _effects.emit(HomeEffect.ShowError(result.error.toUserMessage()))
             }
         }
         if (showError) {
@@ -165,11 +165,4 @@ class HomeViewModel @Inject constructor(
     private companion object {
         const val STATUS_RECOVERY_INTERVAL_MILLIS = 10_000L
     }
-}
-
-private fun AppError.toMessage(): String = when (this) {
-    is AppError.Network -> message ?: "网络错误"
-    is AppError.Unauthorized -> message
-    is AppError.Validation -> message
-    is AppError.Unexpected -> throwable?.message ?: "发生未知错误"
 }

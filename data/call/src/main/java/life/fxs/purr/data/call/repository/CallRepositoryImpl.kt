@@ -31,11 +31,6 @@ import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.ParticipantIdentity
 import life.fxs.purr.domain.call.model.PrepareCallParams
 import life.fxs.purr.domain.call.model.RecordingState
-import life.fxs.purr.domain.call.model.CallRecording
-import life.fxs.purr.domain.call.model.CallRecordingStatus
-import life.fxs.purr.domain.call.model.RecordingDownload
-import life.fxs.purr.domain.call.model.RecordingPage
-import life.fxs.purr.core.network.model.CallRecordingDto
 import life.fxs.purr.domain.call.repository.CallRepository
 
 @Singleton
@@ -198,38 +193,6 @@ class CallRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun loadRecordings(): AppResult<List<CallRecording>> {
-        val callId = sessionState.value?.callId
-            ?: return AppResult.Failure(AppError.Validation("No prepared call session"))
-        return appResult {
-            api.getRecordings(callId).recordings.map { it.toDomain() }
-        }
-    }
-
-    override suspend fun loadRecordingLibrary(cursor: String?): AppResult<RecordingPage> = appResult {
-        api.getRecordingLibrary(RECORDING_LIBRARY_PAGE_SIZE, cursor).let { response ->
-            RecordingPage(
-                recordings = response.recordings.map { it.toDomain() },
-                nextCursor = response.nextCursor,
-            )
-        }
-    }
-
-    override suspend fun createRecordingDownload(
-        callId: String,
-        recordingId: String,
-    ): AppResult<RecordingDownload> {
-        return appResult {
-            api.createRecordingDownload(callId, recordingId).let { response ->
-                RecordingDownload(
-                    recordingId = response.recordingId,
-                    url = response.url,
-                    expiresAtEpochMillis = response.expiresAtEpochMillis,
-                )
-            }
-        }
-    }
-
     private fun syncUiSnapshot(session: CallSession): CallSession {
         return session.copy(
             uiSnapshot = session.uiSnapshot.copy(
@@ -317,7 +280,6 @@ class CallRepositoryImpl @Inject constructor(
 
     private companion object {
         const val CALL_STATUS_SYNC_INTERVAL_MILLIS = 2_000L
-        const val RECORDING_LIBRARY_PAGE_SIZE = 20
     }
 }
 
@@ -331,20 +293,3 @@ private fun String.toRecordingState(): RecordingState = when (lowercase()) {
     "failed" -> RecordingState.Failed()
     else -> RecordingState.Failed("Unknown recording status: $this")
 }
-
-private fun CallRecordingDto.toDomain() = CallRecording(
-    recordingId = recordingId,
-    callId = callId,
-    status = when (status.lowercase()) {
-        "stopped" -> CallRecordingStatus.Available
-        "deleted" -> CallRecordingStatus.Expired
-        "failed" -> CallRecordingStatus.Failed
-        else -> CallRecordingStatus.Processing
-    },
-    downloadAvailable = downloadAvailable,
-    startedAtEpochMillis = startedAtEpochMillis,
-    endedAtEpochMillis = endedAtEpochMillis,
-    durationMillis = durationMillis,
-    sizeBytes = sizeBytes,
-    failureReason = errorMessage,
-)
