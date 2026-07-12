@@ -17,7 +17,7 @@ import androidx.navigation.navArgument
 import life.fxs.purr.core.media.livekit.CallRoomStateProvider
 import life.fxs.purr.feature.auth.AuthScreenRoute
 import life.fxs.purr.feature.call.CallScreenRoute
-import life.fxs.purr.feature.call.RecordingLibraryScreenRoute
+import life.fxs.purr.feature.call.CallHistoryScreenRoute
 import life.fxs.purr.feature.home.HomeScreenRoute
 import life.fxs.purr.feature.settings.SettingsScreenRoute
 
@@ -25,7 +25,7 @@ private const val AUTH_ROUTE = "auth"
 private const val HOME_ROUTE = "home"
 private const val SETTINGS_ROUTE = "settings"
 private const val CALL_ROUTE = "call"
-private const val RECORDINGS_ROUTE = "recordings"
+private const val CALL_HISTORY_ROUTE = "call-history"
 private const val PAIR_ID_ARG = "pairId"
 private const val CALL_DESTINATION = "$CALL_ROUTE/{$PAIR_ID_ARG}"
 
@@ -65,7 +65,7 @@ fun PurrNavHost(
         composable(HOME_ROUTE) {
             HomeScreenRoute(
                 onOpenCall = { pairId -> navController.navigate("$CALL_ROUTE/$pairId") },
-                onOpenRecordings = { navController.navigate(RECORDINGS_ROUTE) },
+                onOpenCallHistory = { navController.navigate(CALL_HISTORY_ROUTE) },
                 onOpenSettings = { navController.navigate(SETTINGS_ROUTE) },
             )
         }
@@ -77,11 +77,16 @@ fun PurrNavHost(
             CallScreenRoute(
                 pairId = pairId,
                 roomStateProvider = roomStateProvider,
-                onBack = { navController.popBackStack() },
+                onCallEnded = {
+                    navController.navigate(HOME_ROUTE) {
+                        popUpTo(HOME_ROUTE) { inclusive = false }
+                        launchSingleTop = true
+                    }
+                },
             )
         }
-        composable(RECORDINGS_ROUTE) {
-            RecordingLibraryScreenRoute(onBack = { navController.popBackStack() })
+        composable(CALL_HISTORY_ROUTE) {
+            CallHistoryScreenRoute()
         }
         composable(SETTINGS_ROUTE) {
             SettingsScreenRoute(

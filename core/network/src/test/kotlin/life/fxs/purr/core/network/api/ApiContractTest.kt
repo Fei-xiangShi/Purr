@@ -4,6 +4,7 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import retrofit2.http.GET
 import retrofit2.http.POST
+import retrofit2.http.PUT
 
 class ApiContractTest {
     @Test
@@ -13,6 +14,9 @@ class ApiContractTest {
         assertThat(PurrAuthApi::class.java.postPath("logout")).isEqualTo("auth/logout")
         assertThat(PurrAccountApi::class.java.getPath("getMe")).isEqualTo("me")
         assertThat(PurrAccountApi::class.java.getPath("getPair")).isEqualTo("pair")
+        assertThat(PurrAccountApi::class.java.putPath("changePassword")).isEqualTo("me/password")
+        assertThat(PurrAccountApi::class.java.putPath("updateProfile")).isEqualTo("me/profile")
+        assertThat(PurrAccountApi::class.java.putPath("uploadAvatar")).isEqualTo("me/avatar")
     }
 
     @Test
@@ -21,6 +25,7 @@ class ApiContractTest {
         assertThat(PurrCallApi::class.java.postPath("endCall")).isEqualTo("calls/{callId}/end")
         assertThat(PurrCallApi::class.java.getPath("getCall")).isEqualTo("calls/{callId}")
         assertThat(PurrCallApi::class.java.getPath("getActiveCall")).isEqualTo("calls/active")
+        assertThat(PurrCallApi::class.java.getPath("getCallHistory")).isEqualTo("calls/history")
     }
 
     @Test
@@ -29,7 +34,6 @@ class ApiContractTest {
             .isEqualTo("calls/{callId}/recordings")
         assertThat(PurrRecordingApi::class.java.postPath("createRecordingDownload"))
             .isEqualTo("calls/{callId}/recordings/{recordingId}/download")
-        assertThat(PurrRecordingApi::class.java.getPath("getRecordingLibrary")).isEqualTo("recordings")
     }
 }
 
@@ -41,4 +45,9 @@ private fun Class<*>.getPath(methodName: String): String = methods
 private fun Class<*>.postPath(methodName: String): String = methods
     .single { it.name == methodName }
     .getAnnotation(POST::class.java)
+    .value
+
+private fun Class<*>.putPath(methodName: String): String = methods
+    .single { it.name == methodName }
+    .getAnnotation(PUT::class.java)
     .value

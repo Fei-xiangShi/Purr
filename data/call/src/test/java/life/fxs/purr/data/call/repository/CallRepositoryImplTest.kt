@@ -112,4 +112,47 @@ class CallRepositoryImplTest {
         coVerify(exactly = 1) { callServiceController.stopForegroundCall() }
         coVerify(exactly = 1) { callAudioFocusManager.abandonFocus() }
     }
+
+    @Test
+    fun `leaving call ends server call and disconnects locally`() = runTest(dispatcher) {
+        val foreground = MutableStateFlow(true)
+        every { audioRouteController.activeRoute } returns MutableStateFlow(AudioRoute.Speaker)
+        every { audioRouteController.availableRoutes } returns MutableStateFlow(listOf(AudioRoute.Speaker))
+        every { callServiceController.isCallForeground } returns foreground
+        every { liveKitCallDataSource.sessionEvents } returns emptyFlow()
+        every { liveKitCallDataSource.updateSession(any()) } returns Unit
+        coEvery { liveKitCallDataSource.disconnect() } returns Unit
+        coEvery { callServiceController.stopForegroundCall() } coAnswers { foreground.emit(false) }
+        coEvery { callAudioFocusManager.abandonFocus() } returns Unit
+        coEvery { api.endCall("call-1") } returns Unit
+        coEvery { api.createSession(any()) } returns SessionResponseDto(
+            callId = "call-1",
+            pairId = "pair-1",
+            roomName = "room-1",
+            participantIdentity = "self",
+            token = "token",
+            wsUrl = "ws://example.invalid",
+        )
+        coEvery { api.getCall("call-1") } returns CallStatusDto(
+            callId = "call-1",
+            pairId = "pair-1",
+            state = "active",
+            recordingStatus = "idle",
+            startedAtEpochMillis = 1L,
+        )
+        val repository = CallRepositoryImpl(
+            api = api,
+            liveKitCallDataSource = liveKitCallDataSource,
+            audioRouteController = audioRouteController,
+            callAudioFocusManager = callAudioFocusManager,
+            callServiceController = callServiceController,
+        )
+
+        repository.prepareCall(PrepareCallParams(pairId = "pair-1", recordingConsent = true))
+        val result = repository.disconnectCall()
+
+        assertThat(result).isInstanceOf(AppResult.Success::class.java)
+        coVerify(exactly = 1) { api.endCall("call-1") }
+        coVerify(exactly = 1) { liveKitCallDataSource.disconnect() }
+    }
 }

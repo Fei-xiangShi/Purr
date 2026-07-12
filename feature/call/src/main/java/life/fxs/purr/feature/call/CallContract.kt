@@ -10,6 +10,7 @@ enum class CallScreenState {
     Idle,
     Dialing,
     Connecting,
+    Waiting,
     Active,
     Reconnecting,
     Ending,
@@ -18,16 +19,13 @@ enum class CallScreenState {
 
 sealed interface CallIntent {
     data class ConnectCall(val pairId: String) : CallIntent
-    data object AcceptOrResumeCall : CallIntent
     data class MicrophonePermissionResult(
         val granted: Boolean,
         val permanentlyDenied: Boolean = false,
     ) : CallIntent
-    data class RecordingConsentResult(val granted: Boolean) : CallIntent
     data object MuteToggle : CallIntent
     data class RouteSelect(val route: AudioRoute) : CallIntent
     data object EndCall : CallIntent
-    data object RetryAfterReconnectFailure : CallIntent
     data object RefreshRecordings : CallIntent
     data class PlayRecording(val recordingId: String) : CallIntent
     data class RecordingPlaybackStarted(val recordingId: String) : CallIntent
@@ -44,7 +42,6 @@ data class CallState(
     val recordingState: RecordingState = RecordingState.NotRecording,
     val isForegroundServiceActive: Boolean = false,
     val isLoading: Boolean = false,
-    val recordingConsentRequired: Boolean = false,
     val recordings: List<CallRecording> = emptyList(),
     val isRecordingsLoading: Boolean = false,
     val playbackLoadingRecordingId: String? = null,

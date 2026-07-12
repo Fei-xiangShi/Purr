@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -44,8 +46,10 @@ class CallViewModel @Inject constructor(
     private val _effects = MutableSharedFlow<CallEffect>()
     val effects = _effects.asSharedFlow()
 
-    private var pendingPairId: String? = null
     private var recordingsLoadedForCallId: String? = null
+    private var prepareJob: Job? = null
+    private var connectJob: Job? = null
+    private var endRequested: Boolean = false
 
     init {
         viewModelScope.launch {
@@ -65,14 +69,11 @@ class CallViewModel @Inject constructor(
 
     fun onIntent(intent: CallIntent) {
         when (intent) {
-            is CallIntent.ConnectCall -> requestRecordingConsent(intent.pairId)
-            CallIntent.AcceptOrResumeCall -> resumeOrReconnect()
-            is CallIntent.RecordingConsentResult -> handleRecordingConsentResult(intent.granted)
+            is CallIntent.ConnectCall -> startCall(intent.pairId)
             is CallIntent.MicrophonePermissionResult -> handleMicrophonePermissionResult(intent)
             CallIntent.MuteToggle -> toggleMute()
             is CallIntent.RouteSelect -> updateRoute(intent.route)
             CallIntent.EndCall -> endCall()
-            CallIntent.RetryAfterReconnectFailure -> resumeOrReconnect()
             CallIntent.RefreshRecordings -> loadRecordings()
             is CallIntent.PlayRecording -> playRecording(intent.recordingId)
             is CallIntent.RecordingPlaybackStarted -> {
@@ -95,30 +96,10 @@ class CallViewModel @Inject constructor(
         }
     }
 
-    private fun requestRecordingConsent(pairId: String) {
-        pendingPairId = pairId
-        _state.value = _state.value.copy(recordingConsentRequired = true)
-    }
-
-    private fun handleRecordingConsentResult(granted: Boolean) {
-        _state.value = _state.value.copy(recordingConsentRequired = false)
-        if (!granted) {
-            pendingPairId = null
-            viewModelScope.launch {
-                _effects.emit(CallEffect.ShowMessage("未同意录音，无法加入通话"))
-            }
-            return
-        }
-        viewModelScope.launch {
-            _effects.emit(CallEffect.RequestMicrophonePermission)
-        }
-    }
-
     private fun handleMicrophonePermissionResult(result: CallIntent.MicrophonePermissionResult) {
-        val pairId = pendingPairId ?: return
-        pendingPairId = null
+        if (endRequested || _state.value.session == null) return
         if (result.granted) {
-            connect(pairId)
+            connectPreparedCall()
             return
         }
         viewModelScope.launch {
@@ -127,10 +108,14 @@ class CallViewModel @Inject constructor(
                 _effects.emit(CallEffect.OpenAppSettings)
             }
         }
+        endCall()
     }
 
-    private fun connect(pairId: String) {
-        viewModelScope.launch {
+    private fun startCall(pairId: String) {
+        prepareJob?.cancel()
+        connectJob?.cancel()
+        endRequested = false
+        prepareJob = viewModelScope.launch {
             _state.value = _state.value.copy(
                 screenState = CallScreenState.Dialing,
                 isLoading = true,
@@ -139,19 +124,9 @@ class CallViewModel @Inject constructor(
                 PrepareCallParams(pairId = pairId, recordingConsent = true),
             )) {
                 is AppResult.Success -> {
-                    _state.value = _state.value.copy(
-                        screenState = CallScreenState.Connecting,
-                        isLoading = true,
-                    )
-                    handleActionResult(
-                        result = connectCallUseCase(),
-                        onFailure = {
-                            _state.value = _state.value.copy(
-                                screenState = CallScreenState.Ended,
-                                isLoading = false,
-                            )
-                        },
-                    )
+                    if (endRequested) return@launch
+                    updateState(result.value)
+                    _effects.emit(CallEffect.RequestMicrophonePermission)
                 }
                 is AppResult.Failure -> {
                     _state.value = _state.value.copy(
@@ -164,13 +139,21 @@ class CallViewModel @Inject constructor(
         }
     }
 
-    private fun resumeOrReconnect() {
-        viewModelScope.launch {
-            _state.value = _state.value.copy(isLoading = true)
+    private fun connectPreparedCall() {
+        connectJob?.cancel()
+        connectJob = viewModelScope.launch {
+            if (endRequested) return@launch
+            _state.value = _state.value.copy(
+                screenState = CallScreenState.Connecting,
+                isLoading = true,
+            )
             handleActionResult(
                 result = connectCallUseCase(),
                 onFailure = {
-                    _state.value = _state.value.copy(isLoading = false)
+                    _state.value = _state.value.copy(
+                        screenState = CallScreenState.Ended,
+                        isLoading = false,
+                    )
                 },
             )
         }
@@ -190,17 +173,36 @@ class CallViewModel @Inject constructor(
     }
 
     private fun endCall() {
+        if (_state.value.screenState == CallScreenState.Ending) return
+        endRequested = true
+        val inFlightPrepare = prepareJob
+        prepareJob = null
+        val inFlightConnect = connectJob
+        connectJob = null
+        _state.value = _state.value.copy(
+            screenState = CallScreenState.Ending,
+            isLoading = true,
+        )
         viewModelScope.launch {
-            _state.value = _state.value.copy(
-                screenState = CallScreenState.Ending,
-                isLoading = true,
-            )
-            handleActionResult(
-                result = disconnectCallUseCase(),
-                onFailure = {
-                    _state.value = _state.value.copy(isLoading = false)
-                },
-            )
+            inFlightPrepare?.join()
+            inFlightConnect?.cancelAndJoin()
+            when (val result = disconnectCallUseCase()) {
+                is AppResult.Success -> {
+                    endRequested = false
+                    _state.value = _state.value.copy(
+                        screenState = CallScreenState.Ended,
+                        isLoading = false,
+                    )
+                }
+                is AppResult.Failure -> {
+                    endRequested = false
+                    _state.value = _state.value.copy(
+                        screenState = CallScreenState.Ended,
+                        isLoading = false,
+                    )
+                    emitError(result.error)
+                }
+            }
         }
     }
 
@@ -267,16 +269,24 @@ class CallViewModel @Inject constructor(
     private fun updateState(session: CallSession) {
         val previous = _state.value
         val sameCall = previous.session?.callId == session.callId
+        val screenState = if (
+            endRequested &&
+            session.connectionState != CallConnectionState.Disconnected &&
+            session.connectionState !is CallConnectionState.Failed
+        ) {
+            CallScreenState.Ending
+        } else {
+            session.toScreenState()
+        }
         _state.value = CallState(
-            screenState = session.connectionState.toScreenState(),
+            screenState = screenState,
             session = session,
             localAudioState = session.localAudioState,
             availableRoutes = session.uiSnapshot.availableAudioRoutes,
             activeRoute = session.uiSnapshot.activeAudioRoute,
             recordingState = session.recordingState,
             isForegroundServiceActive = session.uiSnapshot.isForegroundServiceActive,
-            isLoading = false,
-            recordingConsentRequired = previous.recordingConsentRequired,
+            isLoading = screenState == CallScreenState.Ending,
             recordings = previous.recordings.takeIf { sameCall }.orEmpty(),
             isRecordingsLoading = previous.isRecordingsLoading && sameCall,
             playbackLoadingRecordingId = previous.playbackLoadingRecordingId.takeIf { sameCall },
@@ -286,11 +296,15 @@ class CallViewModel @Inject constructor(
     }
 }
 
-private fun CallConnectionState.toScreenState(): CallScreenState = when (this) {
+private fun CallSession.toScreenState(): CallScreenState = when (connectionState) {
     CallConnectionState.Idle -> CallScreenState.Idle
     CallConnectionState.Preparing -> CallScreenState.Dialing
     CallConnectionState.Connecting -> CallScreenState.Connecting
-    CallConnectionState.Connected -> CallScreenState.Active
+    CallConnectionState.Connected -> if (uiSnapshot.remoteParticipantConnected) {
+        CallScreenState.Active
+    } else {
+        CallScreenState.Waiting
+    }
     CallConnectionState.Reconnecting -> CallScreenState.Reconnecting
     CallConnectionState.Disconnected -> CallScreenState.Ended
     is CallConnectionState.Failed -> CallScreenState.Ended

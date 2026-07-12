@@ -2,12 +2,14 @@ package life.fxs.purr.core.network.api
 
 import life.fxs.purr.core.network.model.CallStatusDto
 import life.fxs.purr.core.network.model.ActiveCallResponseDto
+import life.fxs.purr.core.network.model.CallHistoryResponseDto
 import life.fxs.purr.core.network.model.SessionRequestDto
 import life.fxs.purr.core.network.model.SessionResponseDto
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 interface PurrCallApi {
     @POST("calls/session")
@@ -22,4 +24,9 @@ interface PurrCallApi {
     @GET("calls/active")
     suspend fun getActiveCall(): ActiveCallResponseDto
 
+    @GET("calls/history")
+    suspend fun getCallHistory(
+        @Query("limit") limit: Int,
+        @Query("before") cursor: String? = null,
+    ): CallHistoryResponseDto
 }

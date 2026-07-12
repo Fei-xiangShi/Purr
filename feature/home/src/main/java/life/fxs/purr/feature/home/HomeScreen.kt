@@ -1,17 +1,24 @@
 package life.fxs.purr.feature.home
 
 import android.widget.Toast
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.collect
 import life.fxs.purr.core.designsystem.component.PurrPanel
+import life.fxs.purr.core.designsystem.component.PurrAvatar
 import life.fxs.purr.core.designsystem.component.PurrPrimaryButton
 import life.fxs.purr.core.designsystem.component.PurrScreen
 import life.fxs.purr.core.designsystem.component.PurrSectionTitle
@@ -22,7 +29,7 @@ import life.fxs.purr.core.model.CallSessionSummary
 @Composable
 fun HomeScreenRoute(
     onOpenCall: (String) -> Unit,
-    onOpenRecordings: () -> Unit,
+    onOpenCallHistory: () -> Unit,
     onOpenSettings: () -> Unit,
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
@@ -44,7 +51,7 @@ fun HomeScreenRoute(
         onRefreshStatus = { viewModel.onIntent(HomeIntent.RefreshStatus) },
         onAcceptIncomingCall = { viewModel.onIntent(HomeIntent.AcceptIncomingCall) },
         onDeclineIncomingCall = { viewModel.onIntent(HomeIntent.DeclineIncomingCall) },
-        onOpenRecordings = onOpenRecordings,
+        onOpenCallHistory = onOpenCallHistory,
         onOpenSettings = onOpenSettings,
     )
 }
@@ -56,7 +63,7 @@ fun HomeScreen(
     onRefreshStatus: () -> Unit,
     onAcceptIncomingCall: () -> Unit,
     onDeclineIncomingCall: () -> Unit,
-    onOpenRecordings: () -> Unit,
+    onOpenCallHistory: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val selfName = state.self?.displayName ?: "用户"
@@ -87,17 +94,32 @@ fun HomeScreen(
             }
         }
 
-        PurrPanel(
-            title = partnerName,
-            subtitle = state.partner?.userId ?: "",
-            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.34f),
-        ) {
-            state.self?.let { self ->
-                PurrStatusChip(
-                    label = "当前账号",
-                    detail = self.displayName,
-                    accentColor = MaterialTheme.colorScheme.tertiary,
+        PurrPanel(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.34f)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                PurrAvatar(
+                    avatarUrl = state.partner?.avatarUrl,
+                    contentDescription = "对方头像",
+                    size = 64.dp,
                 )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = partnerName,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = state.partner?.userId.orEmpty(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             PurrStatusChip(
                 label = if (state.partner?.isOnline == true) "对方在线" else "对方离线",
@@ -129,8 +151,8 @@ fun HomeScreen(
                 enabled = !state.isLoading,
             )
             PurrSecondaryButton(
-                text = "录音库",
-                onClick = onOpenRecordings,
+                text = "通话历史",
+                onClick = onOpenCallHistory,
             )
             PurrSecondaryButton(
                 text = "设置",

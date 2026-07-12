@@ -24,8 +24,3 @@ data class RecordingDownload(
     val url: String,
     val expiresAtEpochMillis: Long,
 )
-
-data class RecordingPage(
-    val recordings: List<CallRecording>,
-    val nextCursor: String?,
-)

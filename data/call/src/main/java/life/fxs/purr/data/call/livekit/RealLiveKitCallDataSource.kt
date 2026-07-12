@@ -118,16 +118,14 @@ class RealLiveKitCallDataSource @Inject constructor(
             room.events.collect { event ->
                 val current = latestSession ?: return@collect
                 when (event) {
-                    is RoomEvent.Connected,
-                    is RoomEvent.Reconnected,
-                    -> emitSession(
+                    is RoomEvent.Connected -> emitSession(
                         current.copy(
                             participantIdentity = current.participantIdentity.withResolvedIdentity(
                                 local = room.localParticipant.identity?.value ?: current.participantIdentity.local,
                                 remote = room.remoteParticipants.keys.firstOrNull()?.value,
                             ),
                             connectionState = CallConnectionState.Connected,
-                            localAudioState = current.localAudioState.recoverAfterReconnect(),
+                            localAudioState = current.localAudioState,
                             recordingState = if (room.isRecording) RecordingState.Recording else current.recordingState,
                             uiSnapshot = current.uiSnapshot.copy(
                                 remoteParticipantConnected = room.remoteParticipants.isNotEmpty(),
@@ -135,9 +133,18 @@ class RealLiveKitCallDataSource @Inject constructor(
                         ),
                     )
 
-                    is RoomEvent.Reconnecting -> emitSession(
-                        current.copy(connectionState = CallConnectionState.Reconnecting),
-                    )
+                    is RoomEvent.Reconnecting -> {
+                        emitSession(
+                            current.copy(
+                                connectionState = CallConnectionState.Disconnected,
+                                localAudioState = LocalAudioState.Disabled,
+                                uiSnapshot = current.uiSnapshot.copy(remoteParticipantConnected = false),
+                            ),
+                        )
+                        releaseRoom()
+                    }
+
+                    is RoomEvent.Reconnected -> Unit
 
                     is RoomEvent.ParticipantConnected,
                     is RoomEvent.ParticipantDisconnected,
@@ -225,17 +232,6 @@ private fun ParticipantIdentity.withResolvedIdentity(
         local = local,
         remote = remote ?: this.remote,
     )
-}
-
-private fun LocalAudioState.recoverAfterReconnect(): LocalAudioState = when (this) {
-    LocalAudioState.Disabled,
-    LocalAudioState.Enabling,
-    is LocalAudioState.Error,
-    -> LocalAudioState.Enabled
-
-    LocalAudioState.Enabled,
-    LocalAudioState.Muted,
-    -> this
 }
 
 private fun ConnectionQuality.toScore(): Int = when (this) {

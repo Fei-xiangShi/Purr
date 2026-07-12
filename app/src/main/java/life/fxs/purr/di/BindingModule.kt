@@ -6,23 +6,39 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 import life.fxs.purr.core.media.service.CallServiceController
+import life.fxs.purr.data.account.repository.ApiAccountSecurityRepository
 import life.fxs.purr.data.account.repository.ApiAuthRepository
+import life.fxs.purr.data.account.repository.ApiProfileRepository
 import life.fxs.purr.data.account.repository.ApiPairRepository
 import life.fxs.purr.data.account.realtime.ApiRealtimeRepository
 import life.fxs.purr.data.call.livekit.LiveKitCallDataSource
 import life.fxs.purr.data.call.livekit.RealLiveKitCallDataSource
 import life.fxs.purr.data.call.repository.CallRepositoryImpl
+import life.fxs.purr.data.call.repository.ApiCallHistoryRepository
+import life.fxs.purr.data.call.repository.CallDiagnosticsRepositoryImpl
 import life.fxs.purr.data.call.repository.RecordingRepositoryImpl
 import life.fxs.purr.domain.account.repository.AuthRepository
+import life.fxs.purr.domain.account.repository.AccountSecurityRepository
+import life.fxs.purr.domain.account.repository.ProfileRepository
 import life.fxs.purr.domain.account.repository.PairRepository
 import life.fxs.purr.domain.account.repository.RealtimeRepository
 import life.fxs.purr.domain.call.repository.CallRepository
+import life.fxs.purr.domain.call.repository.CallHistoryRepository
+import life.fxs.purr.domain.call.repository.CallDiagnosticsRepository
 import life.fxs.purr.domain.call.repository.RecordingRepository
 import life.fxs.purr.service.AndroidCallServiceController
 
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class BindingModule {
+    @Binds
+    @Singleton
+    abstract fun bindAccountSecurityRepository(impl: ApiAccountSecurityRepository): AccountSecurityRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindProfileRepository(impl: ApiProfileRepository): ProfileRepository
+
     @Binds
     @Singleton
     abstract fun bindAuthRepository(impl: ApiAuthRepository): AuthRepository
@@ -46,6 +62,14 @@ abstract class BindingModule {
     @Binds
     @Singleton
     abstract fun bindCallRepository(impl: CallRepositoryImpl): CallRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindCallHistoryRepository(impl: ApiCallHistoryRepository): CallHistoryRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindCallDiagnosticsRepository(impl: CallDiagnosticsRepositoryImpl): CallDiagnosticsRepository
 
     @Binds
     @Singleton

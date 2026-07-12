@@ -10,7 +10,6 @@ import life.fxs.purr.core.network.model.CallRecordingDto
 import life.fxs.purr.domain.call.model.CallRecording
 import life.fxs.purr.domain.call.model.CallRecordingStatus
 import life.fxs.purr.domain.call.model.RecordingDownload
-import life.fxs.purr.domain.call.model.RecordingPage
 import life.fxs.purr.domain.call.repository.RecordingRepository
 
 @Singleton
@@ -19,15 +18,6 @@ class RecordingRepositoryImpl @Inject constructor(
 ) : RecordingRepository {
     override suspend fun loadCallRecordings(callId: String): AppResult<List<CallRecording>> = apiResult {
         api.getRecordings(callId).recordings.map(CallRecordingDto::toDomain)
-    }
-
-    override suspend fun loadRecordingLibrary(cursor: String?): AppResult<RecordingPage> = apiResult {
-        api.getRecordingLibrary(RECORDING_LIBRARY_PAGE_SIZE, cursor).let { response ->
-            RecordingPage(
-                recordings = response.recordings.map(CallRecordingDto::toDomain),
-                nextCursor = response.nextCursor,
-            )
-        }
     }
 
     override suspend fun createRecordingDownload(
@@ -48,10 +38,6 @@ class RecordingRepositoryImpl @Inject constructor(
     } catch (throwable: Throwable) {
         if (throwable is CancellationException) throw throwable
         AppResult.Failure(throwable.asAppError())
-    }
-
-    private companion object {
-        const val RECORDING_LIBRARY_PAGE_SIZE = 20
     }
 }
 

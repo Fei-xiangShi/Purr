@@ -70,7 +70,6 @@ class CallRepositoryImpl @Inject constructor(
         val response = api.createSession(
             SessionRequestDto(
                 pairId = params.pairId,
-                resumeCallId = params.resumeCallId,
                 recordingConsent = params.recordingConsent,
             ),
         )
@@ -129,32 +128,34 @@ class CallRepositoryImpl @Inject constructor(
 
     override suspend fun disconnectCall(): AppResult<Unit> {
         val session = sessionState.value ?: return AppResult.Success(Unit)
-        return appResult(
-            onFailure = {
-                val failedSession = syncUiSnapshot(
-                    session.copy(
-                        connectionState = CallConnectionState.Failed(it.message),
-                    ),
-                )
-                sessionState.emit(failedSession)
-                liveKitCallDataSource.updateSession(failedSession)
-            },
-        ) {
-            api.endCall(session.callId)
-            stopCallStatusSync()
-            liveKitCallDataSource.disconnect()
-            callServiceController.stopForegroundCall()
-            callAudioFocusManager.abandonFocus()
-            val disconnectedSession = syncUiSnapshot(
-                session.copy(
-                    connectionState = CallConnectionState.Disconnected,
-                    localAudioState = LocalAudioState.Disabled,
-                    uiSnapshot = session.uiSnapshot.copy(remoteParticipantConnected = false),
-                ),
-            )
-            sessionState.emit(disconnectedSession)
-            liveKitCallDataSource.updateSession(disconnectedSession)
+        var failure: Throwable? = null
+
+        suspend fun runDisconnectStep(block: suspend () -> Unit) {
+            try {
+                block()
+            } catch (throwable: Throwable) {
+                if (throwable is CancellationException) throw throwable
+                if (failure == null) failure = throwable
+            }
         }
+
+        runDisconnectStep { api.endCall(session.callId) }
+        stopCallStatusSync()
+        runDisconnectStep { liveKitCallDataSource.disconnect() }
+        runDisconnectStep { callServiceController.stopForegroundCall() }
+        runDisconnectStep { callAudioFocusManager.abandonFocus() }
+
+        val disconnectedSession = syncUiSnapshot(
+            session.copy(
+                connectionState = CallConnectionState.Disconnected,
+                localAudioState = LocalAudioState.Disabled,
+                uiSnapshot = session.uiSnapshot.copy(remoteParticipantConnected = false),
+            ),
+        )
+        sessionState.emit(disconnectedSession)
+        runDisconnectStep { liveKitCallDataSource.updateSession(disconnectedSession) }
+
+        return failure?.let { AppResult.Failure(it.asAppError()) } ?: AppResult.Success(Unit)
     }
 
     override suspend fun setMuted(muted: Boolean): AppResult<Unit> {
