@@ -23,6 +23,8 @@ import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
 import life.fxs.purr.domain.call.usecase.PrepareCallSessionUseCase
 import life.fxs.purr.domain.call.usecase.SelectAudioRouteUseCase
 import life.fxs.purr.domain.call.usecase.ToggleMuteUseCase
+import life.fxs.purr.domain.call.usecase.LoadCallRecordingsUseCase
+import life.fxs.purr.domain.call.usecase.CreateRecordingDownloadUseCase
 
 @HiltViewModel
 class CallViewModel @Inject constructor(
@@ -32,6 +34,8 @@ class CallViewModel @Inject constructor(
     private val toggleMuteUseCase: ToggleMuteUseCase,
     private val selectAudioRouteUseCase: SelectAudioRouteUseCase,
     private val disconnectCallUseCase: DisconnectCallUseCase,
+    private val loadCallRecordingsUseCase: LoadCallRecordingsUseCase,
+    private val createRecordingDownloadUseCase: CreateRecordingDownloadUseCase,
 ) : ViewModel() {
     private val _state = MutableStateFlow(CallState())
     val state = _state.asStateFlow()
@@ -40,29 +44,70 @@ class CallViewModel @Inject constructor(
     val effects = _effects.asSharedFlow()
 
     private var pendingPairId: String? = null
+    private var recordingsLoadedForCallId: String? = null
 
     init {
         viewModelScope.launch {
             observeCallStateUseCase().collect { session ->
-                session?.let { updateState(it) }
+                session?.let {
+                    val shouldLoadRecordings = it.connectionState == CallConnectionState.Disconnected &&
+                        recordingsLoadedForCallId != it.callId
+                    updateState(it)
+                    if (shouldLoadRecordings) {
+                        recordingsLoadedForCallId = it.callId
+                        loadRecordings()
+                    }
+                }
             }
         }
     }
 
     fun onIntent(intent: CallIntent) {
         when (intent) {
-            is CallIntent.ConnectCall -> requestMicrophonePermission(intent.pairId)
+            is CallIntent.ConnectCall -> requestRecordingConsent(intent.pairId)
             CallIntent.AcceptOrResumeCall -> resumeOrReconnect()
+            is CallIntent.RecordingConsentResult -> handleRecordingConsentResult(intent.granted)
             is CallIntent.MicrophonePermissionResult -> handleMicrophonePermissionResult(intent)
             CallIntent.MuteToggle -> toggleMute()
             is CallIntent.RouteSelect -> updateRoute(intent.route)
             CallIntent.EndCall -> endCall()
             CallIntent.RetryAfterReconnectFailure -> resumeOrReconnect()
+            CallIntent.RefreshRecordings -> loadRecordings()
+            is CallIntent.PlayRecording -> playRecording(intent.recordingId)
+            is CallIntent.RecordingPlaybackStarted -> {
+                _state.value = _state.value.copy(
+                    playbackLoadingRecordingId = null,
+                    playingRecordingId = intent.recordingId,
+                    recordingsError = null,
+                )
+            }
+            is CallIntent.RecordingPlaybackStopped -> if (_state.value.playingRecordingId == intent.recordingId) {
+                _state.value = _state.value.copy(playingRecordingId = null)
+            }
+            is CallIntent.RecordingPlaybackFailed -> {
+                _state.value = _state.value.copy(
+                    playbackLoadingRecordingId = null,
+                    playingRecordingId = null,
+                    recordingsError = intent.reason ?: "录音播放失败",
+                )
+            }
         }
     }
 
-    private fun requestMicrophonePermission(pairId: String) {
+    private fun requestRecordingConsent(pairId: String) {
         pendingPairId = pairId
+        _state.value = _state.value.copy(recordingConsentRequired = true)
+    }
+
+    private fun handleRecordingConsentResult(granted: Boolean) {
+        _state.value = _state.value.copy(recordingConsentRequired = false)
+        if (!granted) {
+            pendingPairId = null
+            viewModelScope.launch {
+                _effects.emit(CallEffect.ShowMessage("未同意录音，无法加入通话"))
+            }
+            return
+        }
         viewModelScope.launch {
             _effects.emit(CallEffect.RequestMicrophonePermission)
         }
@@ -89,7 +134,9 @@ class CallViewModel @Inject constructor(
                 screenState = CallScreenState.Dialing,
                 isLoading = true,
             )
-            when (val result = prepareCallSessionUseCase(PrepareCallParams(pairId = pairId))) {
+            when (val result = prepareCallSessionUseCase(
+                PrepareCallParams(pairId = pairId, recordingConsent = true),
+            )) {
                 is AppResult.Success -> {
                     _state.value = _state.value.copy(
                         screenState = CallScreenState.Connecting,
@@ -156,6 +203,48 @@ class CallViewModel @Inject constructor(
         }
     }
 
+    private fun loadRecordings() {
+        if (_state.value.session == null || _state.value.isRecordingsLoading) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isRecordingsLoading = true, recordingsError = null)
+            when (val result = loadCallRecordingsUseCase()) {
+                is AppResult.Success -> _state.value = _state.value.copy(
+                    recordings = result.value,
+                    isRecordingsLoading = false,
+                )
+                is AppResult.Failure -> _state.value = _state.value.copy(
+                    isRecordingsLoading = false,
+                    recordingsError = result.error.toMessage(),
+                )
+            }
+        }
+    }
+
+    private fun playRecording(recordingId: String) {
+        val callId = _state.value.session?.callId ?: return
+        if (_state.value.playingRecordingId == recordingId) {
+            _state.value = _state.value.copy(playingRecordingId = null)
+            viewModelScope.launch { _effects.emit(CallEffect.PauseRecording) }
+            return
+        }
+        if (_state.value.playbackLoadingRecordingId != null) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                playbackLoadingRecordingId = recordingId,
+                recordingsError = null,
+            )
+            when (val result = createRecordingDownloadUseCase(callId, recordingId)) {
+                is AppResult.Success -> _effects.emit(
+                    CallEffect.PlayRecording(recordingId, result.value.url),
+                )
+                is AppResult.Failure -> _state.value = _state.value.copy(
+                    playbackLoadingRecordingId = null,
+                    recordingsError = result.error.toMessage(),
+                )
+            }
+        }
+    }
+
     private suspend fun handleActionResult(
         result: AppResult<Unit>,
         onFailure: (AppError) -> Unit = {},
@@ -174,6 +263,8 @@ class CallViewModel @Inject constructor(
     }
 
     private fun updateState(session: CallSession) {
+        val previous = _state.value
+        val sameCall = previous.session?.callId == session.callId
         _state.value = CallState(
             screenState = session.connectionState.toScreenState(),
             session = session,
@@ -183,6 +274,12 @@ class CallViewModel @Inject constructor(
             recordingState = session.recordingState,
             isForegroundServiceActive = session.uiSnapshot.isForegroundServiceActive,
             isLoading = false,
+            recordingConsentRequired = previous.recordingConsentRequired,
+            recordings = previous.recordings.takeIf { sameCall }.orEmpty(),
+            isRecordingsLoading = previous.isRecordingsLoading && sameCall,
+            playbackLoadingRecordingId = previous.playbackLoadingRecordingId.takeIf { sameCall },
+            playingRecordingId = previous.playingRecordingId.takeIf { sameCall },
+            recordingsError = previous.recordingsError.takeIf { sameCall },
         )
     }
 }

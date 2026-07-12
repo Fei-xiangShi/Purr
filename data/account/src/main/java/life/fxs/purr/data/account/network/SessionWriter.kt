@@ -15,6 +15,7 @@ class SessionWriter @Inject constructor(
         tokenHolder.update(
             accessToken = session.accessToken,
             refreshToken = session.refreshToken,
+            userId = session.self.userId,
         )
     }
 

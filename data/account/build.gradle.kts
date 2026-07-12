@@ -19,6 +19,12 @@ android {
     }
 }
 
+androidComponents {
+    beforeVariants(selector().all()) { variantBuilder ->
+        variantBuilder.enableAndroidTest = project.file("src/androidTest").isDirectory
+    }
+}
+
 kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_17)
@@ -34,6 +40,7 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.javax.inject)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp.core)
 
     testImplementation(libs.junit4)

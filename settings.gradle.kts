@@ -1,6 +1,7 @@
 pluginManagement {
     repositories {
-        google()
+        maven("https://maven.aliyun.com/repository/google")
+        maven("https://maven.aliyun.com/repository/public")
         mavenCentral()
         gradlePluginPortal()
     }
@@ -9,7 +10,8 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        google()
+        maven("https://maven.aliyun.com/repository/google")
+        maven("https://maven.aliyun.com/repository/public")
         mavenCentral()
         maven("https://jitpack.io")
     }

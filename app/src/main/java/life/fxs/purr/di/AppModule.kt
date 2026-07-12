@@ -35,16 +35,20 @@ import life.fxs.purr.data.account.network.BearerTokenInterceptor
 import life.fxs.purr.data.account.network.RefreshTokenAuthenticator
 import life.fxs.purr.data.account.repository.ApiAuthRepository
 import life.fxs.purr.data.account.repository.ApiPairRepository
+import life.fxs.purr.data.account.realtime.ApiRealtimeRepository
+import life.fxs.purr.data.account.realtime.RealtimeEndpoint
 import life.fxs.purr.data.call.livekit.LiveKitCallDataSource
 import life.fxs.purr.data.call.livekit.RealLiveKitCallDataSource
 import life.fxs.purr.data.call.repository.CallRepositoryImpl
 import life.fxs.purr.domain.account.repository.AuthRepository
 import life.fxs.purr.domain.account.repository.PairRepository
+import life.fxs.purr.domain.account.repository.RealtimeRepository
 import life.fxs.purr.domain.call.repository.CallRepository
 import life.fxs.purr.service.CallForegroundService
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import retrofit2.Retrofit
 
 @Module
@@ -80,6 +84,19 @@ object AppModule {
             },
         )
         .build()
+
+    @Provides
+    @Singleton
+    @RealtimeEndpoint
+    fun provideRealtimeEndpoint(): String {
+        val baseUrl = AppConfig.requireBaseUrl().toHttpUrl()
+        val socketScheme = if (baseUrl.isHttps) "wss" else "ws"
+        return baseUrl.newBuilder()
+            .scheme(socketScheme)
+            .addPathSegment("realtime")
+            .build()
+            .toString()
+    }
 
     @Provides
     @Singleton
@@ -181,6 +198,12 @@ abstract class BindingModule {
     abstract fun bindPairRepository(
         impl: ApiPairRepository,
     ): PairRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindRealtimeRepository(
+        impl: ApiRealtimeRepository,
+    ): RealtimeRepository
 
     @Binds
     @Singleton

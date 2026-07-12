@@ -7,6 +7,7 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -16,9 +17,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -26,6 +31,12 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import io.livekit.android.annotations.Beta
 import io.livekit.android.compose.state.rememberParticipantTrackReferences
 import io.livekit.android.compose.ui.audio.AudioBarVisualizer
@@ -42,6 +53,7 @@ import life.fxs.purr.core.media.livekit.CallRoomStateProvider
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.RecordingState
+import life.fxs.purr.domain.call.model.CallRecordingStatus
 
 @Composable
 fun CallScreenRoute(
@@ -53,6 +65,46 @@ fun CallScreenRoute(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val room by roomStateProvider.room.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val recordingPlayer = remember(context) {
+        ExoPlayer.Builder(context).build().apply {
+            setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
+                    .build(),
+                true,
+            )
+        }
+    }
+    DisposableEffect(recordingPlayer, viewModel) {
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) {
+                    recordingPlayer.currentMediaItem?.mediaId?.takeIf { it.isNotBlank() }?.let { recordingId ->
+                        viewModel.onIntent(CallIntent.RecordingPlaybackStarted(recordingId))
+                    }
+                }
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED) {
+                    recordingPlayer.currentMediaItem?.mediaId?.takeIf { it.isNotBlank() }?.let { recordingId ->
+                        viewModel.onIntent(CallIntent.RecordingPlaybackStopped(recordingId))
+                    }
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                val recordingId = recordingPlayer.currentMediaItem?.mediaId.orEmpty()
+                viewModel.onIntent(CallIntent.RecordingPlaybackFailed(recordingId, error.message))
+            }
+        }
+        recordingPlayer.addListener(listener)
+        onDispose {
+            recordingPlayer.removeListener(listener)
+            recordingPlayer.release()
+        }
+    }
     val microphonePermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -66,6 +118,21 @@ fun CallScreenRoute(
             ),
         )
     }
+    val requestMicrophonePermission = {
+        if (
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            viewModel.onIntent(CallIntent.MicrophonePermissionResult(granted = true))
+        } else {
+            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) {
+        requestMicrophonePermission()
+    }
 
     LaunchedEffect(pairId) {
         if (pairId.isNotBlank()) {
@@ -78,17 +145,52 @@ fun CallScreenRoute(
             when (effect) {
                 CallEffect.OpenAppSettings -> context.openAppSettings()
                 CallEffect.RequestMicrophonePermission -> {
-                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                        viewModel.onIntent(CallIntent.MicrophonePermissionResult(granted = true))
+                    if (
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     } else {
-                        microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        requestMicrophonePermission()
                     }
                 }
                 is CallEffect.ShowMessage -> {
                     Toast.makeText(context, effect.message, Toast.LENGTH_SHORT).show()
                 }
+                is CallEffect.PlayRecording -> {
+                    recordingPlayer.setMediaItem(
+                        MediaItem.Builder()
+                            .setMediaId(effect.recordingId)
+                            .setUri(effect.url)
+                            .build(),
+                    )
+                    recordingPlayer.prepare()
+                    recordingPlayer.play()
+                }
+                CallEffect.PauseRecording -> recordingPlayer.pause()
             }
         }
+    }
+
+    if (state.recordingConsentRequired) {
+        AlertDialog(
+            onDismissRequest = { viewModel.onIntent(CallIntent.RecordingConsentResult(granted = false)) },
+            title = { Text("录音同意") },
+            text = {
+                Text("本次通话将在双方接通后自动录音。录音仅供配对双方访问，继续前需要你的明确同意。")
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.onIntent(CallIntent.RecordingConsentResult(granted = true)) }) {
+                    Text("同意并继续")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.onIntent(CallIntent.RecordingConsentResult(granted = false)) }) {
+                    Text("不同意")
+                }
+            },
+        )
     }
 
     CallScreen(
@@ -98,6 +200,8 @@ fun CallScreenRoute(
         onMuteToggle = { viewModel.onIntent(CallIntent.MuteToggle) },
         onRouteSelect = { route -> viewModel.onIntent(CallIntent.RouteSelect(route)) },
         onEndCall = { viewModel.onIntent(CallIntent.EndCall) },
+        onRefreshRecordings = { viewModel.onIntent(CallIntent.RefreshRecordings) },
+        onPlayRecording = { recordingId -> viewModel.onIntent(CallIntent.PlayRecording(recordingId)) },
         onBack = onBack,
     )
 }
@@ -110,6 +214,8 @@ fun CallScreen(
     onMuteToggle: () -> Unit,
     onRouteSelect: (AudioRoute) -> Unit,
     onEndCall: () -> Unit,
+    onRefreshRecordings: () -> Unit,
+    onPlayRecording: (String) -> Unit,
     onBack: () -> Unit,
 ) {
     val session = state.session
@@ -208,6 +314,55 @@ fun CallScreen(
             }
         }
 
+        if (session != null) {
+            PurrPanel(title = "录音历史") {
+                PurrSecondaryButton(
+                    text = if (state.isRecordingsLoading) "加载中..." else "刷新录音",
+                    onClick = onRefreshRecordings,
+                    enabled = !state.isRecordingsLoading,
+                )
+                state.recordingsError?.let { error ->
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                if (!state.isRecordingsLoading && state.recordings.isEmpty()) {
+                    Text(
+                        text = "暂无录音",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                state.recordings.forEachIndexed { index, recording ->
+                    PurrStatusChip(
+                        label = "录音 ${index + 1}",
+                        detail = recording.toDisplayDetail(),
+                        accentColor = when (recording.status) {
+                            CallRecordingStatus.Available -> MaterialTheme.colorScheme.tertiary
+                            CallRecordingStatus.Expired -> MaterialTheme.colorScheme.secondary
+                            CallRecordingStatus.Processing -> MaterialTheme.colorScheme.primary
+                            CallRecordingStatus.Failed -> MaterialTheme.colorScheme.error
+                        },
+                    )
+                    if (recording.downloadAvailable) {
+                        val isLoading = state.playbackLoadingRecordingId == recording.recordingId
+                        val isPlaying = state.playingRecordingId == recording.recordingId
+                        PurrSecondaryButton(
+                            text = when {
+                                isLoading -> "加载中..."
+                                isPlaying -> "暂停"
+                                else -> "播放"
+                            },
+                            onClick = { onPlayRecording(recording.recordingId) },
+                            enabled = state.playbackLoadingRecordingId == null,
+                        )
+                    }
+                }
+            }
+        }
+
         room?.let { activeRoom ->
             LiveKitRoomStatus(room = activeRoom)
             PurrPanel(title = "远端音频") {
@@ -295,6 +450,20 @@ private fun RecordingState.toDisplayLabel(): String = when (this) {
     RecordingState.Recording -> "录音中"
     RecordingState.Stopping -> "停止中"
     is RecordingState.Failed -> reason ?: "失败"
+}
+
+private fun life.fxs.purr.domain.call.model.CallRecording.toDisplayDetail(): String = when (status) {
+    CallRecordingStatus.Available -> durationMillis?.let { "可播放 · ${it.toRecordingDuration()}" } ?: "可播放"
+    CallRecordingStatus.Expired -> "已过期"
+    CallRecordingStatus.Processing -> "处理中"
+    CallRecordingStatus.Failed -> failureReason ?: "录音失败"
+}
+
+private fun Long.toRecordingDuration(): String {
+    val totalSeconds = this / 1_000
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return "%d:%02d".format(minutes, seconds)
 }
 
 private fun AudioRoute.toButtonLabel(selected: Boolean): String {

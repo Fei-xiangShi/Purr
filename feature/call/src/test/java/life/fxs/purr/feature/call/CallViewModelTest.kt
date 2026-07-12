@@ -20,12 +20,17 @@ import life.fxs.purr.domain.call.model.CallUiSnapshot
 import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.ParticipantIdentity
 import life.fxs.purr.domain.call.model.RecordingState
+import life.fxs.purr.domain.call.model.CallRecording
+import life.fxs.purr.domain.call.model.CallRecordingStatus
+import life.fxs.purr.domain.call.model.RecordingDownload
 import life.fxs.purr.domain.call.usecase.ConnectCallUseCase
 import life.fxs.purr.domain.call.usecase.DisconnectCallUseCase
 import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
 import life.fxs.purr.domain.call.usecase.PrepareCallSessionUseCase
 import life.fxs.purr.domain.call.usecase.SelectAudioRouteUseCase
 import life.fxs.purr.domain.call.usecase.ToggleMuteUseCase
+import life.fxs.purr.domain.call.usecase.LoadCallRecordingsUseCase
+import life.fxs.purr.domain.call.usecase.CreateRecordingDownloadUseCase
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -41,6 +46,8 @@ class CallViewModelTest {
     private val toggleMuteUseCase = mockk<ToggleMuteUseCase>()
     private val selectAudioRouteUseCase = mockk<SelectAudioRouteUseCase>()
     private val disconnectCallUseCase = mockk<DisconnectCallUseCase>()
+    private val loadCallRecordingsUseCase = mockk<LoadCallRecordingsUseCase>()
+    private val createRecordingDownloadUseCase = mockk<CreateRecordingDownloadUseCase>()
 
     @Before
     fun setUp() {
@@ -50,6 +57,7 @@ class CallViewModelTest {
         coEvery { toggleMuteUseCase.invoke(any()) } returns AppResult.Success(Unit)
         coEvery { selectAudioRouteUseCase.invoke(any()) } returns AppResult.Success(Unit)
         coEvery { disconnectCallUseCase.invoke() } returns AppResult.Success(Unit)
+        coEvery { loadCallRecordingsUseCase.invoke() } returns AppResult.Success(emptyList())
     }
 
     @After
@@ -83,11 +91,28 @@ class CallViewModelTest {
         val viewModel = createViewModel()
 
         viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+        viewModel.onIntent(CallIntent.RecordingConsentResult(granted = true))
         viewModel.onIntent(CallIntent.MicrophonePermissionResult(granted = true))
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { prepareCallSessionUseCase.invoke(match { it.pairId == "pair-1" }) }
+        coVerify(exactly = 1) {
+            prepareCallSessionUseCase.invoke(match { it.pairId == "pair-1" && it.recordingConsent })
+        }
         coVerify(exactly = 1) { connectCallUseCase.invoke() }
+    }
+
+    @Test
+    fun `declining recording consent prevents joining call`() = runTest(dispatcher) {
+        val viewModel = createViewModel()
+
+        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+        assertThat(viewModel.state.value.recordingConsentRequired).isTrue()
+        viewModel.onIntent(CallIntent.RecordingConsentResult(granted = false))
+        advanceUntilIdle()
+
+        assertThat(viewModel.state.value.recordingConsentRequired).isFalse()
+        coVerify(exactly = 0) { prepareCallSessionUseCase.invoke(any()) }
+        coVerify(exactly = 0) { connectCallUseCase.invoke() }
     }
 
     @Test
@@ -138,6 +163,46 @@ class CallViewModelTest {
         assertThat(viewModel.state.value.isLoading).isFalse()
     }
 
+    @Test
+    fun `ended call loads recordings and requests authorized playback`() = runTest(dispatcher) {
+        val recording = CallRecording(
+            recordingId = "recording-1",
+            callId = "call-1",
+            status = CallRecordingStatus.Available,
+            downloadAvailable = true,
+            startedAtEpochMillis = 1L,
+            endedAtEpochMillis = 2_001L,
+            durationMillis = 2_000L,
+            sizeBytes = 1_024L,
+            failureReason = null,
+        )
+        coEvery { loadCallRecordingsUseCase.invoke() } returns AppResult.Success(listOf(recording))
+        coEvery { createRecordingDownloadUseCase.invoke("call-1", "recording-1") } returns AppResult.Success(
+            RecordingDownload("recording-1", "https://storage.example/signed", 10_000L),
+        )
+        val viewModel = createViewModel()
+
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Disconnected,
+            localAudioState = LocalAudioState.Disabled,
+            recordingState = RecordingState.NotRecording,
+        )
+        advanceUntilIdle()
+
+        assertThat(viewModel.state.value.recordings).containsExactly(recording)
+        coVerify(exactly = 1) { loadCallRecordingsUseCase.invoke() }
+
+        viewModel.onIntent(CallIntent.PlayRecording("recording-1"))
+        advanceUntilIdle()
+
+        assertThat(viewModel.state.value.playbackLoadingRecordingId).isEqualTo("recording-1")
+        coVerify(exactly = 1) { createRecordingDownloadUseCase.invoke("call-1", "recording-1") }
+
+        viewModel.onIntent(CallIntent.RecordingPlaybackStarted("recording-1"))
+        assertThat(viewModel.state.value.playbackLoadingRecordingId).isNull()
+        assertThat(viewModel.state.value.playingRecordingId).isEqualTo("recording-1")
+    }
+
     private fun createViewModel(): CallViewModel = CallViewModel(
         prepareCallSessionUseCase = prepareCallSessionUseCase,
         connectCallUseCase = connectCallUseCase,
@@ -145,6 +210,8 @@ class CallViewModelTest {
         toggleMuteUseCase = toggleMuteUseCase,
         selectAudioRouteUseCase = selectAudioRouteUseCase,
         disconnectCallUseCase = disconnectCallUseCase,
+        loadCallRecordingsUseCase = loadCallRecordingsUseCase,
+        createRecordingDownloadUseCase = createRecordingDownloadUseCase,
     )
 
     private fun sampleSession(

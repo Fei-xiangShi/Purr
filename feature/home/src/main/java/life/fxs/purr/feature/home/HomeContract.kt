@@ -3,10 +3,13 @@ package life.fxs.purr.feature.home
 import life.fxs.purr.core.model.CallSessionSummary
 import life.fxs.purr.core.model.PairedPartner
 import life.fxs.purr.core.model.SelfProfile
+import life.fxs.purr.domain.account.model.IncomingCall
 
 sealed interface HomeIntent {
     data object StartCall : HomeIntent
     data object RefreshStatus : HomeIntent
+    data object AcceptIncomingCall : HomeIntent
+    data object DeclineIncomingCall : HomeIntent
 }
 
 data class HomeState(
@@ -16,6 +19,7 @@ data class HomeState(
     val isCallable: Boolean = false,
     val lastSessionSummary: CallSessionSummary? = null,
     val isLoading: Boolean = false,
+    val incomingCall: IncomingCall? = null,
 )
 
 sealed interface HomeEffect {

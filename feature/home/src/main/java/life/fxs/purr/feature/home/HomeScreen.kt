@@ -22,6 +22,7 @@ import life.fxs.purr.core.model.CallSessionSummary
 @Composable
 fun HomeScreenRoute(
     onOpenCall: (String) -> Unit,
+    onOpenRecordings: () -> Unit,
     onOpenSettings: () -> Unit,
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
@@ -41,6 +42,9 @@ fun HomeScreenRoute(
         state = state,
         onStartCall = { viewModel.onIntent(HomeIntent.StartCall) },
         onRefreshStatus = { viewModel.onIntent(HomeIntent.RefreshStatus) },
+        onAcceptIncomingCall = { viewModel.onIntent(HomeIntent.AcceptIncomingCall) },
+        onDeclineIncomingCall = { viewModel.onIntent(HomeIntent.DeclineIncomingCall) },
+        onOpenRecordings = onOpenRecordings,
         onOpenSettings = onOpenSettings,
     )
 }
@@ -50,6 +54,9 @@ fun HomeScreen(
     state: HomeState,
     onStartCall: () -> Unit,
     onRefreshStatus: () -> Unit,
+    onAcceptIncomingCall: () -> Unit,
+    onDeclineIncomingCall: () -> Unit,
+    onOpenRecordings: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val selfName = state.self?.displayName ?: "用户"
@@ -62,6 +69,23 @@ fun HomeScreen(
             subtitle = "",
             modifier = Modifier,
         )
+
+        state.incomingCall?.let {
+            PurrPanel(
+                title = "$partnerName 正在呼叫",
+                subtitle = "",
+                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+            ) {
+                PurrPrimaryButton(
+                    text = "接听",
+                    onClick = onAcceptIncomingCall,
+                )
+                PurrSecondaryButton(
+                    text = "拒绝",
+                    onClick = onDeclineIncomingCall,
+                )
+            }
+        }
 
         PurrPanel(
             title = partnerName,
@@ -103,6 +127,10 @@ fun HomeScreen(
                 text = if (state.isLoading) "刷新中..." else "刷新状态",
                 onClick = onRefreshStatus,
                 enabled = !state.isLoading,
+            )
+            PurrSecondaryButton(
+                text = "录音库",
+                onClick = onOpenRecordings,
             )
             PurrSecondaryButton(
                 text = "设置",

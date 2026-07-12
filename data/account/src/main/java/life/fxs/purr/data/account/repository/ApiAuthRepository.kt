@@ -34,6 +34,7 @@ class ApiAuthRepository @Inject constructor(
             sessionTokenHolder.update(
                 accessToken = session?.accessToken,
                 refreshToken = session?.refreshToken,
+                userId = session?.self?.userId,
             )
         }
         .stateIn(scope, SharingStarted.Eagerly, null)

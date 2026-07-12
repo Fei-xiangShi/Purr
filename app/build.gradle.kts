@@ -15,6 +15,7 @@ val signingProperties = Properties().apply {
         load(FileInputStream(signingFile))
     }
 }
+val releaseStoreFilePath = signingProperties.getProperty("storeFile", "").trim()
 
 fun normalizedBaseUrl(value: String): String = value.trim().let {
     if (it.isNotEmpty() && !it.endsWith("/")) "$it/" else it
@@ -40,9 +41,8 @@ android {
 
     signingConfigs {
         create("release") {
-            val storeFilePath = signingProperties.getProperty("storeFile", "").trim()
-            if (storeFilePath.isNotEmpty()) {
-                storeFile = file(storeFilePath)
+            if (releaseStoreFilePath.isNotEmpty()) {
+                storeFile = file(releaseStoreFilePath)
                 storePassword = signingProperties.getProperty("storePassword", "")
                 keyAlias = signingProperties.getProperty("keyAlias", "")
                 keyPassword = signingProperties.getProperty("keyPassword", "")
@@ -63,11 +63,16 @@ android {
     }
 
     buildTypes {
+        debug {
+            manifestPlaceholders["usesCleartextTraffic"] = "true"
+        }
         release {
-            isMinifyEnabled = false
+            manifestPlaceholders["usesCleartextTraffic"] = "false"
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro",
+                rootProject.file("proguard-rules.pro"),
             )
             signingConfig = signingConfigs.getByName("release")
         }
@@ -88,6 +93,37 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+}
+
+androidComponents {
+    beforeVariants(selector().all()) { variantBuilder ->
+        variantBuilder.enableAndroidTest = project.file("src/androidTest").isDirectory
+    }
+}
+
+val validateReleaseConfiguration by tasks.registering {
+    group = "verification"
+    description = "Validates HTTPS API and signing inputs before packaging a release."
+    doLast {
+        require(purrBaseUrl.startsWith("https://")) {
+            "Release builds require purrBaseUrl to use https://"
+        }
+        require(releaseStoreFilePath.isNotEmpty()) {
+            "Release builds require app/signing.properties with a storeFile"
+        }
+        require(file(releaseStoreFilePath).isFile) {
+            "Release signing store does not exist: $releaseStoreFilePath"
+        }
+        listOf("storePassword", "keyAlias", "keyPassword").forEach { key ->
+            require(!signingProperties.getProperty(key, "").isNullOrBlank()) {
+                "Release signing property is missing: $key"
+            }
+        }
+    }
+}
+
+tasks.matching { it.name == "packageRelease" || it.name == "bundleRelease" }.configureEach {
+    dependsOn(validateReleaseConfiguration)
 }
 
 kotlin {
