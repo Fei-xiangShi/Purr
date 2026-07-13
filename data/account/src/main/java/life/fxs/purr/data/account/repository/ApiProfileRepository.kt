@@ -9,7 +9,6 @@ import life.fxs.purr.core.model.SelfProfile
 import life.fxs.purr.core.network.api.PurrAccountApi
 import life.fxs.purr.core.network.model.UpdateProfileRequestDto
 import life.fxs.purr.data.account.network.SessionWriter
-import life.fxs.purr.domain.account.repository.AuthRepository
 import life.fxs.purr.domain.account.repository.ProfileRepository
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -18,7 +17,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 @Singleton
 class ApiProfileRepository @Inject constructor(
     private val accountApi: PurrAccountApi,
-    private val authRepository: AuthRepository,
     private val sessionWriter: SessionWriter,
 ) : ProfileRepository {
     override suspend fun uploadAvatar(contentType: String, bytes: ByteArray): AppResult<SelfProfile> {
@@ -47,8 +45,6 @@ class ApiProfileRepository @Inject constructor(
     }
 
     private suspend fun persistProfile(profile: SelfProfile) {
-        authRepository.currentSession()?.let { session ->
-            sessionWriter.persist(session.copy(self = profile))
-        }
+        sessionWriter.persistProfile(profile)
     }
 }

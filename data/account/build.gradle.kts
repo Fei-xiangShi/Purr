@@ -42,6 +42,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp.core)
+    implementation(libs.retrofit.core)
 
     testImplementation(libs.junit4)
     testImplementation(libs.truth)

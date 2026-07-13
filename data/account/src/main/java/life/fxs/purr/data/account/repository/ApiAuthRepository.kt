@@ -29,13 +29,7 @@ class ApiAuthRepository @Inject constructor(
     @ApplicationScope private val applicationScope: CoroutineScope,
 ) : AuthRepository {
     private val sessionState = sessionStore.session
-        .onEach { session ->
-            sessionTokenHolder.update(
-                accessToken = session?.accessToken,
-                refreshToken = session?.refreshToken,
-                userId = session?.self?.userId,
-            )
-        }
+        .onEach(sessionWriter::syncFromStore)
         .stateIn(applicationScope, SharingStarted.Eagerly, null)
 
     override fun observeSession(): Flow<AuthSession?> = sessionState
@@ -59,17 +53,16 @@ class ApiAuthRepository @Inject constructor(
     }
 
     override suspend fun logout(): AppResult<Unit> {
-        val accessToken = sessionTokenHolder.accessToken()
-        return try {
+        val sessionAtRequestStart = sessionTokenHolder.snapshot()
+        try {
+            val accessToken = sessionAtRequestStart.accessToken
             if (!accessToken.isNullOrBlank()) {
                 authApi.logout("Bearer $accessToken")
             }
-            sessionWriter.clear()
-            AppResult.Success(Unit)
         } catch (throwable: Throwable) {
             if (throwable is CancellationException) throw throwable
-            sessionWriter.clear()
-            AppResult.Success(Unit)
         }
+        sessionWriter.clearIfSessionMatches(sessionAtRequestStart)
+        return AppResult.Success(Unit)
     }
 }

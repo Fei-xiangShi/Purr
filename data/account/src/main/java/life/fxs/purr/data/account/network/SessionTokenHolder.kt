@@ -1,28 +1,38 @@
 package life.fxs.purr.data.account.network
 
-import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
+import java.util.concurrent.atomic.AtomicReference
 
 @Singleton
 class SessionTokenHolder @Inject constructor() {
-    private val accessTokenRef = AtomicReference<String?>(null)
-    private val refreshTokenRef = AtomicReference<String?>(null)
-    private val userIdRef = AtomicReference<String?>(null)
+    private val sessionRef = AtomicReference(SessionSnapshot())
 
-    fun accessToken(): String? = accessTokenRef.get()
+    fun accessToken(): String? = snapshot().accessToken
 
-    fun refreshToken(): String? = refreshTokenRef.get()
+    fun refreshToken(): String? = snapshot().refreshToken
 
-    fun userId(): String? = userIdRef.get()
+    fun userId(): String? = snapshot().userId
+
+    internal fun snapshot(): SessionSnapshot = sessionRef.get()
 
     fun update(accessToken: String?, refreshToken: String?, userId: String?) {
-        accessTokenRef.set(accessToken)
-        refreshTokenRef.set(refreshToken)
-        userIdRef.set(userId)
+        sessionRef.set(
+            SessionSnapshot(
+                accessToken = accessToken,
+                refreshToken = refreshToken,
+                userId = userId,
+            ),
+        )
     }
 
     fun clear() {
-        update(accessToken = null, refreshToken = null, userId = null)
+        sessionRef.set(SessionSnapshot())
     }
+
+    internal data class SessionSnapshot(
+        val accessToken: String? = null,
+        val refreshToken: String? = null,
+        val userId: String? = null,
+    )
 }

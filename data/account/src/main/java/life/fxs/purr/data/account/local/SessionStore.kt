@@ -3,7 +3,6 @@ package life.fxs.purr.data.account.local
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import java.io.IOException
@@ -12,6 +11,7 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.transform
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -27,66 +27,15 @@ class SessionStore @Inject constructor(
 
     val session: Flow<AuthSession?> = dataStore.data
         .catch { exception ->
-            if (exception is IOException) emit(emptyPreferences()) else throw exception
+            // A storage read failure is not evidence that the user signed out.
+            // Complete without a replacement value so state holders retain the
+            // last confirmed session; a cold start still remains signed out.
+            if (exception !is IOException) throw exception
         }
         .transform { preferences ->
-            val rawAccessToken = preferences[ACCESS_TOKEN]
-            val rawRefreshToken = preferences[REFRESH_TOKEN]
-            val storageVersion = preferences[TOKEN_STORAGE_VERSION]
-            if (storageVersion != null && storageVersion != CURRENT_TOKEN_STORAGE_VERSION) {
-                if (clearIfCredentialsUnchanged(rawAccessToken, rawRefreshToken)) emit(null)
-                return@transform
-            }
-            val legacyMigrationAllowed = storageVersion == null
-            val accessToken = readToken(rawAccessToken, legacyMigrationAllowed)
-            val refreshToken = readToken(rawRefreshToken, legacyMigrationAllowed)
-            if (accessToken is TokenRead.Invalid || refreshToken is TokenRead.Invalid) {
-                if (clearIfCredentialsUnchanged(rawAccessToken, rawRefreshToken)) emit(null)
-                return@transform
-            }
-            if (
-                legacyMigrationAllowed &&
-                (accessToken is TokenRead.Legacy || refreshToken is TokenRead.Legacy)
-            ) {
-                when (
-                    migrateLegacyTokens(
-                        rawAccessToken = rawAccessToken,
-                        rawRefreshToken = rawRefreshToken,
-                        accessToken = accessToken,
-                        refreshToken = refreshToken,
-                    )
-                ) {
-                    MigrationOutcome.APPLIED -> Unit
-                    MigrationOutcome.CLEARED -> {
-                        emit(null)
-                        return@transform
-                    }
-                    MigrationOutcome.STALE -> return@transform
-                }
-            } else if (legacyMigrationAllowed) {
-                if (!markMigrationCompleteIfCredentialsUnchanged(rawAccessToken, rawRefreshToken)) {
-                    return@transform
-                }
-            }
-            val accessValue = accessToken.valueOrNull()
-            val refreshValue = refreshToken.valueOrNull()
-            val userId = preferences[USER_ID]
-            val displayName = preferences[DISPLAY_NAME]
-            val avatarUrl = preferences[AVATAR_URL]?.takeIf { it.isNotBlank() }
-            if (accessValue.isNullOrBlank() || refreshValue.isNullOrBlank() || userId.isNullOrBlank() || displayName.isNullOrBlank()) {
-                emit(null)
-            } else {
-                emit(
-                    AuthSession(
-                        accessToken = accessValue,
-                        refreshToken = refreshValue,
-                        self = SelfProfile(
-                            userId = userId,
-                            displayName = displayName,
-                            avatarUrl = avatarUrl,
-                        ),
-                    ),
-                )
+            when (val result = decodeSession(preferences)) {
+                is SessionRead.Value -> emit(result.session)
+                SessionRead.Stale -> Unit
             }
         }
 
@@ -107,6 +56,90 @@ class SessionStore @Inject constructor(
         dataStore.edit { preferences ->
             preferences.clear()
             preferences[TOKEN_STORAGE_VERSION] = CURRENT_TOKEN_STORAGE_VERSION
+        }
+    }
+
+    /**
+     * Reads the current persisted value without the flow-level IOException handler.
+     * A storage failure must reach callers so they can retain the in-memory session
+     * instead of interpreting an unavailable store as a real signed-out state.
+     */
+    suspend fun readCurrentSession(): AuthSession? {
+        repeat(MAX_READ_ATTEMPTS) {
+            when (val result = decodeSession(dataStore.data.first())) {
+                is SessionRead.Value -> return result.session
+                SessionRead.Stale -> Unit
+            }
+        }
+        throw IOException("Session store changed during each read attempt")
+    }
+
+    private suspend fun decodeSession(preferences: Preferences): SessionRead {
+        val rawAccessToken = preferences[ACCESS_TOKEN]
+        val rawRefreshToken = preferences[REFRESH_TOKEN]
+        val storageVersion = preferences[TOKEN_STORAGE_VERSION]
+        if (storageVersion != null && storageVersion != CURRENT_TOKEN_STORAGE_VERSION) {
+            return if (clearIfCredentialsUnchanged(rawAccessToken, rawRefreshToken)) {
+                SessionRead.Value(null)
+            } else {
+                SessionRead.Stale
+            }
+        }
+        val legacyMigrationAllowed = storageVersion == null
+        val accessToken = readToken(rawAccessToken, legacyMigrationAllowed)
+        val refreshToken = readToken(rawRefreshToken, legacyMigrationAllowed)
+        if (accessToken is TokenRead.Invalid || refreshToken is TokenRead.Invalid) {
+            return if (clearIfCredentialsUnchanged(rawAccessToken, rawRefreshToken)) {
+                SessionRead.Value(null)
+            } else {
+                SessionRead.Stale
+            }
+        }
+        if (
+            legacyMigrationAllowed &&
+            (accessToken is TokenRead.Legacy || refreshToken is TokenRead.Legacy)
+        ) {
+            when (
+                migrateLegacyTokens(
+                    rawAccessToken = rawAccessToken,
+                    rawRefreshToken = rawRefreshToken,
+                    accessToken = accessToken,
+                    refreshToken = refreshToken,
+                )
+            ) {
+                MigrationOutcome.APPLIED -> Unit
+                MigrationOutcome.CLEARED -> return SessionRead.Value(null)
+                MigrationOutcome.STALE -> return SessionRead.Stale
+            }
+        } else if (legacyMigrationAllowed) {
+            if (!markMigrationCompleteIfCredentialsUnchanged(rawAccessToken, rawRefreshToken)) {
+                return SessionRead.Stale
+            }
+        }
+        val accessValue = accessToken.valueOrNull()
+        val refreshValue = refreshToken.valueOrNull()
+        val userId = preferences[USER_ID]
+        val displayName = preferences[DISPLAY_NAME]
+        val avatarUrl = preferences[AVATAR_URL]?.takeIf { it.isNotBlank() }
+        return if (
+            accessValue.isNullOrBlank() ||
+            refreshValue.isNullOrBlank() ||
+            userId.isNullOrBlank() ||
+            displayName.isNullOrBlank()
+        ) {
+            SessionRead.Value(null)
+        } else {
+            SessionRead.Value(
+                AuthSession(
+                    accessToken = accessValue,
+                    refreshToken = refreshValue,
+                    self = SelfProfile(
+                        userId = userId,
+                        displayName = displayName,
+                        avatarUrl = avatarUrl,
+                    ),
+                ),
+            )
         }
     }
 
@@ -205,6 +238,12 @@ class SessionStore @Inject constructor(
         STALE,
     }
 
+    private sealed interface SessionRead {
+        data class Value(val session: AuthSession?) : SessionRead
+
+        data object Stale : SessionRead
+    }
+
     private fun TokenRead.valueOrNull(): String? = when (this) {
         TokenRead.Missing, TokenRead.Invalid -> null
         is TokenRead.Encrypted -> value
@@ -222,6 +261,7 @@ class SessionStore @Inject constructor(
         private val AVATAR_URL = stringPreferencesKey("avatar_url")
 
         private const val CURRENT_TOKEN_STORAGE_VERSION = 1
+        private const val MAX_READ_ATTEMPTS = 2
         private val VERSIONED_ENVELOPE_PATTERN = Regex("^v\\d+:")
     }
 }

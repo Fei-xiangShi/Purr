@@ -7,9 +7,12 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.google.common.truth.Truth.assertThat
+import java.io.IOException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.runTest
@@ -172,6 +175,50 @@ class SessionStoreTest {
         assertThat(cleared[ACCESS_TOKEN]).isNull()
         assertThat(cleared[REFRESH_TOKEN]).isNull()
         assertThat(cleared[TOKEN_STORAGE_VERSION]).isEqualTo(1)
+    }
+
+    @Test
+    fun `storage read failure does not emit a false signed out state`() = runTest {
+        val source = InMemoryPreferencesDataStore()
+        val cipher = TestTokenCipher()
+        SessionStore(source, cipher).save(TEST_SESSION)
+        val persisted = source.data.first()
+        val failingStore = object : DataStore<Preferences> {
+            override val data: Flow<Preferences> = flow {
+                emit(persisted)
+                throw IOException("storage temporarily unavailable")
+            }
+
+            override suspend fun updateData(
+                transform: suspend (t: Preferences) -> Preferences,
+            ): Preferences = error("Not used")
+        }
+
+        val emissions = SessionStore(failingStore, cipher).session.toList()
+
+        assertThat(emissions).containsExactly(TEST_SESSION)
+    }
+
+    @Test
+    fun `direct current-session read propagates storage failure`() = runTest {
+        val failingStore = object : DataStore<Preferences> {
+            override val data: Flow<Preferences> = flow {
+                throw IOException("storage temporarily unavailable")
+            }
+
+            override suspend fun updateData(
+                transform: suspend (t: Preferences) -> Preferences,
+            ): Preferences = error("Not used")
+        }
+
+        var failure: IOException? = null
+        try {
+            SessionStore(failingStore, TestTokenCipher()).readCurrentSession()
+        } catch (error: IOException) {
+            failure = error
+        }
+
+        assertThat(failure).isNotNull()
     }
 
     private suspend fun seedSession(
