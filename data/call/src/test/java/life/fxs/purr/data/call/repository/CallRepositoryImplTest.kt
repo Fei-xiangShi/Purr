@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -185,22 +186,20 @@ class CallRepositoryImplTest {
             serverEndStarted.complete(Unit)
             finishServerEnd.await()
         }
-        coEvery { api.createSession(any()) } returns SessionResponseDto(
-            callId = "call-1",
-            pairId = "pair-1",
-            roomName = "room-1",
-            participantIdentity = "self",
-            token = "token",
-            wsUrl = "ws://example.invalid",
+        coEvery { api.createSession(any()) } returnsMany listOf(
+            SessionResponseDto("call-1", "pair-1", "room-1", "self-1", "token-1", "wss://one"),
+            SessionResponseDto("call-2", "pair-1", "room-2", "self-2", "token-2", "wss://two"),
         )
-        coEvery { callStatusRemoteDataSource.getStatus("call-1") } returns CallStatusDto(
-            callId = "call-1",
-            pairId = "pair-1",
-            state = "active",
-            recordingStatus = "idle",
-            startedAtEpochMillis = 1L,
-        )
-        every { callStatusRemoteDataSource.observeStatus("call-1") } returns emptyFlow()
+        coEvery { callStatusRemoteDataSource.getStatus(any()) } answers {
+            CallStatusDto(
+                callId = firstArg(),
+                pairId = "pair-1",
+                state = "active",
+                recordingStatus = "idle",
+                startedAtEpochMillis = 1L,
+            )
+        }
+        every { callStatusRemoteDataSource.observeStatus(any()) } returns emptyFlow()
         val repository = repository()
         repository.prepareCall(PrepareCallParams(pairId = "pair-1", recordingConsent = true))
 
@@ -211,7 +210,9 @@ class CallRepositoryImplTest {
         val muteWhileServerWaits = repository.setMuted(muted = true)
         assertThat(muteWhileServerWaits).isInstanceOf(AppResult.Failure::class.java)
         assertThat(repository.observeCallSession().first()?.connectionState)
-            .isEqualTo(CallConnectionState.Disconnected)
+            .isEqualTo(CallConnectionState.Terminating)
+        val prematureNextCall = repository.prepareCall(PrepareCallParams("pair-1", true))
+        assertThat(prematureNextCall).isInstanceOf(AppResult.Failure::class.java)
         runCurrent()
         assertThat(firstDisconnect.isCompleted).isFalse()
         assertThat(duplicateDisconnect.isCompleted).isFalse()
@@ -219,6 +220,11 @@ class CallRepositoryImplTest {
         finishServerEnd.complete(Unit)
         assertThat(firstDisconnect.await()).isInstanceOf(AppResult.Success::class.java)
         assertThat(duplicateDisconnect.await()).isInstanceOf(AppResult.Success::class.java)
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Disconnected)
+
+        val nextCall = repository.prepareCall(PrepareCallParams("pair-1", true))
+        assertThat((nextCall as AppResult.Success).value.callId).isEqualTo("call-2")
         coVerify(exactly = 1) { api.endCall("call-1") }
     }
 
@@ -262,6 +268,61 @@ class CallRepositoryImplTest {
     }
 
     @Test
+    fun `media disconnect ends server call before a new session is admitted`() = runTest(dispatcher) {
+        val runtimeEvents = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 4)
+        every { audioRouteController.activeRoute } returns MutableStateFlow(AudioRoute.Speaker)
+        every { audioRouteController.availableRoutes } returns MutableStateFlow(listOf(AudioRoute.Speaker))
+        every { callServiceController.foregroundState } returns MutableStateFlow(
+            ForegroundCallServiceState(activeCallId = "call-1"),
+        )
+        every { callRuntimeController.mediaEvents } returns runtimeEvents
+        coEvery { callRuntimeController.execute(any<MediaCallCommand.Connect>()) } returns Unit
+        coEvery { callRuntimeController.execute(any<MediaCallCommand.Disconnect>()) } returns Unit
+        coEvery { api.endCall("call-1") } returns Unit
+        coEvery { api.createSession(any()) } returnsMany listOf(
+            SessionResponseDto("call-1", "pair-1", "room-1", "self-1", "token-1", "wss://one"),
+            SessionResponseDto("call-2", "pair-1", "room-2", "self-2", "token-2", "wss://two"),
+        )
+        coEvery { callStatusRemoteDataSource.getStatus(any()) } answers {
+            CallStatusDto(
+                callId = firstArg(),
+                pairId = "pair-1",
+                state = "active",
+                recordingStatus = "idle",
+                startedAtEpochMillis = 1L,
+            )
+        }
+        every { callStatusRemoteDataSource.observeStatus(any()) } returns emptyFlow()
+        val repository = repository()
+        runCurrent()
+
+        repository.prepareCall(PrepareCallParams("pair-1", true))
+        repository.connectCall()
+        runtimeEvents.emit(
+            MediaCallEvent.Connected(
+                callId = "call-1",
+                generation = 1L,
+                localIdentity = "self-1",
+                remoteIdentity = "partner",
+                remoteParticipantConnected = true,
+            ),
+        )
+        runCurrent()
+        runtimeEvents.emit(MediaCallEvent.Disconnected(callId = "call-1", generation = 1L))
+        advanceUntilIdle()
+
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Disconnected)
+        coVerify(exactly = 1) { api.endCall("call-1") }
+        coVerify(exactly = 1) {
+            callRuntimeController.execute(MediaCallCommand.Disconnect("call-1"))
+        }
+
+        val nextCall = repository.prepareCall(PrepareCallParams("pair-1", true))
+        assertThat((nextCall as AppResult.Success).value.callId).isEqualTo("call-2")
+    }
+
+    @Test
     fun `delayed runtime event from a previous call cannot terminate the current call`() = runTest(dispatcher) {
         val runtimeEvents = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 4)
         every { audioRouteController.activeRoute } returns MutableStateFlow(AudioRoute.Speaker)
@@ -300,6 +361,73 @@ class CallRepositoryImplTest {
         val current = repository.observeCallSession().first { it?.callId == "call-2" }
         assertThat(current?.connectionState).isEqualTo(CallConnectionState.Preparing)
         coVerify(exactly = 0) { callRuntimeController.releaseResources() }
+    }
+
+    @Test
+    fun `application scoped prepare and connect survive caller cancellation`() = runTest(dispatcher) {
+        val createStarted = CompletableDeferred<Unit>()
+        val releaseCreate = CompletableDeferred<Unit>()
+        val connectStarted = CompletableDeferred<Unit>()
+        val releaseConnect = CompletableDeferred<Unit>()
+        every { audioRouteController.activeRoute } returns MutableStateFlow(AudioRoute.Speaker)
+        every { audioRouteController.availableRoutes } returns MutableStateFlow(listOf(AudioRoute.Speaker))
+        every { callServiceController.foregroundState } returns MutableStateFlow(ForegroundCallServiceState())
+        every { callRuntimeController.mediaEvents } returns emptyFlow()
+        coEvery { api.createSession(any()) } coAnswers {
+            createStarted.complete(Unit)
+            releaseCreate.await()
+            SessionResponseDto(
+                callId = "call-1",
+                pairId = "pair-1",
+                roomName = "room-1",
+                participantIdentity = "self",
+                token = "token",
+                wsUrl = "ws://example.invalid",
+            )
+        }
+        coEvery { callStatusRemoteDataSource.getStatus("call-1") } returns CallStatusDto(
+            callId = "call-1",
+            pairId = "pair-1",
+            state = "waiting",
+            recordingStatus = "idle",
+        )
+        every { callStatusRemoteDataSource.observeStatus("call-1") } returns emptyFlow()
+        coEvery { callRuntimeController.execute(any<MediaCallCommand.Connect>()) } coAnswers {
+            connectStarted.complete(Unit)
+            releaseConnect.await()
+        }
+        val repository = repository()
+
+        val prepareCaller = async {
+            repository.prepareCall(PrepareCallParams(pairId = "pair-1", recordingConsent = true))
+        }
+        runCurrent()
+        createStarted.await()
+        prepareCaller.cancelAndJoin()
+
+        releaseCreate.complete(Unit)
+        advanceUntilIdle()
+        assertThat(repository.observeCallSession().first()?.callId).isEqualTo("call-1")
+
+        val connectCaller = async { repository.connectCall() }
+        runCurrent()
+        connectStarted.await()
+        connectCaller.cancelAndJoin()
+
+        releaseConnect.complete(Unit)
+        advanceUntilIdle()
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Connecting)
+        coVerify(exactly = 1) {
+            callRuntimeController.execute(
+                match {
+                    it is MediaCallCommand.Connect &&
+                        it.callId == "call-1" &&
+                        it.pairId == "pair-1" &&
+                        it.localIdentity == "self"
+                },
+            )
+        }
     }
 
     private fun repository() = CallRepositoryImpl(

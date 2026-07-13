@@ -9,7 +9,10 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
@@ -21,19 +24,18 @@ import life.fxs.purr.core.designsystem.component.PurrScreen
 import life.fxs.purr.core.designsystem.component.PurrSectionTitle
 import life.fxs.purr.core.designsystem.component.PurrStatusChip
 import life.fxs.purr.domain.call.model.CallQualityMetrics
-import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.NetworkTransport
 
 @Composable
 internal fun CallDiagnosticsScreen(
-    state: CallState,
+    context: CallDiagnosticsContext,
     callDurationSeconds: Long,
     viewModel: CallDiagnosticsViewModel = hiltViewModel(),
 ) {
     val metrics by viewModel.metrics.collectAsStateWithLifecycle()
     val networkHistory by viewModel.networkHistory.collectAsStateWithLifecycle()
     CallDiagnosticsContent(
-        state = state,
+        context = context,
         metrics = metrics,
         networkHistory = networkHistory,
         callDurationSeconds = callDurationSeconds,
@@ -42,11 +44,15 @@ internal fun CallDiagnosticsScreen(
 
 @Composable
 private fun CallDiagnosticsContent(
-    state: CallState,
+    context: CallDiagnosticsContext,
     metrics: CallQualityMetrics,
     networkHistory: List<NetworkGraphSample>,
     callDurationSeconds: Long,
 ) {
+    val networkCharts = rememberNetworkChartModel(networkHistory)
+    val chartFrameTimeMillis = rememberChartFrameTimeMillis(
+        active = networkCharts.sampleTimesMillis.isNotEmpty(),
+    )
     PurrScreen {
         PurrSectionTitle(
             eyebrow = "通话诊断",
@@ -60,7 +66,7 @@ private fun CallDiagnosticsContent(
             DiagnosticMetricRow("网络验证", if (metrics.device.networkValidated) "已联网" else "未验证")
             DiagnosticMetricRow("计费网络", if (metrics.device.networkMetered) "是" else "否")
             DiagnosticMetricRow("系统通话音量", metrics.device.callVolumePercent.asPercent())
-            DiagnosticMetricRow("音频输出", state.activeRoute.toDisplayLabel())
+            DiagnosticMetricRow("音频输出", context.activeRoute.toDisplayLabel())
             DiagnosticMetricRow("系统估算上行", metrics.device.estimatedUpstreamKbps.asBitrate())
             DiagnosticMetricRow(
                 "系统估算下行",
@@ -72,8 +78,8 @@ private fun CallDiagnosticsContent(
         PurrPanel(title = "连接概览") {
             PurrStatusChip(
                 label = "通话状态",
-                detail = state.screenState.diagnosticsLabel(),
-                accentColor = if (state.screenState == CallScreenState.Active) {
+                detail = context.screenState.diagnosticsLabel(),
+                accentColor = if (context.screenState == CallScreenState.Active) {
                     MaterialTheme.colorScheme.tertiary
                 } else {
                     MaterialTheme.colorScheme.secondary
@@ -81,13 +87,13 @@ private fun CallDiagnosticsContent(
             )
             DiagnosticMetricRow(
                 "通话时长",
-                if (state.screenState == CallScreenState.Active || callDurationSeconds > 0L) {
+                if (context.screenState == CallScreenState.Active || callDurationSeconds > 0L) {
                     callDurationSeconds.toCallDuration()
                 } else {
                     "未开始"
                 },
             )
-            DiagnosticMetricRow("通话质量", state.session.networkQualityLabel())
+            DiagnosticMetricRow("通话质量", context.networkQualityScore.networkQualityLabel())
             DiagnosticMetricRow(
                 "远端参与者",
                 if (metrics.remoteConnected) "已连接" else "未连接",
@@ -114,69 +120,10 @@ private fun CallDiagnosticsContent(
             )
         }
 
-        PurrPanel(title = "网络趋势") {
-            RealtimeLineChart(
-                title = "延迟与抖动",
-                series = listOf(
-                    ChartSeries(
-                        label = "RTT",
-                        color = MaterialTheme.colorScheme.tertiary,
-                        values = networkHistory.map { it.roundTripTimeMs },
-                    ),
-                    ChartSeries(
-                        label = "抖动",
-                        color = MaterialTheme.colorScheme.secondary,
-                        values = networkHistory.map { it.jitterMs },
-                    ),
-                ),
-                valueSuffix = "ms",
-            )
-            RealtimeLineChart(
-                title = "丢包",
-                series = listOf(
-                    ChartSeries(
-                        label = "丢包率",
-                        color = MaterialTheme.colorScheme.error,
-                        values = networkHistory.map { it.packetLossPercent },
-                    ),
-                ),
-                valueSuffix = "%",
-                minimumScale = 1.0,
-            )
-            RealtimeLineChart(
-                title = "实际吞吐",
-                series = listOf(
-                    ChartSeries(
-                        label = "上行",
-                        color = MaterialTheme.colorScheme.primary,
-                        values = networkHistory.map { it.uplinkBitrateKbps.toMbpsOrNull() },
-                    ),
-                    ChartSeries(
-                        label = "下行",
-                        color = MaterialTheme.colorScheme.tertiary,
-                        values = networkHistory.map { it.downlinkBitrateKbps.toMbpsOrNull() },
-                    ),
-                ),
-                valueSuffix = "Mbps",
-            )
-            RealtimeLineChart(
-                title = "本地链路估算",
-                series = listOf(
-                    ChartSeries(
-                        label = "估算上行",
-                        color = MaterialTheme.colorScheme.primary,
-                        values = networkHistory.map { it.estimatedUpstreamKbps.toMbpsOrNull() },
-                    ),
-                    ChartSeries(
-                        label = "估算下行",
-                        color = MaterialTheme.colorScheme.secondary,
-                        values = networkHistory.map { it.estimatedDownstreamKbps.toMbpsOrNull() },
-                    ),
-                ),
-                valueSuffix = "Mbps",
-                showDivider = false,
-            )
-        }
+        NetworkTrendPanel(
+            model = networkCharts,
+            chartFrameTimeMillis = chartFrameTimeMillis,
+        )
 
         PurrPanel(title = "WebRTC 实时统计") {
             DiagnosticMetricRow("往返延迟", metrics.transport.roundTripTimeMs.asMillis())
@@ -196,6 +143,107 @@ private fun CallDiagnosticsContent(
 
     }
 }
+
+@Composable
+private fun NetworkTrendPanel(
+    model: NetworkChartModel,
+    chartFrameTimeMillis: State<Long>,
+) {
+    PurrPanel(title = "网络趋势") {
+        RealtimeLineChart(
+            title = "延迟与抖动",
+            sampleTimesMillis = model.sampleTimesMillis,
+            chartFrameTimeMillis = chartFrameTimeMillis,
+            series = model.latencySeries,
+            valueSuffix = "ms",
+        )
+        RealtimeLineChart(
+            title = "丢包",
+            sampleTimesMillis = model.sampleTimesMillis,
+            chartFrameTimeMillis = chartFrameTimeMillis,
+            series = model.packetLossSeries,
+            valueSuffix = "%",
+            minimumScale = 1.0,
+        )
+        RealtimeLineChart(
+            title = "实际吞吐",
+            sampleTimesMillis = model.sampleTimesMillis,
+            chartFrameTimeMillis = chartFrameTimeMillis,
+            series = model.throughputSeries,
+            valueSuffix = "Mbps",
+        )
+        RealtimeLineChart(
+            title = "本地链路估算",
+            sampleTimesMillis = model.sampleTimesMillis,
+            chartFrameTimeMillis = chartFrameTimeMillis,
+            series = model.linkEstimateSeries,
+            valueSuffix = "Mbps",
+            showDivider = false,
+        )
+    }
+}
+
+@Composable
+private fun rememberNetworkChartModel(history: List<NetworkGraphSample>): NetworkChartModel {
+    val colors = MaterialTheme.colorScheme
+    return remember(history, colors) {
+        NetworkChartModel(
+            sampleTimesMillis = history.map { it.sampledAtMillis },
+            latencySeries = listOf(
+                ChartSeries(
+                    label = "RTT",
+                    color = colors.tertiary,
+                    values = history.map { it.roundTripTimeMs },
+                ),
+                ChartSeries(
+                    label = "抖动",
+                    color = colors.secondary,
+                    values = history.map { it.jitterMs },
+                ),
+            ),
+            packetLossSeries = listOf(
+                ChartSeries(
+                    label = "丢包率",
+                    color = colors.error,
+                    values = history.map { it.packetLossPercent },
+                ),
+            ),
+            throughputSeries = listOf(
+                ChartSeries(
+                    label = "上行",
+                    color = colors.primary,
+                    values = history.map { it.uplinkBitrateKbps.toMbpsOrNull() },
+                ),
+                ChartSeries(
+                    label = "下行",
+                    color = colors.tertiary,
+                    values = history.map { it.downlinkBitrateKbps.toMbpsOrNull() },
+                ),
+            ),
+            linkEstimateSeries = listOf(
+                ChartSeries(
+                    label = "估算上行",
+                    color = colors.primary,
+                    values = history.map { it.estimatedUpstreamKbps.toMbpsOrNull() },
+                ),
+                ChartSeries(
+                    label = "估算下行",
+                    color = colors.secondary,
+                    values = history.map { it.estimatedDownstreamKbps.toMbpsOrNull() },
+                ),
+            ),
+        )
+    }
+}
+
+@Immutable
+private data class NetworkChartModel(
+    val sampleTimesMillis: List<Long>,
+    val latencySeries: List<ChartSeries>,
+    val packetLossSeries: List<ChartSeries>,
+    val throughputSeries: List<ChartSeries>,
+    val linkEstimateSeries: List<ChartSeries>,
+)
 
 @Composable
 private fun DiagnosticMetricRow(
@@ -229,7 +277,7 @@ private fun DiagnosticMetricRow(
     }
 }
 
-private fun CallSession?.networkQualityLabel(): String = when (this?.uiSnapshot?.networkQuality?.uplinkScore) {
+private fun Int?.networkQualityLabel(): String = when (this) {
     5 -> "极佳"
     4 -> "良好"
     3 -> "一般"

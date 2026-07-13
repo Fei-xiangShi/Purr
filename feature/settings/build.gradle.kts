@@ -24,6 +24,10 @@ android {
     buildFeatures {
         compose = true
     }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 androidComponents {
@@ -44,6 +48,8 @@ dependencies {
     implementation(projects.core.presentation)
     implementation(projects.core.designsystem)
     implementation(projects.domain.account)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.foundation)
     implementation(libs.androidx.compose.material3)
@@ -51,6 +57,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.hilt.navigation.compose)
+    implementation(libs.androidx.exifinterface)
     implementation(libs.hilt.android)
     implementation(libs.kotlinx.coroutines.android)
 
@@ -62,4 +69,6 @@ dependencies {
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.mockk)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
 }

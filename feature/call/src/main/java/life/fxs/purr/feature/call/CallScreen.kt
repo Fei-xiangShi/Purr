@@ -11,7 +11,6 @@ import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
@@ -31,9 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
@@ -59,13 +56,11 @@ import life.fxs.purr.domain.call.model.CallTiming
 fun CallScreenRoute(
     pairId: String,
     onCallEnded: () -> Unit,
-    onNavigateHome: () -> Unit,
     viewModel: CallViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val localAudioLevel by viewModel.localAudioLevel.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var showDiagnostics by rememberSaveable { mutableStateOf(false) }
     val callDurationSeconds = rememberCallDurationSeconds(
         timing = state.session?.timing ?: CallTiming(),
         callId = state.session?.callId,
@@ -105,16 +100,11 @@ fun CallScreenRoute(
         }
     }
 
-    LaunchedEffect(state.screenState) {
-        if (state.screenState == CallScreenState.Ended) {
-            onCallEnded()
-        }
-    }
-
     LaunchedEffect(viewModel, context) {
         viewModel.effects.collect { effect ->
             when (effect) {
                 CallEffect.OpenAppSettings -> context.openAppSettings()
+                is CallEffect.NavigateHome -> onCallEnded()
                 CallEffect.RequestMicrophonePermission -> {
                     if (
                         Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -133,27 +123,12 @@ fun CallScreenRoute(
         }
     }
 
-    if (showDiagnostics) {
-        BackHandler { showDiagnostics = false }
-        CallDiagnosticsScreen(
-            state = state,
-            callDurationSeconds = callDurationSeconds,
-        )
-        return
-    }
-
-    BackHandler(
-        enabled = state.screenState != CallScreenState.Ended,
-        onBack = onNavigateHome,
-    )
-
-    CallScreen(
+    CallNavHost(
         state = state,
         callDurationSeconds = callDurationSeconds,
         localAudioLevel = localAudioLevel,
         onMuteToggle = { viewModel.onIntent(CallIntent.MuteToggle) },
         onRouteSelect = { route -> viewModel.onIntent(CallIntent.RouteSelect(route)) },
-        onShowDiagnostics = { showDiagnostics = true },
         onEndCall = { viewModel.onIntent(CallIntent.EndCall) },
     )
 }
@@ -234,12 +209,9 @@ fun CallScreen(
                     onClick = onMuteToggle,
                     enabled = canManageActiveCall,
                 )
-                LightIconButton(
-                    label = "结束通话",
-                    icon = Icons.Rounded.CallEnd,
+                EndCallButton(
                     onClick = onEndCall,
                     enabled = canEndCall,
-                    containerColor = MaterialTheme.colorScheme.error,
                 )
             }
         }

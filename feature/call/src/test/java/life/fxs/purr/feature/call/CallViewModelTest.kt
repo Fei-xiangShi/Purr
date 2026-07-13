@@ -1,6 +1,7 @@
 package life.fxs.purr.feature.call
 
 import com.google.common.truth.Truth.assertThat
+import app.cash.turbine.test
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -140,6 +141,35 @@ class CallViewModelTest {
     }
 
     @Test
+    fun `stale terminal snapshot cannot close a new call attempt`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            callId = "call-old",
+            connectionState = CallConnectionState.Disconnected,
+            localAudioState = LocalAudioState.Disabled,
+            recordingState = RecordingState.NotRecording,
+        )
+        coEvery { prepareCallSessionUseCase.invoke(any()) } returns AppResult.Success(
+            sampleSession(
+                callId = "call-new",
+                connectionState = CallConnectionState.Preparing,
+                localAudioState = LocalAudioState.Disabled,
+                recordingState = RecordingState.NotRecording,
+            ),
+        )
+        val viewModel = createViewModel()
+
+        viewModel.effects.test {
+            viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+            advanceUntilIdle()
+
+            assertThat(awaitItem()).isEqualTo(CallEffect.RequestMicrophonePermission)
+            assertThat(viewModel.state.value.session?.callId).isEqualTo("call-new")
+            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Dialing)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun `microphone permission denial prevents joining call`() = runTest(dispatcher) {
         coEvery { prepareCallSessionUseCase.invoke(any()) } returns AppResult.Success(sampleSession(
             connectionState = CallConnectionState.Preparing,
@@ -210,6 +240,75 @@ class CallViewModelTest {
     }
 
     @Test
+    fun `explicit termination does not navigate until the termination operation completes`() = runTest(dispatcher) {
+        val finishTermination = CompletableDeferred<Unit>()
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.Recording,
+        )
+        coEvery { disconnectCallUseCase.invoke() } coAnswers {
+            finishTermination.await()
+            AppResult.Success(Unit)
+        }
+        val viewModel = createViewModel()
+        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+        runCurrent()
+
+        viewModel.effects.test {
+            viewModel.onIntent(CallIntent.EndCall)
+            runCurrent()
+            sessionFlow.value = sampleSession(
+                connectionState = CallConnectionState.Terminating,
+                localAudioState = LocalAudioState.Disabled,
+                recordingState = RecordingState.Recording,
+            )
+            runCurrent()
+            sessionFlow.value = sampleSession(
+                connectionState = CallConnectionState.Disconnected,
+                localAudioState = LocalAudioState.Disabled,
+                recordingState = RecordingState.NotRecording,
+            )
+            runCurrent()
+
+            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ending)
+            expectNoEvents()
+
+            finishTermination.complete(Unit)
+            advanceUntilIdle()
+
+            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome("call-1"))
+            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `server terminal state navigates the current call home once`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.Recording,
+        )
+        val viewModel = createViewModel()
+        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+        runCurrent()
+
+        viewModel.effects.test {
+            sessionFlow.value = sampleSession(
+                connectionState = CallConnectionState.Disconnected,
+                localAudioState = LocalAudioState.Disabled,
+                recordingState = RecordingState.NotRecording,
+            )
+            runCurrent()
+
+            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome("call-1"))
+            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun `state maps active session`() = runTest(dispatcher) {
         val viewModel = createViewModel()
         sessionFlow.value = sampleSession(
@@ -266,12 +365,13 @@ class CallViewModelTest {
     )
 
     private fun sampleSession(
+        callId: String = "call-1",
         connectionState: CallConnectionState,
         localAudioState: LocalAudioState,
         recordingState: RecordingState,
         remoteParticipantConnected: Boolean = true,
     ) = CallSession(
-        callId = "call-1",
+        callId = callId,
         pairId = "pair-1",
         participantIdentity = ParticipantIdentity(local = "self", remote = "partner"),
         roomName = "room-1",

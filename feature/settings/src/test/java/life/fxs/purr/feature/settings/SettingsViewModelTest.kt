@@ -8,6 +8,8 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -111,14 +113,14 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `successful avatar upload refreshes profile`() = runTest(dispatcher) {
+    fun `confirmed avatar crop uploads processed bytes and refreshes profile`() = runTest(dispatcher) {
         val image = byteArrayOf(1, 2, 3)
         withViewModel { viewModel ->
             runCurrent()
             val effect = async { viewModel.effects.take(1).toList() }
             runCurrent()
 
-            viewModel.onIntent(SettingsIntent.AvatarSelected("image/png", image))
+            viewModel.onIntent(SettingsIntent.AvatarCropConfirmed("image/png", image))
             runCurrent()
 
             assertThat(viewModel.state.value.self?.avatarUrl).isEqualTo("https://avatar.test/a.png")
@@ -127,6 +129,73 @@ class SettingsViewModelTest {
             coVerify(exactly = 1) { uploadAvatarUseCase.invoke("image/png", image) }
             coVerify(exactly = 0) { logoutUseCase.invoke() }
             coVerify(exactly = 0) { changePasswordUseCase.invoke(any(), any()) }
+        }
+    }
+
+    @Test
+    fun `failed avatar upload exits busy state and can be retried`() = runTest(dispatcher) {
+        coEvery { uploadAvatarUseCase.invoke(any(), any()) } returns
+            AppResult.Failure(AppError.Network("上传失败")) andThen
+            AppResult.Success(SelfProfile("user-a", "User A", "https://avatar.test/retry.png"))
+        val image = byteArrayOf(1, 2, 3)
+        withViewModel { viewModel ->
+            runCurrent()
+            val effects = async { viewModel.effects.take(2).toList() }
+            runCurrent()
+
+            viewModel.onIntent(SettingsIntent.AvatarCropConfirmed("image/png", image))
+            runCurrent()
+
+            assertThat(viewModel.state.value.isUploadingAvatar).isFalse()
+            assertThat(viewModel.state.value.avatarError).isEqualTo("上传失败")
+
+            viewModel.onIntent(SettingsIntent.AvatarCropConfirmed("image/png", image))
+            runCurrent()
+
+            assertThat(viewModel.state.value.isUploadingAvatar).isFalse()
+            assertThat(viewModel.state.value.avatarError).isNull()
+            assertThat(viewModel.state.value.self?.avatarUrl).isEqualTo("https://avatar.test/retry.png")
+            assertThat(effects.await()).containsExactly(
+                SettingsEffect.ShowMessage("上传失败"),
+                SettingsEffect.ShowMessage("头像上传成功"),
+            ).inOrder()
+            coVerify(exactly = 2) { uploadAvatarUseCase.invoke("image/png", any()) }
+        }
+    }
+
+    @Test
+    fun `repeated crop confirmation while uploading starts only one request`() = runTest(dispatcher) {
+        val result = CompletableDeferred<AppResult<SelfProfile>>()
+        coEvery { uploadAvatarUseCase.invoke(any(), any()) } coAnswers { result.await() }
+        val firstImage = byteArrayOf(1, 2, 3)
+        val secondImage = byteArrayOf(4, 5, 6)
+        withViewModel { viewModel ->
+            runCurrent()
+
+            viewModel.onIntent(SettingsIntent.AvatarCropConfirmed("image/png", firstImage))
+            viewModel.onIntent(SettingsIntent.AvatarCropConfirmed("image/png", secondImage))
+            runCurrent()
+
+            assertThat(viewModel.state.value.isUploadingAvatar).isTrue()
+            coVerify(exactly = 1) { uploadAvatarUseCase.invoke("image/png", match { it.contentEquals(firstImage) }) }
+
+            result.complete(AppResult.Success(SelfProfile("user-a", "User A", "https://avatar.test/a.png")))
+            runCurrent()
+
+            assertThat(viewModel.state.value.isUploadingAvatar).isFalse()
+        }
+    }
+
+    @Test
+    fun `cancelled avatar upload exits busy state`() = runTest(dispatcher) {
+        coEvery { uploadAvatarUseCase.invoke(any(), any()) } throws CancellationException("cancelled")
+        withViewModel { viewModel ->
+            runCurrent()
+
+            viewModel.onIntent(SettingsIntent.AvatarCropConfirmed("image/jpeg", byteArrayOf(1)))
+            runCurrent()
+
+            assertThat(viewModel.state.value.isUploadingAvatar).isFalse()
         }
     }
 

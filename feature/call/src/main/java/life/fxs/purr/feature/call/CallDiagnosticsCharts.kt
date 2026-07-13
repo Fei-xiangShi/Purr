@@ -14,6 +14,9 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -31,7 +34,7 @@ internal fun RealtimeAudioMeter(
     levelPercent: Int,
     speaking: Boolean,
 ) {
-    val normalizedLevel = levelPercent.coerceIn(0, 100)
+    val normalizedLevel = (animateAudioLevel(levelPercent / 100f) * 100f).coerceIn(0f, 100f)
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -47,7 +50,7 @@ internal fun RealtimeAudioMeter(
                 color = if (speaking) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "$normalizedLevel%",
+                text = "${normalizedLevel.toInt()}%",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurface,
             )
@@ -86,9 +89,19 @@ internal fun RealtimeLineChart(
     title: String,
     series: List<ChartSeries>,
     valueSuffix: String,
+    sampleTimesMillis: List<Long> = emptyList(),
+    chartFrameTimeMillis: State<Long>,
     minimumScale: Double = 10.0,
     showDivider: Boolean = true,
 ) {
+    val targetMaxValue = max(
+        minimumScale,
+        maxVisibleChartValue(
+            series = series,
+        )?.times(1.15) ?: minimumScale,
+    )
+    val animatedMaxValue = animateChartScale(targetMaxValue)
+    val reusablePaths = remember(series.size) { List(series.size) { Path() } }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
         ChartLegend(series = series, valueSuffix = valueSuffix)
@@ -101,6 +114,12 @@ internal fun RealtimeLineChart(
                 .background(backgroundColor, RoundedCornerShape(4.dp))
                 .padding(6.dp),
         ) {
+            val chartTimeCursorMillis = sampleTimesMillis.lastOrNull()?.let { latestSampleTimeMillis ->
+                chartTimeCursorMillis(
+                    latestSampleTimeMillis = latestSampleTimeMillis,
+                    nowMillis = chartFrameTimeMillis.value,
+                ).toDouble()
+            }
             repeat(5) { index ->
                 val y = size.height * index / 4f
                 drawLine(gridColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 1f)
@@ -109,11 +128,16 @@ internal fun RealtimeLineChart(
                 val x = size.width * index / 6f
                 drawLine(gridColor, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1f)
             }
-            val maxValue = max(
-                minimumScale,
-                series.flatMap { it.values }.mapNotNull { it }.maxOrNull()?.times(1.15) ?: minimumScale,
-            )
-            series.forEach { item -> drawSeries(item.values, item.color, maxValue) }
+            series.forEachIndexed { index, item ->
+                drawSeries(
+                    path = reusablePaths[index],
+                    values = item.values,
+                    sampleTimesMillis = sampleTimesMillis,
+                    chartTimeCursorMillis = chartTimeCursorMillis,
+                    color = item.color,
+                    maxValue = animatedMaxValue.value.toDouble(),
+                )
+            }
         }
         if (showDivider) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     }
@@ -156,26 +180,59 @@ private fun ChartLegend(series: List<ChartSeries>, valueSuffix: String) {
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSeries(
+    path: Path,
     values: List<Double?>,
+    sampleTimesMillis: List<Long>,
+    chartTimeCursorMillis: Double?,
     color: Color,
     maxValue: Double,
 ) {
+    path.reset()
     if (values.isEmpty()) return
-    val path = Path()
     var hasPoint = false
+    var previousSampleTimeMillis: Long? = null
     values.forEachIndexed { index, value ->
-        if (value == null) {
+        val sampleTimeMillis = sampleTimesMillis.getOrNull(index)
+        val isVisible = chartTimeCursorMillis == null ||
+            sampleTimeMillis == null ||
+            isChartSampleVisible(sampleTimeMillis, chartTimeCursorMillis)
+        if (value == null || !value.isFinite() || !isVisible) {
             hasPoint = false
+            previousSampleTimeMillis = sampleTimeMillis
             return@forEachIndexed
         }
-        val x = if (values.size == 1) size.width else size.width * index / (values.size - 1f)
+        val x = if (chartTimeCursorMillis != null && sampleTimeMillis != null) {
+            val ageMillis = chartTimeCursorMillis - sampleTimeMillis.toDouble()
+            size.width * (1.0 - ageMillis / NETWORK_CHART_WINDOW_MILLIS).toFloat()
+        } else if (values.size == 1) {
+            size.width
+        } else {
+            size.width * index / (values.size - 1f)
+        }
         val y = size.height * (1f - (value / maxValue).coerceIn(0.0, 1.0).toFloat())
-        if (hasPoint) path.lineTo(x, y) else path.moveTo(x, y)
+        val startsNewSegment = sampleTimeMillis != null &&
+            shouldBreakChartPath(previousSampleTimeMillis, sampleTimeMillis)
+        if (hasPoint && !startsNewSegment) path.lineTo(x, y) else path.moveTo(x, y)
         hasPoint = true
+        previousSampleTimeMillis = sampleTimeMillis
     }
     drawPath(path = path, color = color, style = Stroke(width = 2.dp.toPx()))
 }
 
+private fun maxVisibleChartValue(
+    series: List<ChartSeries>,
+): Double? {
+    var maximum: Double? = null
+    series.forEach { item ->
+        item.values.forEachIndexed { index, value ->
+            if (value == null || !value.isFinite()) return@forEachIndexed
+            maximum = maximum?.let { max(it, value) } ?: value
+        }
+    }
+    return maximum
+}
+
+@Immutable
 internal data class ChartSeries(
     val label: String,
     val color: Color,

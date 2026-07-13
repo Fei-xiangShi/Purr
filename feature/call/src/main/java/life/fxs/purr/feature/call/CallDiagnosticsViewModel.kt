@@ -26,28 +26,27 @@ class CallDiagnosticsViewModel @Inject constructor(
         if (history.lastOrNull()?.sampledAtMillis == sampledAtMillis) {
             return@runningFold history
         }
-        (history + NetworkGraphSample(
-            sampledAtMillis = sampledAtMillis,
-            roundTripTimeMs = transport.roundTripTimeMs,
-            jitterMs = transport.jitterMs,
-            packetLossPercent = listOfNotNull(
-                transport.uplinkPacketLossPercent,
-                transport.downlinkPacketLossPercent,
-            ).maxOrNull(),
-            uplinkBitrateKbps = transport.uplinkBitrateKbps,
-            downlinkBitrateKbps = transport.downlinkBitrateKbps,
-            estimatedUpstreamKbps = current.device.estimatedUpstreamKbps,
-            estimatedDownstreamKbps = current.device.estimatedDownstreamKbps,
-        )).takeLast(NETWORK_HISTORY_SIZE)
+        appendNetworkGraphSample(
+            history = history,
+            sample = NetworkGraphSample(
+                sampledAtMillis = sampledAtMillis,
+                roundTripTimeMs = transport.roundTripTimeMs,
+                jitterMs = transport.jitterMs,
+                packetLossPercent = listOfNotNull(
+                    transport.uplinkPacketLossPercent,
+                    transport.downlinkPacketLossPercent,
+                ).maxOrNull(),
+                uplinkBitrateKbps = transport.uplinkBitrateKbps,
+                downlinkBitrateKbps = transport.downlinkBitrateKbps,
+                estimatedUpstreamKbps = current.device.estimatedUpstreamKbps,
+                estimatedDownstreamKbps = current.device.estimatedDownstreamKbps,
+            ),
+        )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(stopTimeoutMillis = 5_000L),
         initialValue = emptyList(),
     )
-
-    private companion object {
-        const val NETWORK_HISTORY_SIZE = 150
-    }
 }
 
 data class NetworkGraphSample(
@@ -60,3 +59,21 @@ data class NetworkGraphSample(
     val estimatedUpstreamKbps: Double?,
     val estimatedDownstreamKbps: Double?,
 )
+
+internal fun appendNetworkGraphSample(
+    history: List<NetworkGraphSample>,
+    sample: NetworkGraphSample,
+): List<NetworkGraphSample> {
+    val latestTimestamp = history.lastOrNull()?.sampledAtMillis
+    if (latestTimestamp == sample.sampledAtMillis) return history
+    if (latestTimestamp != null && sample.sampledAtMillis < latestTimestamp) return listOf(sample)
+
+    val earliestVisibleTimestamp = (sample.sampledAtMillis - NETWORK_CHART_WINDOW_MILLIS)
+        .coerceAtLeast(0L)
+    return buildList {
+        history.forEach { existing ->
+            if (existing.sampledAtMillis >= earliestVisibleTimestamp) add(existing)
+        }
+        add(sample)
+    }.takeLast(NETWORK_CHART_SAMPLE_CAPACITY)
+}

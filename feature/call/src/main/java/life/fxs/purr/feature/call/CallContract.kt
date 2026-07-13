@@ -41,5 +41,6 @@ data class CallState(
 sealed interface CallEffect {
     data object RequestMicrophonePermission : CallEffect
     data object OpenAppSettings : CallEffect
+    data class NavigateHome(val callId: String) : CallEffect
     data class ShowMessage(val message: String) : CallEffect
 }

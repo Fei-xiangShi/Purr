@@ -3,6 +3,7 @@ package life.fxs.purr.feature.call
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CallEnd
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MicOff
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -18,7 +19,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.drawscope.clipRect
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -68,7 +68,9 @@ private fun MicrophoneLevelIcon(
     level: Float,
     contentDescription: String,
 ) {
-    val normalizedLevel = level.coerceIn(0f, 1f)
+    // The source is sampled at the audio display cadence; Compose interpolates it on
+    // the frame clock so the icon does not jump between sparse samples.
+    val normalizedLevel = animateAudioLevel(level)
     val microphonePainter = rememberVectorPainter(Icons.Rounded.Mic)
     Canvas(
         modifier = Modifier
@@ -93,13 +95,11 @@ private fun MicrophoneLevelIcon(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun LightIconButton(
-    label: String,
-    icon: ImageVector,
+internal fun EndCallButton(
     onClick: () -> Unit,
     enabled: Boolean,
-    containerColor: Color,
 ) {
+    val label = "结束通话"
     TooltipBox(
         positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
         tooltip = { PlainTooltip { androidx.compose.material3.Text(label) } },
@@ -110,14 +110,14 @@ internal fun LightIconButton(
             enabled = enabled,
             modifier = Modifier.size(64.dp),
             colors = IconButtonDefaults.filledIconButtonColors(
-                containerColor = containerColor,
+                containerColor = END_CALL_BUTTON_BACKGROUND,
                 contentColor = Color.White,
-                disabledContainerColor = containerColor.copy(alpha = 0.48f),
+                disabledContainerColor = END_CALL_BUTTON_BACKGROUND.copy(alpha = 0.48f),
                 disabledContentColor = Color.White.copy(alpha = 0.48f),
             ),
         ) {
             Icon(
-                imageVector = icon,
+                imageVector = Icons.Rounded.CallEnd,
                 contentDescription = label,
                 tint = Color.White,
                 modifier = Modifier.size(32.dp),
@@ -128,3 +128,4 @@ internal fun LightIconButton(
 
 private val LIGHT_ICON_BUTTON_BACKGROUND = Color(0xFF263238)
 private val MICROPHONE_LEVEL_BLUE = Color(0xFF64B5F6)
+internal val END_CALL_BUTTON_BACKGROUND = Color(0xFF7A1F35)

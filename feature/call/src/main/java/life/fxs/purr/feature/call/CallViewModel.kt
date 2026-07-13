@@ -50,13 +50,13 @@ class CallViewModel @Inject constructor(
     private var prepareJob: Job? = null
     private var connectJob: Job? = null
     private var endRequested: Boolean = false
+    private var currentCallId: String? = null
+    private var navigatedCallId: String? = null
 
     init {
         viewModelScope.launch {
-                observeCallStateUseCase().collect { session ->
-                session?.let {
-                    updateState(it)
-                }
+            observeCallStateUseCase().collect { session ->
+                if (session != null) onSessionChanged(session)
             }
         }
     }
@@ -90,9 +90,12 @@ class CallViewModel @Inject constructor(
         prepareJob?.cancel()
         connectJob?.cancel()
         endRequested = false
+        currentCallId = null
+        navigatedCallId = null
         prepareJob = viewModelScope.launch {
             val existingSession = observeCallStateUseCase().first()
             if (existingSession?.connectionState?.canAttachToExistingCall() == true) {
+                currentCallId = existingSession.callId
                 updateState(existingSession)
                 if (existingSession.connectionState == CallConnectionState.Preparing) {
                     _effects.emit(CallEffect.RequestMicrophonePermission)
@@ -108,6 +111,7 @@ class CallViewModel @Inject constructor(
             )) {
                 is AppResult.Success -> {
                     if (endRequested) return@launch
+                    currentCallId = result.value.callId
                     updateState(result.value)
                     _effects.emit(CallEffect.RequestMicrophonePermission)
                 }
@@ -176,6 +180,7 @@ class CallViewModel @Inject constructor(
                         screenState = CallScreenState.Ended,
                         isLoading = false,
                     )
+                    navigateHomeOnce(currentCallId)
                 }
                 is AppResult.Failure -> {
                     endRequested = false
@@ -184,6 +189,7 @@ class CallViewModel @Inject constructor(
                         isLoading = false,
                     )
                     emitError(result.error)
+                    navigateHomeOnce(currentCallId)
                 }
             }
         }
@@ -206,12 +212,30 @@ class CallViewModel @Inject constructor(
         _effects.emit(CallEffect.ShowMessage(error.toUserMessage()))
     }
 
+    private suspend fun onSessionChanged(session: CallSession) {
+        val isTerminal = session.connectionState.isTerminal()
+        if (!isTerminal) {
+            currentCallId = session.callId
+            updateState(session)
+            return
+        }
+
+        // A singleton repository intentionally retains the last terminal snapshot.
+        // A newly-created screen must not navigate away because of that stale snapshot.
+        if (session.callId != currentCallId) return
+        updateState(session)
+        if (!endRequested) navigateHomeOnce(session.callId)
+    }
+
+    private suspend fun navigateHomeOnce(callId: String?) {
+        callId ?: return
+        if (navigatedCallId == callId) return
+        navigatedCallId = callId
+        _effects.emit(CallEffect.NavigateHome(callId))
+    }
+
     private fun updateState(session: CallSession) {
-        val screenState = if (
-            endRequested &&
-            session.connectionState != CallConnectionState.Disconnected &&
-            session.connectionState !is CallConnectionState.Failed
-        ) {
+        val screenState = if (endRequested) {
             CallScreenState.Ending
         } else {
             session.toScreenState()
@@ -239,6 +263,7 @@ private fun CallSession.toScreenState(): CallScreenState = when (connectionState
         CallScreenState.Waiting
     }
     CallConnectionState.Reconnecting -> CallScreenState.Reconnecting
+    CallConnectionState.Terminating -> CallScreenState.Ending
     CallConnectionState.Disconnected -> CallScreenState.Ended
     is CallConnectionState.Failed -> CallScreenState.Ended
 }
@@ -248,9 +273,13 @@ private fun CallConnectionState.canAttachToExistingCall(): Boolean = when (this)
     CallConnectionState.Connecting,
     CallConnectionState.Connected,
     CallConnectionState.Reconnecting,
+    CallConnectionState.Terminating,
     -> true
     CallConnectionState.Idle,
     CallConnectionState.Disconnected,
     is CallConnectionState.Failed,
     -> false
 }
+
+private fun CallConnectionState.isTerminal(): Boolean =
+    this == CallConnectionState.Disconnected || this is CallConnectionState.Failed

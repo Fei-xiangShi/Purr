@@ -14,15 +14,16 @@ import kotlin.math.roundToInt
 
 @Singleton
 class LiveKitCallMetricsCollector @Inject constructor() {
-    fun collectAudioLevels(room: Room?): AudioLevelSample {
+    /**
+     * Remote participant levels are supplied by LiveKit speaker messages. Their update cadence is
+     * controlled by the SDK/server; the UI interpolates between these event-driven samples.
+     */
+    fun collectRemoteAudioLevel(room: Room?): RemoteAudioLevelSample {
         val remoteParticipant = room?.remoteParticipants?.values?.firstOrNull()
-        return AudioLevelSample(
-            localLevelPercent = ((room?.localParticipant?.audioLevel ?: 0f) * 100f)
+        return RemoteAudioLevelSample(
+            levelPercent = ((remoteParticipant?.audioLevel ?: 0f) * 100f)
                 .roundToInt().coerceIn(0, 100),
-            remoteLevelPercent = ((remoteParticipant?.audioLevel ?: 0f) * 100f)
-                .roundToInt().coerceIn(0, 100),
-            localSpeaking = room?.localParticipant?.isSpeaking == true,
-            remoteSpeaking = remoteParticipant?.isSpeaking == true,
+            speaking = remoteParticipant?.isSpeaking == true,
         )
     }
 
@@ -52,14 +53,9 @@ class LiveKitCallMetricsCollector @Inject constructor() {
             bytesReceived = inboundStats.sumMember("bytesReceived"),
         )
 
-        val audioLevels = collectAudioLevels(room)
         return LiveKitMetricsResult(
             remoteConnected = remoteParticipant != null,
             audio = AudioQualityMetrics(
-                localLevelPercent = audioLevels.localLevelPercent,
-                remoteLevelPercent = audioLevels.remoteLevelPercent,
-                localSpeaking = audioLevels.localSpeaking,
-                remoteSpeaking = audioLevels.remoteSpeaking,
                 sendCodec = localReport.codecFor(outboundStats.firstOrNull()),
                 receiveCodec = remoteReport.codecFor(inboundStats.firstOrNull()),
             ),
@@ -94,11 +90,9 @@ data class LiveKitMetricsResult(
     val sample: RtpByteSample,
 )
 
-data class AudioLevelSample(
-    val localLevelPercent: Int,
-    val remoteLevelPercent: Int,
-    val localSpeaking: Boolean,
-    val remoteSpeaking: Boolean,
+data class RemoteAudioLevelSample(
+    val levelPercent: Int,
+    val speaking: Boolean,
 )
 
 data class RtpByteSample(

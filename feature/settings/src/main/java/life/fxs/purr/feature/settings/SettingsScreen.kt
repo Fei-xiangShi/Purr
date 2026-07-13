@@ -1,13 +1,17 @@
 package life.fxs.purr.feature.settings
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material3.CircularProgressIndicator
@@ -19,29 +23,41 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.ui.Modifier
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
-import life.fxs.purr.core.designsystem.component.PurrPanel
 import life.fxs.purr.core.designsystem.component.PurrAvatar
+import life.fxs.purr.core.designsystem.component.PurrPanel
 import life.fxs.purr.core.designsystem.component.PurrPrimaryButton
 import life.fxs.purr.core.designsystem.component.PurrScreen
-import life.fxs.purr.core.designsystem.component.PurrSectionTitle
 import life.fxs.purr.core.designsystem.component.PurrSecondaryButton
+import life.fxs.purr.core.designsystem.component.PurrSectionTitle
+import life.fxs.purr.feature.settings.avatar.AvatarCropExporter
+import life.fxs.purr.feature.settings.avatar.AvatarImageDecoder
+import life.fxs.purr.feature.settings.avatar.AvatarImageFailure
+import life.fxs.purr.feature.settings.avatar.AvatarImageProcessingException
+import life.fxs.purr.feature.settings.avatar.DecodedAvatarImage
 
 @Composable
 fun SettingsScreenRoute(
@@ -51,18 +67,49 @@ fun SettingsScreenRoute(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            val selected = withContext(Dispatchers.IO) { context.readAvatar(uri) }
-            withContext(Dispatchers.Main.immediate) {
-                if (selected == null) {
-                    Toast.makeText(context, "请选择不超过 10 MB 的 JPEG、PNG 或 WebP 图片", Toast.LENGTH_SHORT).show()
-                } else {
-                    viewModel.onIntent(SettingsIntent.AvatarSelected(selected.contentType, selected.bytes))
-                }
-            }
+    val imageDecoder = remember(context.applicationContext) {
+        AvatarImageDecoder(context.applicationContext.contentResolver)
+    }
+    val cropExporter = remember { AvatarCropExporter() }
+    var selectedAvatarUri by rememberSaveable { mutableStateOf<String?>(null) }
+    var decodedAvatar by remember { mutableStateOf<DecodedAvatarImage?>(null) }
+    var isDecodingAvatar by remember { mutableStateOf(false) }
+    var isExportingAvatar by remember { mutableStateOf(false) }
+    var avatarProcessingError by rememberSaveable { mutableStateOf<String?>(null) }
+
+    val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) {
+            avatarProcessingError = null
+            selectedAvatarUri = uri.toString()
+        }
+    }
+
+    LaunchedEffect(selectedAvatarUri, imageDecoder) {
+        val uri = selectedAvatarUri?.let(Uri::parse) ?: return@LaunchedEffect
+        isDecodingAvatar = true
+        try {
+            decodedAvatar = withContext(Dispatchers.IO) { imageDecoder.decode(uri) }
+            avatarProcessingError = null
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: AvatarImageProcessingException) {
+            selectedAvatarUri = null
+            avatarProcessingError = exception.failure.userMessage()
+        } catch (_: RuntimeException) {
+            selectedAvatarUri = null
+            avatarProcessingError = GENERIC_AVATAR_ERROR
+        } finally {
+            isDecodingAvatar = false
+        }
+    }
+
+    val exportingState by rememberUpdatedState(isExportingAvatar)
+    androidx.compose.runtime.DisposableEffect(decodedAvatar?.bitmap) {
+        val decodedImage = decodedAvatar
+        onDispose {
+            // A non-cooperative bitmap export may still be running after composition disposal.
+            // Leave that bitmap for GC in that case; recycling it here could race the exporter.
+            if (!exportingState) decodedImage?.close()
         }
     }
 
@@ -75,11 +122,59 @@ fun SettingsScreenRoute(
         }
     }
 
-    SettingsScreen(
+    SettingsNavHost(
         state = state,
         onBack = onBack,
         onIntent = viewModel::onIntent,
-        onPickAvatar = { avatarPicker.launch("image/*") },
+        onPickAvatar = {
+            avatarProcessingError = null
+            avatarPicker.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+            )
+        },
+        isPreparingAvatar = isDecodingAvatar,
+        avatarProcessingError = avatarProcessingError,
+        decodedAvatar = decodedAvatar,
+        hasPendingAvatarSelection = selectedAvatarUri != null,
+        isExportingAvatar = isExportingAvatar,
+        onCancelPendingAvatar = {
+            selectedAvatarUri = null
+            avatarProcessingError = null
+        },
+        onCropDisposed = { image ->
+            if (decodedAvatar === image) {
+                decodedAvatar = null
+                selectedAvatarUri = null
+                avatarProcessingError = null
+            }
+        },
+        onCropConfirm = { image, cropArea ->
+            if (isExportingAvatar) return@SettingsNavHost false
+            isExportingAvatar = true
+            try {
+                val payload = withContext(Dispatchers.Default) {
+                    cropExporter.export(image.bitmap, cropArea)
+                }
+                avatarProcessingError = null
+                viewModel.onIntent(
+                    SettingsIntent.AvatarCropConfirmed(
+                        contentType = payload.contentType,
+                        bytes = payload.bytes,
+                    ),
+                )
+                true
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: AvatarImageProcessingException) {
+                avatarProcessingError = exception.failure.userMessage()
+                false
+            } catch (_: RuntimeException) {
+                avatarProcessingError = GENERIC_AVATAR_ERROR
+                false
+            } finally {
+                isExportingAvatar = false
+            }
+        },
     )
 }
 
@@ -89,6 +184,8 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onIntent: (SettingsIntent) -> Unit,
     onPickAvatar: () -> Unit,
+    isPreparingAvatar: Boolean = false,
+    avatarProcessingError: String? = null,
 ) {
     PurrScreen {
         PurrSectionTitle(
@@ -103,10 +200,12 @@ fun SettingsScreen(
                 modifier = Modifier
                     .align(Alignment.CenterHorizontally)
                     .clickable(
-                        enabled = state.self != null && !state.isBusy,
+                        enabled = state.self != null && !state.isBusy && !isPreparingAvatar,
                         role = Role.Button,
+                        onClickLabel = "选择新头像",
                         onClick = onPickAvatar,
-                    ),
+                    )
+                    .semantics { contentDescription = "更换账户头像" },
             ) {
                 PurrAvatar(
                     avatarUrl = state.self?.avatarUrl,
@@ -122,7 +221,7 @@ fun SettingsScreen(
                     contentColor = MaterialTheme.colorScheme.onPrimary,
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        if (state.isUploadingAvatar) {
+                        if (state.isUploadingAvatar || isPreparingAvatar) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(20.dp),
                                 strokeWidth = 2.dp,
@@ -137,6 +236,17 @@ fun SettingsScreen(
                         }
                     }
                 }
+            }
+            (avatarProcessingError ?: state.avatarError)?.let { message ->
+                Text(
+                    text = message,
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .semantics { liveRegion = LiveRegionMode.Polite },
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                )
             }
             OutlinedTextField(
                 value = state.displayName,
@@ -198,38 +308,15 @@ fun SettingsScreen(
     }
 }
 
-private data class AvatarUpload(val contentType: String, val bytes: ByteArray)
-
-private fun android.content.Context.readAvatar(uri: android.net.Uri): AvatarUpload? {
-    val bytes = contentResolver.openInputStream(uri)?.use { input ->
-        val output = java.io.ByteArrayOutputStream(8 * 1024)
-        val buffer = ByteArray(8 * 1024)
-        var total = 0
-        while (total <= MAX_AVATAR_BYTES) {
-            val read = input.read(buffer, 0, minOf(buffer.size, MAX_AVATAR_BYTES + 1 - total))
-            if (read < 0) break
-            if (read == 0) continue
-            output.write(buffer, 0, read)
-            total += read
-        }
-        output.toByteArray()
-    } ?: return null
-    if (bytes.isEmpty() || bytes.size > MAX_AVATAR_BYTES) return null
-    val contentType = when {
-        bytes.startsWith(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte())) -> "image/jpeg"
-        bytes.startsWith(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)) -> "image/png"
-        bytes.size >= 12 &&
-            bytes.copyOfRange(0, 4).contentEquals("RIFF".toByteArray()) &&
-            bytes.copyOfRange(8, 12).contentEquals("WEBP".toByteArray()) -> "image/webp"
-        else -> return null
-    }
-    return AvatarUpload(contentType, bytes)
+private fun AvatarImageFailure.userMessage(): String = when (this) {
+    AvatarImageFailure.CANNOT_READ -> "无法读取所选图片，请重新选择"
+    AvatarImageFailure.INVALID_IMAGE -> "请选择有效的图片文件"
+    AvatarImageFailure.SOURCE_TOO_LARGE -> "图片过大，请选择较小的图片"
+    AvatarImageFailure.OUTPUT_TOO_LARGE -> "裁剪后的头像文件过大"
+    AvatarImageFailure.ENCODING_FAILED -> GENERIC_AVATAR_ERROR
 }
 
-private fun ByteArray.startsWith(prefix: ByteArray): Boolean =
-    size >= prefix.size && copyOfRange(0, prefix.size).contentEquals(prefix)
-
-private const val MAX_AVATAR_BYTES = 10 * 1024 * 1024
+private const val GENERIC_AVATAR_ERROR = "头像处理失败，请重试"
 
 @Composable
 private fun PasswordChangePanel(

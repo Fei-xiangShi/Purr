@@ -16,7 +16,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import life.fxs.purr.core.common.AppResult
+import life.fxs.purr.core.model.PairBond
 import life.fxs.purr.core.presentation.toUserMessage
+import life.fxs.purr.domain.account.model.AuthSession
+import life.fxs.purr.domain.account.model.RealtimeState
 import life.fxs.purr.domain.account.usecase.ObserveAuthSessionUseCase
 import life.fxs.purr.domain.account.usecase.ObservePairBondUseCase
 import life.fxs.purr.domain.account.usecase.RefreshPairBondUseCase
@@ -26,6 +29,9 @@ import life.fxs.purr.domain.account.usecase.ObserveRealtimeStateUseCase
 import life.fxs.purr.domain.account.usecase.RefreshActiveCallUseCase
 import life.fxs.purr.domain.account.usecase.StartRealtimeUpdatesUseCase
 import life.fxs.purr.domain.account.usecase.StopRealtimeUpdatesUseCase
+import life.fxs.purr.domain.call.model.CallConnectionState
+import life.fxs.purr.domain.call.model.CallSession
+import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
@@ -33,6 +39,7 @@ class HomeViewModel @Inject constructor(
     observePairBondUseCase: ObservePairBondUseCase,
     private val refreshPairBondUseCase: RefreshPairBondUseCase,
     observeRealtimeStateUseCase: ObserveRealtimeStateUseCase,
+    observeCallStateUseCase: ObserveCallStateUseCase,
     private val startRealtimeUpdatesUseCase: StartRealtimeUpdatesUseCase,
     private val stopRealtimeUpdatesUseCase: StopRealtimeUpdatesUseCase,
     private val refreshActiveCallUseCase: RefreshActiveCallUseCase,
@@ -63,6 +70,13 @@ class HomeViewModel @Inject constructor(
             initialValue = life.fxs.purr.domain.account.model.RealtimeState(),
         )
 
+    private val callSessionState = observeCallStateUseCase()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = null,
+        )
+
     private val _uiState = MutableStateFlow(HomeState(isLoading = true))
     val uiState = _uiState.asStateFlow()
 
@@ -72,9 +86,15 @@ class HomeViewModel @Inject constructor(
             refreshActiveCallUseCase()
         }
         viewModelScope.launch {
-            combine(authSessionState, pairBondState, realtimeState) { session, bond, realtime ->
-                Triple(session, bond, realtime)
-            }.collect { (session, bond, realtime) ->
+            combine(
+                authSessionState,
+                pairBondState,
+                realtimeState,
+                callSessionState,
+            ) { session, bond, realtime, callSession ->
+                HomeSources(session, bond, realtime, callSession.activePairIdOrNull())
+            }.collect { sources ->
+                val (session, bond, realtime, activeCallPairId) = sources
                 if (session == null) {
                     stopRealtimeUpdatesUseCase()
                 } else {
@@ -84,6 +104,7 @@ class HomeViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(
                     self = session?.self,
                     pairId = bond?.pairId,
+                    activeCallPairId = activeCallPairId,
                     partner = bond?.partner?.copy(
                         isOnline = partnerOnline,
                         isCallable = partnerOnline,
@@ -113,9 +134,12 @@ class HomeViewModel @Inject constructor(
 
             HomeIntent.StartCall -> {
                 viewModelScope.launch {
-                    val pairId = _uiState.value.pairId
-                    if (_uiState.value.isCallable && pairId != null) {
-                        _effects.emit(HomeEffect.NavigateToCall(pairId))
+                    val state = _uiState.value
+                    val activeCallPairId = state.activeCallPairId
+                    if (activeCallPairId != null) {
+                        _effects.emit(HomeEffect.NavigateToCall(activeCallPairId))
+                    } else if (state.isCallable && state.pairId != null) {
+                        _effects.emit(HomeEffect.NavigateToCall(state.pairId))
                     } else {
                         _effects.emit(HomeEffect.ShowError("当前无法发起通话"))
                     }
@@ -166,3 +190,24 @@ class HomeViewModel @Inject constructor(
         const val STATUS_RECOVERY_INTERVAL_MILLIS = 10_000L
     }
 }
+
+private fun CallSession?.activePairIdOrNull(): String? = when (this?.connectionState) {
+    CallConnectionState.Preparing,
+    CallConnectionState.Connecting,
+    CallConnectionState.Connected,
+    CallConnectionState.Reconnecting,
+    CallConnectionState.Terminating,
+    -> pairId
+    CallConnectionState.Idle,
+    CallConnectionState.Disconnected,
+    is CallConnectionState.Failed,
+    null,
+    -> null
+}
+
+private data class HomeSources(
+    val session: AuthSession?,
+    val bond: PairBond?,
+    val realtime: RealtimeState,
+    val activeCallPairId: String?,
+)

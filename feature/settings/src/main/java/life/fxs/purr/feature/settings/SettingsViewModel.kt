@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -13,6 +14,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import life.fxs.purr.core.common.AppResult
+import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.presentation.toUserMessage
 import life.fxs.purr.domain.account.usecase.ChangePasswordUseCase
 import life.fxs.purr.domain.account.usecase.LogoutUseCase
@@ -66,7 +68,7 @@ class SettingsViewModel @Inject constructor(
                 copy(confirmPassword = intent.value, passwordError = null)
             }
             SettingsIntent.SubmitPasswordChange -> changePassword()
-            is SettingsIntent.AvatarSelected -> uploadAvatar(intent.contentType, intent.bytes)
+            is SettingsIntent.AvatarCropConfirmed -> uploadAvatar(intent.contentType, intent.bytes)
             is SettingsIntent.DisplayNameChanged -> updateState {
                 copy(displayName = intent.value, displayNameError = null)
             }
@@ -113,19 +115,44 @@ class SettingsViewModel @Inject constructor(
 
     private fun uploadAvatar(contentType: String, bytes: ByteArray) {
         if (_state.value.isBusy) return
+        val uploadBytes = bytes.copyOf()
+        updateState { copy(isUploadingAvatar = true, avatarError = null) }
         viewModelScope.launch {
-            updateState { copy(isUploadingAvatar = true) }
-            when (val result = uploadAvatarUseCase(contentType, bytes)) {
-                is AppResult.Success -> {
-                    updateState { copy(self = result.value, isUploadingAvatar = false) }
-                    _effects.emit(SettingsEffect.ShowMessage("头像上传成功"))
-                }
-                is AppResult.Failure -> {
-                    updateState {
-                        copy(isUploadingAvatar = false)
+            try {
+                when (val result = uploadAvatarUseCase(contentType, uploadBytes)) {
+                    is AppResult.Success -> {
+                        updateState {
+                            copy(
+                                self = result.value,
+                                isUploadingAvatar = false,
+                                avatarError = null,
+                            )
+                        }
+                        _effects.emit(SettingsEffect.ShowMessage("头像上传成功"))
                     }
-                    _effects.emit(SettingsEffect.ShowMessage(result.error.toUserMessage()))
+                    is AppResult.Failure -> {
+                        val message = result.error.toUserMessage()
+                        updateState {
+                            copy(
+                                isUploadingAvatar = false,
+                                avatarError = message,
+                            )
+                        }
+                        _effects.emit(SettingsEffect.ShowMessage(message))
+                    }
                 }
+            } catch (cancellation: CancellationException) {
+                updateState { copy(isUploadingAvatar = false) }
+                throw cancellation
+            } catch (exception: Exception) {
+                val message = AppError.Unexpected(exception).toUserMessage()
+                updateState {
+                    copy(
+                        isUploadingAvatar = false,
+                        avatarError = message,
+                    )
+                }
+                _effects.emit(SettingsEffect.ShowMessage(message))
             }
         }
     }

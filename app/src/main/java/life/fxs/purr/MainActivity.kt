@@ -21,6 +21,8 @@ import kotlinx.coroutines.launch
 import life.fxs.purr.core.designsystem.theme.PurrTheme
 import life.fxs.purr.domain.account.model.IncomingCall
 import life.fxs.purr.domain.account.usecase.ObserveRealtimeStateUseCase
+import life.fxs.purr.navigation.CallNavigationRequest
+import life.fxs.purr.navigation.CallNavigationRequestStore
 import life.fxs.purr.navigation.PurrNavHost
 import life.fxs.purr.service.IncomingCallNotificationManager
 
@@ -32,14 +34,15 @@ class MainActivity : ComponentActivity() {
     private lateinit var incomingCallNotificationManager: IncomingCallNotificationManager
     private var incomingCall: IncomingCall? = null
     private var isInForeground = false
-    private var pendingCallPairId by mutableStateOf<String?>(null)
+    private val callNavigationRequestStore = CallNavigationRequestStore()
+    private var pendingCallRequest by mutableStateOf<CallNavigationRequest?>(null)
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) {}
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        pendingCallPairId = intent.getStringExtra(EXTRA_CALL_PAIR_ID)
+        updatePendingCallRequest(intent)
         incomingCallNotificationManager = IncomingCallNotificationManager(this)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.CREATED) {
@@ -55,7 +58,11 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             PurrTheme {
-                PurrNavHost(initialCallPairId = pendingCallPairId)
+                PurrNavHost(
+                    initialCallPairId = pendingCallRequest?.pairId,
+                    initialCallRequestId = pendingCallRequest?.requestId,
+                    onCallRequestConsumed = ::consumeCallRequest,
+                )
             }
         }
         if (
@@ -71,7 +78,20 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        pendingCallPairId = intent.getStringExtra(EXTRA_CALL_PAIR_ID)
+        updatePendingCallRequest(intent)
+    }
+
+    private fun updatePendingCallRequest(intent: Intent) {
+        pendingCallRequest = callNavigationRequestStore.submit(
+            intent.getStringExtra(EXTRA_CALL_PAIR_ID),
+        )
+    }
+
+    private fun consumeCallRequest(requestId: Long) {
+        if (callNavigationRequestStore.consume(requestId)) {
+            setIntent(Intent(intent).apply { removeExtra(EXTRA_CALL_PAIR_ID) })
+        }
+        pendingCallRequest = callNavigationRequestStore.pending
     }
 
     companion object {

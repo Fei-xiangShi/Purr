@@ -6,6 +6,9 @@ import io.livekit.android.events.EventListenable
 import io.livekit.android.events.RoomEvent
 import io.livekit.android.room.Room
 import io.livekit.android.room.participant.LocalParticipant
+import io.livekit.android.room.track.LocalAudioTrack
+import io.livekit.android.room.track.LocalTrackPublication
+import io.livekit.android.room.track.Track
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -70,6 +73,8 @@ class RealLiveKitCallDataSourceTest {
         assertThat(observed.filterIsInstance<MediaCallEvent.Disconnected>()).hasSize(1)
         assertThat(roomStateProvider.room.value).isNull()
         assertThat(audioLevelProvider.localAudioLevel.value).isEqualTo(0f)
+        verify(exactly = 1) { harness.localAudioTrack.addSink(audioLevelProvider) }
+        verify(exactly = 1) { harness.localAudioTrack.removeSink(audioLevelProvider) }
         verify(exactly = 1) { harness.room.disconnect() }
         verify(exactly = 1) { harness.room.release() }
 
@@ -83,6 +88,42 @@ class RealLiveKitCallDataSourceTest {
         runCurrent()
         verify(exactly = 1) { harness.room.disconnect() }
         verify(exactly = 1) { harness.room.release() }
+        observer.cancel()
+    }
+
+    @Test
+    fun `muting detaches pcm sink and unmuting reattaches it`() = runTest(dispatcher) {
+        val harness = roomHarness()
+        every { roomFactory.create() } returns harness.room
+        val source = source()
+
+        source.execute(connectCommand())
+        source.execute(MediaCallCommand.SetMuted(callId = "call-1", muted = true))
+
+        assertThat(audioLevelProvider.localAudioLevel.value).isEqualTo(0f)
+        verify(exactly = 1) { harness.localAudioTrack.removeSink(audioLevelProvider) }
+
+        source.execute(MediaCallCommand.SetMuted(callId = "call-1", muted = false))
+
+        verify(exactly = 2) { harness.localAudioTrack.addSink(audioLevelProvider) }
+    }
+
+    @Test
+    fun `pcm meter failure cannot fail the media call`() = runTest(dispatcher) {
+        val harness = roomHarness()
+        every { roomFactory.create() } returns harness.room
+        every { harness.localAudioTrack.addSink(audioLevelProvider) } throws
+            IllegalStateException("meter unavailable")
+        val source = source()
+        val observed = mutableListOf<MediaCallEvent>()
+        val observer = launch { source.events.toList(observed) }
+        runCurrent()
+
+        val result = runCatching { source.execute(connectCommand()) }
+        runCurrent()
+
+        assertThat(result.exceptionOrNull()).isNull()
+        assertThat(observed.filterIsInstance<MediaCallEvent.Connected>()).hasSize(1)
         observer.cancel()
     }
 
@@ -195,12 +236,15 @@ class RealLiveKitCallDataSourceTest {
         val eventListenable = mockk<EventListenable<RoomEvent>>()
         val room = mockk<Room>()
         val localParticipant = mockk<LocalParticipant>()
+        val microphonePublication = mockk<LocalTrackPublication>()
+        val localAudioTrack = mockk<LocalAudioTrack>(relaxed = true)
         every { eventListenable.events } returns events
         every { room.events } returns eventListenable
         every { room.localParticipant } returns localParticipant
         every { room.remoteParticipants } returns emptyMap()
         every { localParticipant.identity } returns null
-        every { localParticipant.audioLevel } returns 0.25f
+        every { localParticipant.getTrackPublication(Track.Source.MICROPHONE) } returns microphonePublication
+        every { microphonePublication.track } returns localAudioTrack
         coEvery { localParticipant.setMicrophoneEnabled(any()) } coAnswers {
             connectStarted?.complete(Unit)
             allowConnect?.await()
@@ -209,11 +253,12 @@ class RealLiveKitCallDataSourceTest {
         coEvery { room.connect(any(), any(), any()) } returns null
         every { room.disconnect() } returns Unit
         every { room.release() } returns Unit
-        return RoomHarness(room, events)
+        return RoomHarness(room, events, localAudioTrack)
     }
 }
 
 private data class RoomHarness(
     val room: Room,
     val events: MutableSharedFlow<RoomEvent>,
+    val localAudioTrack: LocalAudioTrack,
 )

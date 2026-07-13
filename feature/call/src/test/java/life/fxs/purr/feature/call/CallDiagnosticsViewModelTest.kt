@@ -119,10 +119,39 @@ class CallDiagnosticsViewModelTest {
         }
     }
 
+    @Test
+    fun `network history prunes samples outside timestamp window`() {
+        val history = listOf(graphSampleAt(1_000L), graphSampleAt(2_000L))
+
+        val updated = appendNetworkGraphSample(history, graphSampleAt(8_501L))
+
+        assertThat(updated.map { it.sampledAtMillis }).containsExactly(2_000L, 8_501L).inOrder()
+    }
+
+    @Test
+    fun `network history resets when monotonic timestamps regress`() {
+        val replacement = graphSampleAt(100L)
+
+        val updated = appendNetworkGraphSample(listOf(graphSampleAt(1_000L)), replacement)
+
+        assertThat(updated).containsExactly(replacement)
+    }
+
     private fun metricsAt(sampledAtMillis: Long, roundTripTimeMs: Double) = CallQualityMetrics(
         transport = TransportQualityMetrics(
             sampledAtMillis = sampledAtMillis,
             roundTripTimeMs = roundTripTimeMs,
         ),
+    )
+
+    private fun graphSampleAt(sampledAtMillis: Long) = NetworkGraphSample(
+        sampledAtMillis = sampledAtMillis,
+        roundTripTimeMs = null,
+        jitterMs = null,
+        packetLossPercent = null,
+        uplinkBitrateKbps = null,
+        downlinkBitrateKbps = null,
+        estimatedUpstreamKbps = null,
+        estimatedDownstreamKbps = null,
     )
 }

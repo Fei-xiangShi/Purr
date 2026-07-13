@@ -141,9 +141,13 @@ fun HomeScreen(
 
         PurrPanel(title = "操作") {
             PurrPrimaryButton(
-                text = if (state.isCallable) "发起通话" else "暂不可通话",
+                text = when {
+                    state.hasActiveCall -> "回到通话"
+                    state.isCallable -> "发起通话"
+                    else -> "暂不可通话"
+                },
                 onClick = onStartCall,
-                enabled = !state.isLoading && state.isCallable,
+                enabled = state.hasActiveCall || (!state.isLoading && state.isCallable),
             )
             PurrSecondaryButton(
                 text = if (state.isLoading) "刷新中..." else "刷新状态",

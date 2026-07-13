@@ -54,6 +54,9 @@ class CallRepositoryImpl @Inject constructor(
     private val operationMutex = Mutex()
     private var mediaConnection: CallMediaConnection? = null
     private var mediaGeneration: Long? = null
+    private var operationId: Long = 0L
+    private var prepareOperation: PrepareOperation? = null
+    private var connectOperation: ConnectOperation? = null
     private var disconnectOperation: DisconnectOperation? = null
 
     init {
@@ -69,36 +72,61 @@ class CallRepositoryImpl @Inject constructor(
         }
         repositoryScope.launch {
             callRuntimeController.mediaEvents.collect { mediaEvent ->
-                operationMutex.withLock {
+                val terminalState = operationMutex.withLock {
                     val current = sessionState.value
                     // A delayed event from a previous media generation must not mutate a new call.
-                    if (current == null || current.callId != mediaEvent.callId) return@withLock
+                    if (current == null || current.callId != mediaEvent.callId) return@withLock null
                     val expectedGeneration = mediaGeneration
                     if (expectedGeneration != null && expectedGeneration != mediaEvent.generation) {
-                        return@withLock
+                        return@withLock null
+                    }
+                    if (
+                        current.connectionState == CallConnectionState.Terminating &&
+                        mediaEvent !is MediaCallEvent.Disconnected &&
+                        mediaEvent !is MediaCallEvent.Failed
+                    ) {
+                        return@withLock null
                     }
                     if (mediaEvent is MediaCallEvent.Connected) {
                         mediaGeneration = mediaEvent.generation
                     }
-                    var synchronizedSession = callMediaEventReducer.reduce(current, mediaEvent)
-                        ?: return@withLock
                     if (
                         mediaEvent is MediaCallEvent.Disconnected ||
                         mediaEvent is MediaCallEvent.Failed
                     ) {
+                        if (current.connectionState.isTerminal() ||
+                            current.connectionState == CallConnectionState.Terminating
+                        ) {
+                            return@withLock null
+                        }
                         mediaConnection = null
                         mediaGeneration = null
                         callStatusSynchronizer.stop()
-                        runCatching { callRuntimeController.releaseResources() }
-                            .exceptionOrNull()
-                            ?.let { cleanupFailure ->
-                                synchronizedSession = synchronizedSession.copy(
-                                    connectionState = CallConnectionState.Failed(cleanupFailure.message),
-                                )
-                            }
+                        sessionState.emit(
+                            callUiSnapshotAssembler.assemble(
+                                current.copy(
+                                    connectionState = CallConnectionState.Terminating,
+                                    localAudioState = LocalAudioState.Disabled,
+                                    uiSnapshot = current.uiSnapshot.copy(remoteParticipantConnected = false),
+                                ),
+                            ),
+                        )
+                        return@withLock when (mediaEvent) {
+                            is MediaCallEvent.Failed -> CallConnectionState.Failed(mediaEvent.reason)
+                            else -> CallConnectionState.Disconnected
+                        }
                     }
 
+                    val synchronizedSession = callMediaEventReducer.reduce(current, mediaEvent)
+                        ?: return@withLock null
                     sessionState.emit(callUiSnapshotAssembler.assemble(synchronizedSession))
+                    null
+                }
+                if (terminalState != null) {
+                    terminateCall(
+                        expectedCallId = mediaEvent.callId,
+                        terminalState = terminalState,
+                    )
                 }
             }
         }
@@ -106,25 +134,54 @@ class CallRepositoryImpl @Inject constructor(
 
     override fun observeCallSession(): Flow<CallSession?> = sessionState.asStateFlow()
 
-    override suspend fun prepareCall(params: PrepareCallParams): AppResult<CallSession> = operationMutex.withLock {
-        if (disconnectOperation != null) {
-            return@withLock AppResult.Failure(
-                AppError.Validation("The previous call is still being cleaned up"),
-            )
+    override suspend fun prepareCall(params: PrepareCallParams): AppResult<CallSession> {
+        var immediateResult: AppResult<CallSession>? = null
+        val operation = operationMutex.withLock {
+            val inFlight = prepareOperation
+            if (inFlight != null) {
+                if (inFlight.params == params) return@withLock inFlight.deferred
+                immediateResult = AppResult.Failure(AppError.Validation("A different call is being prepared"))
+                return@withLock null
+            }
+            if (disconnectOperation != null) {
+                immediateResult = AppResult.Failure(
+                    AppError.Validation("The previous call is still being cleaned up"),
+                )
+                return@withLock null
+            }
+            val existing = sessionState.value
+            if (existing != null && !existing.connectionState.isTerminal()) {
+                immediateResult = AppResult.Failure(AppError.Validation("A call is already in progress"))
+                return@withLock null
+            }
+
+            val id = ++operationId
+            val deferred = repositoryScope.async(start = CoroutineStart.LAZY) {
+                performPrepareCall(id, params)
+            }
+            prepareOperation = PrepareOperation(id, params, deferred)
+            deferred
         }
-        val existing = sessionState.value
-        if (existing != null && !existing.connectionState.isTerminal()) {
-            return@withLock AppResult.Failure(
-                AppError.Validation("A call is already in progress"),
-            )
-        }
-        appResult {
+
+        immediateResult?.let { return it }
+        val activeOperation = requireNotNull(operation)
+        activeOperation.start()
+        return activeOperation.await()
+    }
+
+    private suspend fun performPrepareCall(
+        id: Long,
+        params: PrepareCallParams,
+    ): AppResult<CallSession> {
+        var createdCallId: String? = null
+        return try {
             val response = api.createSession(
                 SessionRequestDto(
                     pairId = params.pairId,
                     recordingConsent = params.recordingConsent,
                 ),
             )
+            createdCallId = response.callId
             val callStatus = callStatusRemoteDataSource.getStatus(response.callId)
             val session = callUiSnapshotAssembler.assemble(
                 CallSession(
@@ -139,60 +196,138 @@ class CallRepositoryImpl @Inject constructor(
                     uiSnapshot = CallUiSnapshot(),
                 ),
             )
-            mediaConnection = CallMediaConnection(
-                wsUrl = response.wsUrl,
-                accessToken = response.token,
-            )
-            mediaGeneration = null
-            sessionState.emit(session)
+            operationMutex.withLock {
+                mediaConnection = CallMediaConnection(
+                    wsUrl = response.wsUrl,
+                    accessToken = response.token,
+                )
+                mediaGeneration = null
+                sessionState.emit(session)
+            }
             startCallStatusSync(session.callId)
-            session
+            AppResult.Success(session)
+        } catch (throwable: Throwable) {
+            if (throwable is CancellationException) throw throwable
+            createdCallId?.let { bestEffortEndCall(it) }
+            AppResult.Failure(throwable.asAppError())
+        } finally {
+            operationMutex.withLock {
+                if (prepareOperation?.id == id) prepareOperation = null
+            }
         }
     }
 
-    override suspend fun connectCall(): AppResult<Unit> = operationMutex.withLock {
-        val session = sessionState.value
-            ?: return@withLock AppResult.Failure(AppError.Validation("No prepared call session"))
-        if (session.connectionState != CallConnectionState.Preparing) {
-            return@withLock AppResult.Failure(AppError.Validation("Call session is no longer connectable"))
+    override suspend fun connectCall(): AppResult<Unit> {
+        var immediateResult: AppResult<Unit>? = null
+        val operation = operationMutex.withLock {
+            val session = sessionState.value
+            val inFlight = connectOperation
+            if (inFlight != null) {
+                if (session?.callId == inFlight.callId) return@withLock inFlight.deferred
+                immediateResult = AppResult.Failure(AppError.Validation("A different call is connecting"))
+                return@withLock null
+            }
+            if (disconnectOperation != null) {
+                immediateResult = AppResult.Failure(AppError.Validation("Call termination is in progress"))
+                return@withLock null
+            }
+            if (session == null) {
+                immediateResult = AppResult.Failure(AppError.Validation("No prepared call session"))
+                return@withLock null
+            }
+            if (session.connectionState != CallConnectionState.Preparing) {
+                immediateResult = AppResult.Failure(AppError.Validation("Call session is no longer connectable"))
+                return@withLock null
+            }
+            val connection = mediaConnection
+            if (connection == null) {
+                immediateResult = AppResult.Failure(AppError.Validation("Call media credentials are unavailable"))
+                return@withLock null
+            }
+
+            val id = ++operationId
+            val deferred = repositoryScope.async(start = CoroutineStart.LAZY) {
+                performConnectCall(id, session, connection)
+            }
+            connectOperation = ConnectOperation(id, session.callId, deferred)
+            deferred
         }
-        val connection = mediaConnection
-            ?: return@withLock AppResult.Failure(AppError.Validation("Call media credentials are unavailable"))
-        appResult(
-            onFailure = { throwable ->
-                mediaConnection = null
-                callStatusSynchronizer.stop()
-                bestEffortEndCall(session.callId)
-                runCatching { callRuntimeController.releaseResources() }
-                    .onFailure(throwable::addSuppressed)
-                val failedSession = callUiSnapshotAssembler.assemble(
-                    session.copy(
-                        connectionState = CallConnectionState.Failed(throwable.message),
-                        localAudioState = LocalAudioState.Error(throwable.message),
+
+        immediateResult?.let { return it }
+        val activeOperation = requireNotNull(operation)
+        activeOperation.start()
+        return activeOperation.await()
+    }
+
+    private suspend fun performConnectCall(
+        id: Long,
+        session: CallSession,
+        connection: CallMediaConnection,
+    ): AppResult<Unit> {
+        return try {
+            val canConnect = operationMutex.withLock {
+                val current = sessionState.value
+                if (current?.callId != session.callId ||
+                    current.connectionState != CallConnectionState.Preparing
+                ) {
+                    false
+                } else {
+                    sessionState.emit(
+                        callUiSnapshotAssembler.assemble(
+                            current.copy(
+                                connectionState = CallConnectionState.Connecting,
+                                localAudioState = LocalAudioState.Enabling,
+                            ),
+                        ),
+                    )
+                    true
+                }
+            }
+            if (!canConnect) {
+                AppResult.Failure(AppError.Validation("Call session is no longer connectable"))
+            } else {
+                callRuntimeController.execute(
+                    MediaCallCommand.Connect(
+                        callId = session.callId,
+                        pairId = session.pairId,
+                        localIdentity = session.participantIdentity.local,
+                        connection = connection,
                     ),
                 )
-                sessionState.emit(failedSession)
-            },
-        ) {
-            val connectingSession = callUiSnapshotAssembler.assemble(
-                session.copy(
-                    connectionState = CallConnectionState.Connecting,
-                    localAudioState = LocalAudioState.Enabling,
-                ),
+                AppResult.Success(Unit)
+            }
+        } catch (throwable: Throwable) {
+            if (throwable is CancellationException) throw throwable
+            terminateCall(
+                expectedCallId = session.callId,
+                terminalState = CallConnectionState.Failed(throwable.message),
             )
-            sessionState.emit(connectingSession)
-            callRuntimeController.execute(
-                MediaCallCommand.Connect(
-                    callId = connectingSession.callId,
-                    pairId = connectingSession.pairId,
-                    localIdentity = connectingSession.participantIdentity.local,
-                    connection = connection,
-                ),
-            )
+            AppResult.Failure(throwable.asAppError())
+        } finally {
+            operationMutex.withLock {
+                if (connectOperation?.id == id) connectOperation = null
+            }
         }
     }
 
-    override suspend fun disconnectCall(expectedCallId: String?): AppResult<Unit> {
+    override suspend fun disconnectCall(expectedCallId: String?): AppResult<Unit> = terminateCall(
+        expectedCallId = expectedCallId,
+        terminalState = CallConnectionState.Disconnected,
+    )
+
+    private suspend fun terminateCall(
+        expectedCallId: String?,
+        terminalState: CallConnectionState,
+    ): AppResult<Unit> {
+        val pendingPrepare = operationMutex.withLock {
+            prepareOperation?.deferred.takeIf { sessionState.value == null }
+        }
+        if (pendingPrepare != null) {
+            pendingPrepare.start()
+            pendingPrepare.await()
+            return terminateCall(expectedCallId, terminalState)
+        }
+
         val operation = operationMutex.withLock {
             val currentOperation = disconnectOperation
             if (currentOperation != null) {
@@ -212,8 +347,23 @@ class CallRepositoryImpl @Inject constructor(
                 return@withLock null
             }
 
+            mediaConnection = null
+            mediaGeneration = null
+            callStatusSynchronizer.stop()
+            if (session.connectionState != CallConnectionState.Terminating) {
+                sessionState.emit(
+                    callUiSnapshotAssembler.assemble(
+                        session.copy(
+                            connectionState = CallConnectionState.Terminating,
+                            localAudioState = LocalAudioState.Disabled,
+                            uiSnapshot = session.uiSnapshot.copy(remoteParticipantConnected = false),
+                        ),
+                    ),
+                )
+            }
+
             val deferred = repositoryScope.async(start = CoroutineStart.LAZY) {
-                disconnectSession(session)
+                disconnectSession(session, terminalState)
             }
             disconnectOperation = DisconnectOperation(session.callId, deferred)
             deferred
@@ -228,7 +378,10 @@ class CallRepositoryImpl @Inject constructor(
      * Performs local teardown before the server request. The caller is an application-scoped
      * operation so a screen being popped cannot cancel microphone/foreground-service cleanup.
      */
-    private suspend fun disconnectSession(session: CallSession): AppResult<Unit> {
+    private suspend fun disconnectSession(
+        session: CallSession,
+        requestedTerminalState: CallConnectionState,
+    ): AppResult<Unit> {
         var failure: Throwable? = null
 
         try {
@@ -241,27 +394,9 @@ class CallRepositoryImpl @Inject constructor(
                 ?.let { cleanupFailure -> failure?.addSuppressed(cleanupFailure) }
         }
 
-        callStatusSynchronizer.stop()
-        operationMutex.withLock {
-            val current = sessionState.value
-            if (current?.callId == session.callId) {
-                mediaConnection = null
-                mediaGeneration = null
-                sessionState.emit(
-                    callUiSnapshotAssembler.assemble(
-                        current.copy(
-                            connectionState = CallConnectionState.Disconnected,
-                            localAudioState = LocalAudioState.Disabled,
-                            uiSnapshot = current.uiSnapshot.copy(remoteParticipantConnected = false),
-                        ),
-                    ),
-                )
-            }
-        }
-
         try {
             // Server synchronization intentionally happens outside operationMutex. A slow or
-            // temporarily unavailable API must not block local state transitions or new UI reads.
+            // temporarily unavailable API must not block unrelated UI state reads.
             api.endCall(session.callId)
         } catch (throwable: Throwable) {
             if (throwable is CancellationException) throw throwable
@@ -270,6 +405,21 @@ class CallRepositoryImpl @Inject constructor(
             operationMutex.withLock {
                 if (disconnectOperation?.callId == session.callId) {
                     disconnectOperation = null
+                }
+                val current = sessionState.value
+                if (current?.callId == session.callId) {
+                    val finalState = failure
+                        ?.let { CallConnectionState.Failed(it.message) }
+                        ?: requestedTerminalState
+                    sessionState.emit(
+                        callUiSnapshotAssembler.assemble(
+                            current.copy(
+                                connectionState = finalState,
+                                localAudioState = LocalAudioState.Disabled,
+                                uiSnapshot = current.uiSnapshot.copy(remoteParticipantConnected = false),
+                            ),
+                        ),
+                    )
                 }
             }
         }
@@ -384,6 +534,18 @@ class CallRepositoryImpl @Inject constructor(
 }
 
 private data class DisconnectOperation(
+    val callId: String,
+    val deferred: Deferred<AppResult<Unit>>,
+)
+
+private data class PrepareOperation(
+    val id: Long,
+    val params: PrepareCallParams,
+    val deferred: Deferred<AppResult<CallSession>>,
+)
+
+private data class ConnectOperation(
+    val id: Long,
     val callId: String,
     val deferred: Deferred<AppResult<Unit>>,
 )

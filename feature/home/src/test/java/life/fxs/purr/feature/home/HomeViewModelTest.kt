@@ -38,6 +38,10 @@ import life.fxs.purr.domain.account.usecase.RefreshActiveCallUseCase
 import life.fxs.purr.domain.account.usecase.RefreshPairBondUseCase
 import life.fxs.purr.domain.account.usecase.StartRealtimeUpdatesUseCase
 import life.fxs.purr.domain.account.usecase.StopRealtimeUpdatesUseCase
+import life.fxs.purr.domain.call.model.CallConnectionState
+import life.fxs.purr.domain.call.model.CallSession
+import life.fxs.purr.domain.call.model.ParticipantIdentity
+import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -48,11 +52,13 @@ class HomeViewModelTest {
     private val authState = MutableStateFlow<AuthSession?>(session())
     private val pairState = MutableStateFlow<PairBond?>(pairBond())
     private val realtimeState = MutableStateFlow(RealtimeState())
+    private val callState = MutableStateFlow<CallSession?>(null)
 
     private val observeAuthSessionUseCase = mockk<ObserveAuthSessionUseCase>()
     private val observePairBondUseCase = mockk<ObservePairBondUseCase>()
     private val refreshPairBondUseCase = mockk<RefreshPairBondUseCase>()
     private val observeRealtimeStateUseCase = mockk<ObserveRealtimeStateUseCase>()
+    private val observeCallStateUseCase = mockk<ObserveCallStateUseCase>()
     private val startRealtimeUpdatesUseCase = mockk<StartRealtimeUpdatesUseCase>()
     private val stopRealtimeUpdatesUseCase = mockk<StopRealtimeUpdatesUseCase>()
     private val refreshActiveCallUseCase = mockk<RefreshActiveCallUseCase>()
@@ -65,6 +71,7 @@ class HomeViewModelTest {
         every { observeAuthSessionUseCase.invoke() } returns authState
         every { observePairBondUseCase.invoke() } returns pairState
         every { observeRealtimeStateUseCase.invoke() } returns realtimeState
+        every { observeCallStateUseCase.invoke() } returns callState
         every { startRealtimeUpdatesUseCase.invoke() } just Runs
         every { stopRealtimeUpdatesUseCase.invoke() } just Runs
         every { clearIncomingCallUseCase.invoke(any()) } just Runs
@@ -89,6 +96,82 @@ class HomeViewModelTest {
             assertThat(viewModel.uiState.value.partner?.isOnline).isTrue()
             assertThat(viewModel.uiState.value.isCallable).isTrue()
             verify(atLeast = 1) { startRealtimeUpdatesUseCase.invoke() }
+        }
+    }
+
+    @Test
+    fun `active call remains available when partner presence is offline`() = runTest(dispatcher) {
+        callState.value = callSession(CallConnectionState.Connected, pairId = "active-pair")
+        withViewModel { viewModel ->
+            runCurrent()
+            val effect = async { viewModel.effects.first() }
+            runCurrent()
+
+            assertThat(viewModel.uiState.value.hasActiveCall).isTrue()
+            assertThat(viewModel.uiState.value.activeCallPairId).isEqualTo("active-pair")
+            assertThat(viewModel.uiState.value.isCallable).isFalse()
+
+            viewModel.onIntent(HomeIntent.StartCall)
+            runCurrent()
+
+            assertThat(effect.await()).isEqualTo(HomeEffect.NavigateToCall("active-pair"))
+        }
+    }
+
+    @Test
+    fun `all non terminal call states expose the active call`() = runTest(dispatcher) {
+        withViewModel { viewModel ->
+            runCurrent()
+
+            listOf(
+                CallConnectionState.Preparing,
+                CallConnectionState.Connecting,
+                CallConnectionState.Connected,
+                CallConnectionState.Reconnecting,
+                CallConnectionState.Terminating,
+            ).forEach { connectionState ->
+                callState.value = callSession(connectionState)
+                runCurrent()
+
+                assertThat(viewModel.uiState.value.hasActiveCall).isTrue()
+                assertThat(viewModel.uiState.value.activeCallPairId).isEqualTo("pair-1")
+            }
+        }
+    }
+
+    @Test
+    fun `terminal call restores start call behavior when partner is online`() = runTest(dispatcher) {
+        realtimeState.value = RealtimeState(isConnected = true, partnerOnline = true)
+        callState.value = callSession(CallConnectionState.Disconnected, pairId = "ended-pair")
+        withViewModel { viewModel ->
+            runCurrent()
+            val effect = async { viewModel.effects.first() }
+            runCurrent()
+
+            assertThat(viewModel.uiState.value.hasActiveCall).isFalse()
+            assertThat(viewModel.uiState.value.activeCallPairId).isNull()
+
+            viewModel.onIntent(HomeIntent.StartCall)
+            runCurrent()
+
+            assertThat(effect.await()).isEqualTo(HomeEffect.NavigateToCall("pair-1"))
+        }
+    }
+
+    @Test
+    fun `terminal call cannot start a new call while partner is offline`() = runTest(dispatcher) {
+        callState.value = callSession(CallConnectionState.Failed("ended"))
+        withViewModel { viewModel ->
+            runCurrent()
+            val effect = async { viewModel.effects.first() }
+            runCurrent()
+
+            assertThat(viewModel.uiState.value.hasActiveCall).isFalse()
+
+            viewModel.onIntent(HomeIntent.StartCall)
+            runCurrent()
+
+            assertThat(effect.await()).isEqualTo(HomeEffect.ShowError("当前无法发起通话"))
         }
     }
 
@@ -157,6 +240,7 @@ class HomeViewModelTest {
         observePairBondUseCase = observePairBondUseCase,
         refreshPairBondUseCase = refreshPairBondUseCase,
         observeRealtimeStateUseCase = observeRealtimeStateUseCase,
+        observeCallStateUseCase = observeCallStateUseCase,
         startRealtimeUpdatesUseCase = startRealtimeUpdatesUseCase,
         stopRealtimeUpdatesUseCase = stopRealtimeUpdatesUseCase,
         refreshActiveCallUseCase = refreshActiveCallUseCase,
@@ -190,6 +274,17 @@ class HomeViewModelTest {
             pairId = "pair-1",
             callerUserId = "user-b",
             startedAtEpochMillis = 1L,
+        )
+
+        fun callSession(
+            connectionState: CallConnectionState,
+            pairId: String = "pair-1",
+        ) = CallSession(
+            callId = "call-1",
+            pairId = pairId,
+            participantIdentity = ParticipantIdentity(local = "user-a", remote = "user-b"),
+            roomName = "room-1",
+            connectionState = connectionState,
         )
     }
 }

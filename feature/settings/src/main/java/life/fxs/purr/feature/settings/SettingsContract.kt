@@ -9,7 +9,7 @@ sealed interface SettingsIntent {
     data class NewPasswordChanged(val value: String) : SettingsIntent
     data class ConfirmPasswordChanged(val value: String) : SettingsIntent
     data object SubmitPasswordChange : SettingsIntent
-    data class AvatarSelected(val contentType: String, val bytes: ByteArray) : SettingsIntent
+    data class AvatarCropConfirmed(val contentType: String, val bytes: ByteArray) : SettingsIntent
     data class DisplayNameChanged(val value: String) : SettingsIntent
     data object SubmitDisplayName : SettingsIntent
     data object Logout : SettingsIntent
@@ -22,6 +22,7 @@ data class SettingsState(
     val isUploadingAvatar: Boolean = false,
     val isUpdatingDisplayName: Boolean = false,
     val isPasswordFormVisible: Boolean = false,
+    val avatarError: String? = null,
     val currentPassword: String = "",
     val newPassword: String = "",
     val confirmPassword: String = "",

@@ -6,6 +6,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -32,10 +33,13 @@ private const val CALL_DESTINATION = "$CALL_ROUTE/{$PAIR_ID_ARG}"
 @Composable
 fun PurrNavHost(
     initialCallPairId: String? = null,
+    initialCallRequestId: Long? = null,
+    onCallRequestConsumed: (Long) -> Unit = {},
     viewModel: SessionGateViewModel = hiltViewModel(),
 ) {
     val navController = rememberNavController()
     val gateState by viewModel.state.collectAsStateWithLifecycle()
+    val currentOnCallRequestConsumed by rememberUpdatedState(onCallRequestConsumed)
 
     if (!gateState.isReady) {
         Box(
@@ -49,6 +53,8 @@ fun PurrNavHost(
 
     val startDestination = if (gateState.isAuthenticated) HOME_ROUTE else AUTH_ROUTE
 
+    // Navigation Compose owns destination-level predictive back and seeks its transition from
+    // gesture progress. Screens should not register competing back callbacks.
     NavHost(
         navController = navController,
         startDestination = startDestination,
@@ -64,7 +70,11 @@ fun PurrNavHost(
         }
         composable(HOME_ROUTE) {
             HomeScreenRoute(
-                onOpenCall = { pairId -> navController.navigate("$CALL_ROUTE/$pairId") },
+                onOpenCall = { pairId ->
+                    navController.navigate("$CALL_ROUTE/$pairId") {
+                        launchSingleTop = true
+                    }
+                },
                 onOpenCallHistory = { navController.navigate(CALL_HISTORY_ROUTE) },
                 onOpenSettings = { navController.navigate(SETTINGS_ROUTE) },
             )
@@ -77,11 +87,6 @@ fun PurrNavHost(
             CallScreenRoute(
                 pairId = pairId,
                 onCallEnded = {
-                    if (!navController.popBackStack()) {
-                        navController.navigate(HOME_ROUTE) { launchSingleTop = true }
-                    }
-                },
-                onNavigateHome = {
                     if (!navController.popBackStack()) {
                         navController.navigate(HOME_ROUTE) { launchSingleTop = true }
                     }
@@ -103,10 +108,22 @@ fun PurrNavHost(
         }
     }
 
-    LaunchedEffect(gateState.isReady, gateState.isAuthenticated, initialCallPairId) {
-        if (gateState.isReady && gateState.isAuthenticated && !initialCallPairId.isNullOrBlank()) {
-            navController.navigate("$CALL_ROUTE/$initialCallPairId") {
+    val callRequest = initialCallPairId
+        ?.takeIf(String::isNotBlank)
+        ?.let {
+            CallNavigationRequest(
+                pairId = it,
+                requestId = initialCallRequestId ?: 0L,
+            )
+        }
+
+    LaunchedEffect(gateState.isReady, gateState.isAuthenticated, callRequest) {
+        if (gateState.isReady && gateState.isAuthenticated && callRequest != null) {
+            navController.navigate("$CALL_ROUTE/${callRequest.pairId}") {
                 launchSingleTop = true
+            }
+            if (callRequest.requestId != 0L) {
+                currentOnCallRequestConsumed(callRequest.requestId)
             }
         }
     }

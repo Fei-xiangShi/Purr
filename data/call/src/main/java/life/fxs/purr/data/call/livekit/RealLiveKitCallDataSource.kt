@@ -5,6 +5,8 @@ import io.livekit.android.events.RoomEvent
 import io.livekit.android.events.collect
 import io.livekit.android.room.Room
 import io.livekit.android.room.participant.ConnectionQuality
+import io.livekit.android.room.track.LocalAudioTrack
+import io.livekit.android.room.track.Track
 import java.util.LinkedHashSet
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -12,11 +14,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -48,7 +48,7 @@ class RealLiveKitCallDataSource @Inject constructor(
     @Volatile
     private var room: Room? = null
     private var roomEventsJob: Job? = null
-    private var audioLevelJob: Job? = null
+    private var audioLevelTrack: LocalAudioTrack? = null
 
     override suspend fun execute(command: MediaCallCommand) {
         when (command) {
@@ -79,7 +79,6 @@ class RealLiveKitCallDataSource @Inject constructor(
             val createdRoom = roomFactory.create()
             room = createdRoom
             roomStateProvider.update(createdRoom)
-            observeLocalAudioLevel(createdRoom, mediaCall)
             observeRoomEvents(createdRoom, mediaCall)
 
             createdRoom.connect(
@@ -97,6 +96,7 @@ class RealLiveKitCallDataSource @Inject constructor(
 
             val microphoneEnabled = createdRoom.localParticipant.setMicrophoneEnabled(true)
             check(microphoneEnabled) { "Unable to publish microphone track" }
+            attachLocalAudioLevel(createdRoom)
 
             val localIdentity = createdRoom.localParticipant.identity?.value
                 ?: command.localIdentity
@@ -149,6 +149,11 @@ class RealLiveKitCallDataSource @Inject constructor(
         val activeRoom = room ?: error("LiveKit room is not connected")
         val changed = activeRoom.localParticipant.setMicrophoneEnabled(!command.muted)
         check(changed) { "Unable to update microphone state" }
+        if (command.muted) {
+            detachLocalAudioLevel()
+        } else {
+            attachLocalAudioLevel(activeRoom)
+        }
         if (isCurrent(activeRoom, current.generation)) {
             eventBus.emit(
                 MediaCallEvent.AudioStateChanged(
@@ -267,14 +272,23 @@ class RealLiveKitCallDataSource @Inject constructor(
         }
     }
 
-    private fun observeLocalAudioLevel(activeRoom: Room, mediaCall: ActiveMediaCall) {
-        audioLevelJob?.cancel()
-        audioLevelJob = scope.launch {
-            while (isActive && isCurrent(activeRoom, mediaCall.generation)) {
-                audioLevelProvider.update(activeRoom.localParticipant.audioLevel)
-                delay(AUDIO_LEVEL_INTERVAL_MILLIS)
-            }
-        }
+    private fun attachLocalAudioLevel(activeRoom: Room) {
+        val microphoneTrack = activeRoom.localParticipant
+            .getTrackPublication(Track.Source.MICROPHONE)
+            ?.track as? LocalAudioTrack
+            ?: return
+        if (audioLevelTrack === microphoneTrack) return
+        detachLocalAudioLevel()
+        runCatching { microphoneTrack.addSink(audioLevelProvider) }
+            .onSuccess { audioLevelTrack = microphoneTrack }
+            .onFailure { audioLevelProvider.reset() }
+    }
+
+    private fun detachLocalAudioLevel() {
+        val track = audioLevelTrack
+        audioLevelTrack = null
+        runCatching { track?.removeSink(audioLevelProvider) }
+        audioLevelProvider.reset()
     }
 
     private fun isCurrent(activeRoom: Room?, generation: Long): Boolean {
@@ -298,15 +312,13 @@ class RealLiveKitCallDataSource @Inject constructor(
     private fun releaseRoomLocked(): Throwable? {
         roomEventsJob?.cancel()
         roomEventsJob = null
-        audioLevelJob?.cancel()
-        audioLevelJob = null
-        audioLevelProvider.update(0f)
         var failure: Throwable? = null
+        detachLocalAudioLevel()
         val activeRoom = room
         try {
             activeRoom?.disconnect()
         } catch (throwable: Throwable) {
-            failure = throwable
+            failure?.addSuppressed(throwable) ?: run { failure = throwable }
         }
         try {
             activeRoom?.release()
@@ -324,7 +336,6 @@ class RealLiveKitCallDataSource @Inject constructor(
     )
 
     private companion object {
-        const val AUDIO_LEVEL_INTERVAL_MILLIS = 20L
         const val EVENT_BUFFER_SIZE = 64
         const val MAX_TERMINATED_CALL_IDS = 128
     }
