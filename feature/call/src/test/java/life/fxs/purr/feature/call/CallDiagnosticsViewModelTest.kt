@@ -11,6 +11,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import life.fxs.purr.domain.call.model.CallQualityMetrics
+import life.fxs.purr.domain.call.model.DeviceCallMetrics
 import life.fxs.purr.domain.call.model.TransportQualityMetrics
 import life.fxs.purr.domain.call.repository.CallDiagnosticsRepository
 import org.junit.After
@@ -65,4 +66,63 @@ class CallDiagnosticsViewModelTest {
             )
         }
     }
+
+    @Test
+    fun `local metrics are exposed before transport samples exist`() = runTest(dispatcher) {
+        val upstream = MutableSharedFlow<CallQualityMetrics>()
+        val repository = mockk<CallDiagnosticsRepository>()
+        every { repository.observeMetrics() } returns upstream
+        val viewModel = CallDiagnosticsViewModel(repository)
+        val localOnly = CallQualityMetrics(
+            device = DeviceCallMetrics(
+                networkValidated = true,
+                callVolumePercent = 64,
+                estimatedUpstreamKbps = 12_000.0,
+            ),
+        )
+
+        viewModel.networkHistory.test {
+            assertThat(awaitItem()).isEmpty()
+            viewModel.metrics.test {
+                assertThat(awaitItem()).isEqualTo(CallQualityMetrics())
+                upstream.emit(localOnly)
+                assertThat(awaitItem()).isEqualTo(localOnly)
+            }
+            expectNoEvents()
+        }
+    }
+
+    @Test
+    fun `network history ignores repeated timestamps and keeps latest window`() = runTest(dispatcher) {
+        val upstream = MutableSharedFlow<CallQualityMetrics>()
+        val repository = mockk<CallDiagnosticsRepository>()
+        every { repository.observeMetrics() } returns upstream
+        val viewModel = CallDiagnosticsViewModel(repository)
+
+        viewModel.networkHistory.test {
+            assertThat(awaitItem()).isEmpty()
+
+            upstream.emit(metricsAt(sampledAtMillis = 1L, roundTripTimeMs = 10.0))
+            assertThat(awaitItem()).hasSize(1)
+            upstream.emit(metricsAt(sampledAtMillis = 1L, roundTripTimeMs = 20.0))
+            expectNoEvents()
+
+            var latest = emptyList<NetworkGraphSample>()
+            for (sampledAtMillis in 2L..151L) {
+                upstream.emit(metricsAt(sampledAtMillis, roundTripTimeMs = sampledAtMillis.toDouble()))
+                latest = awaitItem()
+            }
+
+            assertThat(latest).hasSize(150)
+            assertThat(latest.first().sampledAtMillis).isEqualTo(2L)
+            assertThat(latest.last().sampledAtMillis).isEqualTo(151L)
+        }
+    }
+
+    private fun metricsAt(sampledAtMillis: Long, roundTripTimeMs: Double) = CallQualityMetrics(
+        transport = TransportQualityMetrics(
+            sampledAtMillis = sampledAtMillis,
+            roundTripTimeMs = roundTripTimeMs,
+        ),
+    )
 }

@@ -17,6 +17,7 @@ kotlin {
 }
 
 dependencies {
+    implementation(projects.core.common)
     implementation(projects.core.model)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.retrofit.core)

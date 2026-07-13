@@ -14,9 +14,14 @@ import life.fxs.purr.data.account.realtime.ApiRealtimeRepository
 import life.fxs.purr.data.call.livekit.LiveKitCallDataSource
 import life.fxs.purr.data.call.livekit.RealLiveKitCallDataSource
 import life.fxs.purr.data.call.repository.CallRepositoryImpl
+import life.fxs.purr.data.call.runtime.CallRuntimeControllerImpl
+import life.fxs.purr.data.call.runtime.CallRuntimeController
+import life.fxs.purr.data.call.runtime.MediaCallPort
 import life.fxs.purr.data.call.repository.ApiCallHistoryRepository
 import life.fxs.purr.data.call.repository.CallDiagnosticsRepositoryImpl
 import life.fxs.purr.data.call.repository.RecordingRepositoryImpl
+import life.fxs.purr.data.call.remote.ApiCallStatusRemoteDataSource
+import life.fxs.purr.data.call.remote.CallStatusRemoteDataSource
 import life.fxs.purr.domain.account.repository.AuthRepository
 import life.fxs.purr.domain.account.repository.AccountSecurityRepository
 import life.fxs.purr.domain.account.repository.ProfileRepository
@@ -54,6 +59,20 @@ abstract class BindingModule {
     @Binds
     @Singleton
     abstract fun bindLiveKitCallDataSource(impl: RealLiveKitCallDataSource): LiveKitCallDataSource
+
+    @Binds
+    @Singleton
+    abstract fun bindMediaCallPort(impl: RealLiveKitCallDataSource): MediaCallPort
+
+    @Binds
+    @Singleton
+    abstract fun bindCallRuntimeController(impl: CallRuntimeControllerImpl): CallRuntimeController
+
+    @Binds
+    @Singleton
+    abstract fun bindCallStatusRemoteDataSource(
+        impl: ApiCallStatusRemoteDataSource,
+    ): CallStatusRemoteDataSource
 
     @Binds
     @Singleton

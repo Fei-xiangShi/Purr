@@ -39,7 +39,6 @@ dependencies {
     implementation(libs.androidx.lifecycle.livedata.core)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.javax.inject)
-    implementation(libs.livekit.android)
 
     testImplementation(libs.junit4)
     testImplementation(libs.truth)

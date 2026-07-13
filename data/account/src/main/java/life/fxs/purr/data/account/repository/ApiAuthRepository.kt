@@ -4,14 +4,13 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import life.fxs.purr.core.common.AppResult
-import life.fxs.purr.core.common.asAppError
+import life.fxs.purr.core.common.ApplicationScope
+import life.fxs.purr.core.network.asAppError
 import life.fxs.purr.core.network.api.PurrAuthApi
 import life.fxs.purr.core.network.model.LoginRequestDto
 import life.fxs.purr.data.account.local.SessionStore
@@ -27,8 +26,8 @@ class ApiAuthRepository @Inject constructor(
     private val sessionStore: SessionStore,
     private val sessionWriter: SessionWriter,
     private val sessionTokenHolder: SessionTokenHolder,
+    @ApplicationScope private val applicationScope: CoroutineScope,
 ) : AuthRepository {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val sessionState = sessionStore.session
         .onEach { session ->
             sessionTokenHolder.update(
@@ -37,7 +36,7 @@ class ApiAuthRepository @Inject constructor(
                 userId = session?.self?.userId,
             )
         }
-        .stateIn(scope, SharingStarted.Eagerly, null)
+        .stateIn(applicationScope, SharingStarted.Eagerly, null)
 
     override fun observeSession(): Flow<AuthSession?> = sessionState
 

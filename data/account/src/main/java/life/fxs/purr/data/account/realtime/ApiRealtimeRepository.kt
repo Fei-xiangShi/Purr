@@ -4,9 +4,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,7 +14,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import life.fxs.purr.core.common.AppResult
-import life.fxs.purr.core.common.asAppError
+import life.fxs.purr.core.common.ApplicationScope
+import life.fxs.purr.core.network.asAppError
 import life.fxs.purr.core.network.api.PurrCallApi
 import life.fxs.purr.core.network.model.ActiveCallDto
 import life.fxs.purr.core.network.model.RealtimeEventDto
@@ -42,8 +41,9 @@ class ApiRealtimeRepository @Inject constructor(
     private val sessionTokenHolder: SessionTokenHolder,
     private val api: PurrCallApi,
     @RealtimeEndpoint private val realtimeUrl: String,
+    @ApplicationScope private val applicationScope: CoroutineScope,
 ) : RealtimeRepository {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = applicationScope
     private val state = MutableStateFlow(RealtimeState())
     private var shouldRun = false
     private var socket: WebSocket? = null

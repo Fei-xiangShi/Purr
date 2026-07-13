@@ -8,154 +8,68 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.os.SystemClock
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.VolumeUp
-import androidx.compose.material.icons.rounded.BluetoothAudio
 import androidx.compose.material.icons.rounded.CallEnd
-import androidx.compose.material.icons.rounded.Headphones
-import androidx.compose.material.icons.rounded.Mic
-import androidx.compose.material.icons.rounded.MicOff
 import androidx.compose.material.icons.rounded.NetworkCheck
-import androidx.compose.material.icons.rounded.PhoneInTalk
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.PlainTooltip
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TooltipBox
-import androidx.compose.material3.TooltipDefaults
-import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.media3.common.AudioAttributes
-import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
-import io.livekit.android.annotations.Beta
-import io.livekit.android.compose.state.rememberParticipantTrackReferences
-import io.livekit.android.compose.ui.audio.AudioBarVisualizer
-import io.livekit.android.room.Room
-import io.livekit.android.room.track.Track
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import life.fxs.purr.core.designsystem.component.PurrPanel
 import life.fxs.purr.core.designsystem.component.PurrScreen
 import life.fxs.purr.core.designsystem.component.PurrSectionTitle
 import life.fxs.purr.core.designsystem.component.PurrStatusChip
-import life.fxs.purr.core.media.livekit.CallRoomStateProvider
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.domain.call.model.LocalAudioState
+import life.fxs.purr.domain.call.model.CallTiming
 
 @Composable
 fun CallScreenRoute(
     pairId: String,
-    roomStateProvider: CallRoomStateProvider,
     onCallEnded: () -> Unit,
+    onNavigateHome: () -> Unit,
     viewModel: CallViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val room by roomStateProvider.room.collectAsStateWithLifecycle()
+    val localAudioLevel by viewModel.localAudioLevel.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var showDiagnostics by rememberSaveable { mutableStateOf(false) }
-    val recordingPlayer = remember(context) {
-        ExoPlayer.Builder(context).build().apply {
-            setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(C.USAGE_MEDIA)
-                    .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
-                    .build(),
-                true,
-            )
-        }
-    }
-    DisposableEffect(recordingPlayer, viewModel) {
-        val listener = object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (isPlaying) {
-                    recordingPlayer.currentMediaItem?.mediaId?.takeIf { it.isNotBlank() }?.let { recordingId ->
-                        viewModel.onIntent(CallIntent.RecordingPlaybackStarted(recordingId))
-                    }
-                }
-            }
-
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED) {
-                    recordingPlayer.currentMediaItem?.mediaId?.takeIf { it.isNotBlank() }?.let { recordingId ->
-                        viewModel.onIntent(CallIntent.RecordingPlaybackStopped(recordingId))
-                    }
-                }
-            }
-
-            override fun onPlayerError(error: PlaybackException) {
-                val recordingId = recordingPlayer.currentMediaItem?.mediaId.orEmpty()
-                viewModel.onIntent(CallIntent.RecordingPlaybackFailed(recordingId, error.message))
-            }
-        }
-        recordingPlayer.addListener(listener)
-        onDispose {
-            recordingPlayer.removeListener(listener)
-            recordingPlayer.release()
-        }
-    }
     val callDurationSeconds = rememberCallDurationSeconds(
-        isTwoPartyActive = state.screenState == CallScreenState.Active,
+        timing = state.session?.timing ?: CallTiming(),
         callId = state.session?.callId,
     )
-    val localAudioLevel = rememberLocalAudioLevel(
-        room = room,
-        enabled = state.localAudioState is LocalAudioState.Enabled,
-    )
-
     val microphonePermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -215,17 +129,6 @@ fun CallScreenRoute(
                 is CallEffect.ShowMessage -> {
                     Toast.makeText(context, effect.message, Toast.LENGTH_SHORT).show()
                 }
-                is CallEffect.PlayRecording -> {
-                    recordingPlayer.setMediaItem(
-                        MediaItem.Builder()
-                            .setMediaId(effect.recordingId)
-                            .setUri(effect.url)
-                            .build(),
-                    )
-                    recordingPlayer.prepare()
-                    recordingPlayer.play()
-                }
-                CallEffect.PauseRecording -> recordingPlayer.pause()
             }
         }
     }
@@ -239,9 +142,13 @@ fun CallScreenRoute(
         return
     }
 
+    BackHandler(
+        enabled = state.screenState != CallScreenState.Ended,
+        onBack = onNavigateHome,
+    )
+
     CallScreen(
         state = state,
-        room = room,
         callDurationSeconds = callDurationSeconds,
         localAudioLevel = localAudioLevel,
         onMuteToggle = { viewModel.onIntent(CallIntent.MuteToggle) },
@@ -254,7 +161,6 @@ fun CallScreenRoute(
 @Composable
 fun CallScreen(
     state: CallState,
-    room: Room?,
     callDurationSeconds: Long,
     localAudioLevel: Float,
     onMuteToggle: () -> Unit,
@@ -358,241 +264,33 @@ fun CallScreen(
             Text("通话质量检测", style = MaterialTheme.typography.labelLarge)
         }
 
-        PurrPanel(title = "音频输出") {
-            state.availableRoutes.forEachIndexed { index, route ->
-                if (index > 0) {
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                }
-                ListItem(
-                    headlineContent = { Text(route.toDisplayLabel()) },
-                    leadingContent = {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primary,
-                        ) {
-                            Icon(
-                                imageVector = route.toIcon(),
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimary,
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .padding(8.dp),
-                            )
-                        }
-                    },
-                    trailingContent = {
-                        RadioButton(
-                            selected = route == state.activeRoute,
-                            onClick = null,
-                            enabled = canManageActiveCall,
-                        )
-                    },
-                    modifier = Modifier.clickable(enabled = canManageActiveCall) {
-                        onRouteSelect(route)
-                    },
-                )
-            }
-        }
-
-        room?.let { activeRoom ->
-            LiveKitRoomStatus(room = activeRoom)
-            PurrPanel(title = "远端音频") {
-                RemoteAudioVisualizer(room = activeRoom)
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun MicrophoneLevelButton(
-    label: String,
-    muted: Boolean,
-    level: Float,
-    onClick: () -> Unit,
-    enabled: Boolean,
-) {
-    TooltipBox(
-        positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
-        tooltip = { PlainTooltip { Text(label) } },
-        state = rememberTooltipState(),
-    ) {
-        FilledIconButton(
-            onClick = onClick,
-            enabled = enabled,
-            modifier = Modifier.size(64.dp),
-            colors = IconButtonDefaults.filledIconButtonColors(
-                containerColor = LIGHT_ICON_BUTTON_BACKGROUND,
-                contentColor = Color.White,
-                disabledContainerColor = LIGHT_ICON_BUTTON_BACKGROUND.copy(alpha = 0.48f),
-                disabledContentColor = Color.White.copy(alpha = 0.48f),
-            ),
-        ) {
-            if (muted) {
-                Icon(
-                    imageVector = Icons.Rounded.MicOff,
-                    contentDescription = label,
-                    tint = Color.White,
-                    modifier = Modifier.size(32.dp),
-                )
-            } else {
-                MicrophoneLevelIcon(
-                    level = level,
-                    contentDescription = label,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun MicrophoneLevelIcon(
-    level: Float,
-    contentDescription: String,
-) {
-    val normalizedLevel = level.coerceIn(0f, 1f)
-    Box(
-        modifier = Modifier.size(32.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = Icons.Rounded.Mic,
-            contentDescription = contentDescription,
-            tint = Color.White.copy(alpha = 0.34f),
-            modifier = Modifier.fillMaxSize(),
+        AudioRoutePanel(
+            routes = state.availableRoutes,
+            activeRoute = state.activeRoute,
+            enabled = canManageActiveCall,
+            onRouteSelect = onRouteSelect,
         )
-        if (normalizedLevel > 0f) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(normalizedLevel)
-                    .align(Alignment.BottomCenter)
-                    .clipToBounds(),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Mic,
-                    contentDescription = null,
-                    tint = MICROPHONE_LEVEL_BLUE,
-                    modifier = Modifier
-                        .requiredSize(32.dp)
-                        .align(Alignment.BottomCenter),
-                )
-            }
-        }
-    }
-}
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun LightIconButton(
-    label: String,
-    icon: ImageVector,
-    onClick: () -> Unit,
-    enabled: Boolean,
-    containerColor: Color,
-) {
-    TooltipBox(
-        positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
-        tooltip = { PlainTooltip { Text(label) } },
-        state = rememberTooltipState(),
-    ) {
-        FilledIconButton(
-            onClick = onClick,
-            enabled = enabled,
-            modifier = Modifier.size(64.dp),
-            colors = IconButtonDefaults.filledIconButtonColors(
-                containerColor = containerColor,
-                contentColor = Color.White,
-                disabledContainerColor = containerColor.copy(alpha = 0.48f),
-                disabledContentColor = Color.White.copy(alpha = 0.48f),
-            ),
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = Color.White,
-                modifier = Modifier.size(32.dp),
-            )
-        }
     }
-}
-
-@OptIn(Beta::class)
-@Composable
-private fun RemoteAudioVisualizer(room: Room) {
-    val remoteIdentity = room.remoteParticipants.keys.firstOrNull()
-    if (remoteIdentity == null) {
-        Text(
-            text = "等待对方接入音频",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        return
-    }
-
-    val trackReferences = rememberParticipantTrackReferences(
-        sources = listOf(Track.Source.MICROPHONE),
-        participantIdentity = remoteIdentity,
-        passedRoom = room,
-        onlySubscribed = true,
-    )
-    val audioTrackReference = trackReferences.firstOrNull()
-    if (audioTrackReference != null) {
-        Text(
-            text = "已连接远端音频",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-        AudioBarVisualizer(audioTrackRef = audioTrackReference)
-    } else {
-        Text(
-            text = "已连接，等待远端音频流",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
-private fun rememberLocalAudioLevel(
-    room: Room?,
-    enabled: Boolean,
-): Float {
-    var level by remember(room) { mutableFloatStateOf(0f) }
-    LaunchedEffect(room, enabled) {
-        if (!enabled || room == null) {
-            level = 0f
-            return@LaunchedEffect
-        }
-        while (true) {
-            level = room.localParticipant.audioLevel.coerceIn(0f, 1f)
-            delay(AUDIO_LEVEL_REFRESH_INTERVAL_MILLIS)
-        }
-    }
-    return level
 }
 
 @Composable
 private fun rememberCallDurationSeconds(
-    isTwoPartyActive: Boolean,
+    timing: CallTiming,
     callId: String?,
 ): Long {
-    var accumulatedMillis by remember(callId) { mutableLongStateOf(0L) }
     var elapsedSeconds by remember(callId) { mutableLongStateOf(0L) }
-    val currentTwoPartyActive by rememberUpdatedState(isTwoPartyActive)
 
-    LaunchedEffect(callId) {
-        accumulatedMillis = 0L
-        elapsedSeconds = 0L
-        var previousTickMillis = SystemClock.elapsedRealtime()
+    LaunchedEffect(callId, timing) {
+        fun synchronizedDurationSeconds(): Long = timing
+            .durationAtMonotonicMillis(System.nanoTime() / 1_000_000L)
+            .div(1_000L)
+
+        elapsedSeconds = synchronizedDurationSeconds()
+        if (!timing.isRunning) return@LaunchedEffect
         while (true) {
             delay(CALL_DURATION_TICK_INTERVAL_MILLIS)
-            val now = SystemClock.elapsedRealtime()
-            if (currentTwoPartyActive) {
-                accumulatedMillis += now - previousTickMillis
-                elapsedSeconds = accumulatedMillis / 1_000L
-            }
-            previousTickMillis = now
+            elapsedSeconds = synchronizedDurationSeconds()
         }
     }
     return elapsedSeconds
@@ -649,20 +347,6 @@ internal fun Long.toCallDuration(): String {
     }
 }
 
-internal fun AudioRoute.toDisplayLabel(): String = when (this) {
-    AudioRoute.Earpiece -> "听筒"
-    AudioRoute.Speaker -> "扬声器"
-    AudioRoute.Bluetooth -> "蓝牙"
-    AudioRoute.WiredHeadset -> "有线耳机"
-}
-
-private fun AudioRoute.toIcon(): ImageVector = when (this) {
-    AudioRoute.Earpiece -> Icons.Rounded.PhoneInTalk
-    AudioRoute.Speaker -> Icons.AutoMirrored.Rounded.VolumeUp
-    AudioRoute.Bluetooth -> Icons.Rounded.BluetoothAudio
-    AudioRoute.WiredHeadset -> Icons.Rounded.Headphones
-}
-
 private fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
@@ -678,7 +362,4 @@ private fun Context.openAppSettings() {
     )
 }
 
-private val LIGHT_ICON_BUTTON_BACKGROUND = Color(0xFF263238)
-private val MICROPHONE_LEVEL_BLUE = Color(0xFF64B5F6)
-private const val AUDIO_LEVEL_REFRESH_INTERVAL_MILLIS = 50L
 private const val CALL_DURATION_TICK_INTERVAL_MILLIS = 250L

@@ -6,5 +6,6 @@ import life.fxs.purr.domain.call.repository.CallRepository
 class DisconnectCallUseCase @Inject constructor(
     private val callRepository: CallRepository,
 ) {
-    suspend operator fun invoke() = callRepository.disconnectCall()
+    suspend operator fun invoke(expectedCallId: String? = null) =
+        callRepository.disconnectCall(expectedCallId)
 }

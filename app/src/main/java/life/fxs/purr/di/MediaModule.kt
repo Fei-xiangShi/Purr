@@ -11,9 +11,13 @@ import javax.inject.Singleton
 import life.fxs.purr.core.media.audio.AndroidAudioRouteController
 import life.fxs.purr.core.media.audio.AndroidCallAudioFocusManager
 import life.fxs.purr.core.media.audio.AudioRouteController
+import life.fxs.purr.core.media.audio.AudioRoutePreferenceStore
 import life.fxs.purr.core.media.audio.CallAudioFocusManager
-import life.fxs.purr.core.media.livekit.CallRoomStateProvider
-import life.fxs.purr.core.media.livekit.MutableCallRoomStateProvider
+import life.fxs.purr.core.media.audio.SharedPreferencesAudioRoutePreferenceStore
+import life.fxs.purr.data.call.audio.MutableCallAudioLevelProvider
+import life.fxs.purr.data.call.livekit.CallRoomStateProvider
+import life.fxs.purr.data.call.livekit.MutableCallRoomStateProvider
+import life.fxs.purr.domain.call.repository.CallAudioLevelProvider
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -29,7 +33,14 @@ object MediaModule {
     fun provideAudioRouteController(
         @ApplicationContext context: Context,
         audioManager: AudioManager,
-    ): AudioRouteController = AndroidAudioRouteController(context, audioManager)
+        preferenceStore: AudioRoutePreferenceStore,
+    ): AudioRouteController = AndroidAudioRouteController(context, audioManager, preferenceStore)
+
+    @Provides
+    @Singleton
+    fun provideAudioRoutePreferenceStore(
+        @ApplicationContext context: Context,
+    ): AudioRoutePreferenceStore = SharedPreferencesAudioRoutePreferenceStore(context)
 
     @Provides
     @Singleton
@@ -39,4 +50,8 @@ object MediaModule {
     @Provides
     @Singleton
     fun provideCallRoomStateProvider(impl: MutableCallRoomStateProvider): CallRoomStateProvider = impl
+
+    @Provides
+    @Singleton
+    fun provideCallAudioLevelProvider(impl: MutableCallAudioLevelProvider): CallAudioLevelProvider = impl
 }

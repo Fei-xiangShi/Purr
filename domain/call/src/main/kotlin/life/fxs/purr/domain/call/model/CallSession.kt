@@ -5,10 +5,9 @@ data class CallSession(
     val pairId: String,
     val participantIdentity: ParticipantIdentity,
     val roomName: String,
-    val wsUrl: String,
-    val token: String,
     val connectionState: CallConnectionState = CallConnectionState.Idle,
     val localAudioState: LocalAudioState = LocalAudioState.Disabled,
     val recordingState: RecordingState = RecordingState.NotRecording,
+    val timing: CallTiming = CallTiming(),
     val uiSnapshot: CallUiSnapshot = CallUiSnapshot(),
 )

@@ -12,10 +12,10 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
-import life.fxs.purr.core.media.livekit.CallRoomStateProvider
 import life.fxs.purr.data.call.diagnostics.AndroidCallEnvironmentReader
 import life.fxs.purr.data.call.diagnostics.LiveKitCallMetricsCollector
 import life.fxs.purr.data.call.diagnostics.RtpByteSample
+import life.fxs.purr.data.call.livekit.CallRoomStateProvider
 import life.fxs.purr.domain.call.model.CallQualityMetrics
 import life.fxs.purr.domain.call.repository.CallDiagnosticsRepository
 
@@ -66,7 +66,8 @@ class CallDiagnosticsRepositoryImpl @Inject constructor(
         .flowOn(Dispatchers.Default)
 
     private companion object {
-        const val AUDIO_LEVEL_INTERVAL_MILLIS = 50L
-        const val WEBRTC_STATS_INTERVAL_MILLIS = 1_000L
+        // High-frequency collection only runs while the diagnostics screen is subscribed.
+        const val AUDIO_LEVEL_INTERVAL_MILLIS = 20L
+        const val WEBRTC_STATS_INTERVAL_MILLIS = 50L
     }
 }

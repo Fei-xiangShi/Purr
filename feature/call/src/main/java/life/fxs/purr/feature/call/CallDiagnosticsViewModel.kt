@@ -46,7 +46,7 @@ class CallDiagnosticsViewModel @Inject constructor(
     )
 
     private companion object {
-        const val NETWORK_HISTORY_SIZE = 60
+        const val NETWORK_HISTORY_SIZE = 150
     }
 }
 

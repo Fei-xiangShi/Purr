@@ -1,6 +1,7 @@
 package life.fxs.purr
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -11,11 +12,13 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.launch
 import life.fxs.purr.core.designsystem.theme.PurrTheme
-import life.fxs.purr.core.media.livekit.CallRoomStateProvider
 import life.fxs.purr.domain.account.model.IncomingCall
 import life.fxs.purr.domain.account.usecase.ObserveRealtimeStateUseCase
 import life.fxs.purr.navigation.PurrNavHost
@@ -24,20 +27,19 @@ import life.fxs.purr.service.IncomingCallNotificationManager
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     @Inject
-    lateinit var callRoomStateProvider: CallRoomStateProvider
-
-    @Inject
     lateinit var observeRealtimeStateUseCase: ObserveRealtimeStateUseCase
 
     private lateinit var incomingCallNotificationManager: IncomingCallNotificationManager
     private var incomingCall: IncomingCall? = null
     private var isInForeground = false
+    private var pendingCallPairId by mutableStateOf<String?>(null)
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) {}
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingCallPairId = intent.getStringExtra(EXTRA_CALL_PAIR_ID)
         incomingCallNotificationManager = IncomingCallNotificationManager(this)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.CREATED) {
@@ -53,7 +55,7 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             PurrTheme {
-                PurrNavHost(roomStateProvider = callRoomStateProvider)
+                PurrNavHost(initialCallPairId = pendingCallPairId)
             }
         }
         if (
@@ -64,6 +66,22 @@ class MainActivity : ComponentActivity() {
         ) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingCallPairId = intent.getStringExtra(EXTRA_CALL_PAIR_ID)
+    }
+
+    companion object {
+        const val EXTRA_CALL_PAIR_ID = "life.fxs.purr.extra.CALL_PAIR_ID"
+
+        fun intent(context: android.content.Context, pairId: String?): Intent =
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                if (!pairId.isNullOrBlank()) putExtra(EXTRA_CALL_PAIR_ID, pairId)
+            }
     }
 
     override fun onStart() {

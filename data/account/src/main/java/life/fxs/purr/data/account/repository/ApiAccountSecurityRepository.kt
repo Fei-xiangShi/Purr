@@ -4,7 +4,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import life.fxs.purr.core.common.AppResult
-import life.fxs.purr.core.common.asAppError
+import life.fxs.purr.core.network.asAppError
 import life.fxs.purr.core.network.api.PurrAccountApi
 import life.fxs.purr.core.network.model.ChangePasswordRequestDto
 import life.fxs.purr.data.account.network.SessionWriter

@@ -10,7 +10,7 @@ interface CallRepository {
     fun observeCallSession(): Flow<CallSession?>
     suspend fun prepareCall(params: PrepareCallParams): AppResult<CallSession>
     suspend fun connectCall(): AppResult<Unit>
-    suspend fun disconnectCall(): AppResult<Unit>
+    suspend fun disconnectCall(expectedCallId: String? = null): AppResult<Unit>
     suspend fun setMuted(muted: Boolean): AppResult<Unit>
     suspend fun selectAudioRoute(route: AudioRoute): AppResult<Unit>
 }

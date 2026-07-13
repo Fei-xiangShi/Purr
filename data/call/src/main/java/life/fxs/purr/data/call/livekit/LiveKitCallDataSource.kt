@@ -1,13 +1,9 @@
 package life.fxs.purr.data.call.livekit
 
-import kotlinx.coroutines.flow.Flow
-import life.fxs.purr.domain.call.model.CallSession
+import life.fxs.purr.data.call.runtime.MediaCallPort
 
-interface LiveKitCallDataSource {
-    val sessionEvents: Flow<CallSession?>
-
-    suspend fun connect(session: CallSession)
-    suspend fun disconnect()
-    suspend fun setMuted(muted: Boolean)
-    fun updateSession(session: CallSession?)
-}
+/**
+ * LiveKit adapter marker. Its public contract is [MediaCallPort], which contains
+ * no domain session or provider-specific state.
+ */
+interface LiveKitCallDataSource : MediaCallPort

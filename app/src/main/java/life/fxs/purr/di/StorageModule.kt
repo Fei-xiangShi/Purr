@@ -12,18 +12,32 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Dispatchers
 import life.fxs.purr.data.account.local.SessionStore
+import life.fxs.purr.data.account.local.AndroidKeyStoreTokenCipher
+import life.fxs.purr.data.account.local.TokenCipher
+import life.fxs.purr.core.common.ApplicationScope
 
 @Module
 @InstallIn(SingletonComponent::class)
 object StorageModule {
     @Provides
     @Singleton
+    fun provideTokenCipher(): TokenCipher = AndroidKeyStoreTokenCipher()
+
+    @Provides
+    @Singleton
+    @ApplicationScope
+    fun provideApplicationScope(): CoroutineScope =
+        CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default)
+
+    @Provides
+    @Singleton
     fun providePreferencesDataStore(
         @ApplicationContext context: Context,
+        @ApplicationScope applicationScope: CoroutineScope,
     ): DataStore<Preferences> = PreferenceDataStoreFactory.create(
-        scope = CoroutineScope(SupervisorJob()),
+        scope = CoroutineScope(applicationScope.coroutineContext + Dispatchers.IO),
         produceFile = { context.preferencesDataStoreFile(SessionStore.FILE_NAME) },
     )
 }

@@ -8,9 +8,11 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.common.AppResult
@@ -26,8 +28,7 @@ import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
 import life.fxs.purr.domain.call.usecase.PrepareCallSessionUseCase
 import life.fxs.purr.domain.call.usecase.SelectAudioRouteUseCase
 import life.fxs.purr.domain.call.usecase.ToggleMuteUseCase
-import life.fxs.purr.domain.call.usecase.LoadCallRecordingsUseCase
-import life.fxs.purr.domain.call.usecase.CreateRecordingDownloadUseCase
+import life.fxs.purr.domain.call.repository.CallAudioLevelProvider
 
 @HiltViewModel
 class CallViewModel @Inject constructor(
@@ -37,31 +38,24 @@ class CallViewModel @Inject constructor(
     private val toggleMuteUseCase: ToggleMuteUseCase,
     private val selectAudioRouteUseCase: SelectAudioRouteUseCase,
     private val disconnectCallUseCase: DisconnectCallUseCase,
-    private val loadCallRecordingsUseCase: LoadCallRecordingsUseCase,
-    private val createRecordingDownloadUseCase: CreateRecordingDownloadUseCase,
+    audioLevelProvider: CallAudioLevelProvider,
 ) : ViewModel() {
     private val _state = MutableStateFlow(CallState())
     val state = _state.asStateFlow()
 
     private val _effects = MutableSharedFlow<CallEffect>()
     val effects = _effects.asSharedFlow()
+    val localAudioLevel: StateFlow<Float> = audioLevelProvider.localAudioLevel
 
-    private var recordingsLoadedForCallId: String? = null
     private var prepareJob: Job? = null
     private var connectJob: Job? = null
     private var endRequested: Boolean = false
 
     init {
         viewModelScope.launch {
-            observeCallStateUseCase().collect { session ->
+                observeCallStateUseCase().collect { session ->
                 session?.let {
-                    val shouldLoadRecordings = it.connectionState == CallConnectionState.Disconnected &&
-                        recordingsLoadedForCallId != it.callId
                     updateState(it)
-                    if (shouldLoadRecordings) {
-                        recordingsLoadedForCallId = it.callId
-                        loadRecordings()
-                    }
                 }
             }
         }
@@ -74,25 +68,6 @@ class CallViewModel @Inject constructor(
             CallIntent.MuteToggle -> toggleMute()
             is CallIntent.RouteSelect -> updateRoute(intent.route)
             CallIntent.EndCall -> endCall()
-            CallIntent.RefreshRecordings -> loadRecordings()
-            is CallIntent.PlayRecording -> playRecording(intent.recordingId)
-            is CallIntent.RecordingPlaybackStarted -> {
-                _state.value = _state.value.copy(
-                    playbackLoadingRecordingId = null,
-                    playingRecordingId = intent.recordingId,
-                    recordingsError = null,
-                )
-            }
-            is CallIntent.RecordingPlaybackStopped -> if (_state.value.playingRecordingId == intent.recordingId) {
-                _state.value = _state.value.copy(playingRecordingId = null)
-            }
-            is CallIntent.RecordingPlaybackFailed -> {
-                _state.value = _state.value.copy(
-                    playbackLoadingRecordingId = null,
-                    playingRecordingId = null,
-                    recordingsError = intent.reason ?: "录音播放失败",
-                )
-            }
         }
     }
 
@@ -116,6 +91,14 @@ class CallViewModel @Inject constructor(
         connectJob?.cancel()
         endRequested = false
         prepareJob = viewModelScope.launch {
+            val existingSession = observeCallStateUseCase().first()
+            if (existingSession?.connectionState?.canAttachToExistingCall() == true) {
+                updateState(existingSession)
+                if (existingSession.connectionState == CallConnectionState.Preparing) {
+                    _effects.emit(CallEffect.RequestMicrophonePermission)
+                }
+                return@launch
+            }
             _state.value = _state.value.copy(
                 screenState = CallScreenState.Dialing,
                 isLoading = true,
@@ -206,49 +189,6 @@ class CallViewModel @Inject constructor(
         }
     }
 
-    private fun loadRecordings() {
-        val callId = _state.value.session?.callId ?: return
-        if (_state.value.isRecordingsLoading) return
-        viewModelScope.launch {
-            _state.value = _state.value.copy(isRecordingsLoading = true, recordingsError = null)
-            when (val result = loadCallRecordingsUseCase(callId)) {
-                is AppResult.Success -> _state.value = _state.value.copy(
-                    recordings = result.value,
-                    isRecordingsLoading = false,
-                )
-                is AppResult.Failure -> _state.value = _state.value.copy(
-                    isRecordingsLoading = false,
-                    recordingsError = result.error.toUserMessage(),
-                )
-            }
-        }
-    }
-
-    private fun playRecording(recordingId: String) {
-        val callId = _state.value.session?.callId ?: return
-        if (_state.value.playingRecordingId == recordingId) {
-            _state.value = _state.value.copy(playingRecordingId = null)
-            viewModelScope.launch { _effects.emit(CallEffect.PauseRecording) }
-            return
-        }
-        if (_state.value.playbackLoadingRecordingId != null) return
-        viewModelScope.launch {
-            _state.value = _state.value.copy(
-                playbackLoadingRecordingId = recordingId,
-                recordingsError = null,
-            )
-            when (val result = createRecordingDownloadUseCase(callId, recordingId)) {
-                is AppResult.Success -> _effects.emit(
-                    CallEffect.PlayRecording(recordingId, result.value.url),
-                )
-                is AppResult.Failure -> _state.value = _state.value.copy(
-                    playbackLoadingRecordingId = null,
-                    recordingsError = result.error.toUserMessage(),
-                )
-            }
-        }
-    }
-
     private suspend fun handleActionResult(
         result: AppResult<Unit>,
         onFailure: (AppError) -> Unit = {},
@@ -267,8 +207,6 @@ class CallViewModel @Inject constructor(
     }
 
     private fun updateState(session: CallSession) {
-        val previous = _state.value
-        val sameCall = previous.session?.callId == session.callId
         val screenState = if (
             endRequested &&
             session.connectionState != CallConnectionState.Disconnected &&
@@ -287,11 +225,6 @@ class CallViewModel @Inject constructor(
             recordingState = session.recordingState,
             isForegroundServiceActive = session.uiSnapshot.isForegroundServiceActive,
             isLoading = screenState == CallScreenState.Ending,
-            recordings = previous.recordings.takeIf { sameCall }.orEmpty(),
-            isRecordingsLoading = previous.isRecordingsLoading && sameCall,
-            playbackLoadingRecordingId = previous.playbackLoadingRecordingId.takeIf { sameCall },
-            playingRecordingId = previous.playingRecordingId.takeIf { sameCall },
-            recordingsError = previous.recordingsError.takeIf { sameCall },
         )
     }
 }
@@ -308,4 +241,16 @@ private fun CallSession.toScreenState(): CallScreenState = when (connectionState
     CallConnectionState.Reconnecting -> CallScreenState.Reconnecting
     CallConnectionState.Disconnected -> CallScreenState.Ended
     is CallConnectionState.Failed -> CallScreenState.Ended
+}
+
+private fun CallConnectionState.canAttachToExistingCall(): Boolean = when (this) {
+    CallConnectionState.Preparing,
+    CallConnectionState.Connecting,
+    CallConnectionState.Connected,
+    CallConnectionState.Reconnecting,
+    -> true
+    CallConnectionState.Idle,
+    CallConnectionState.Disconnected,
+    is CallConnectionState.Failed,
+    -> false
 }

@@ -17,6 +17,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.model.AudioRoute
+import life.fxs.purr.domain.call.repository.CallAudioLevelProvider
 import life.fxs.purr.domain.call.model.CallConnectionState
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.CallUiSnapshot
@@ -29,8 +30,6 @@ import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
 import life.fxs.purr.domain.call.usecase.PrepareCallSessionUseCase
 import life.fxs.purr.domain.call.usecase.SelectAudioRouteUseCase
 import life.fxs.purr.domain.call.usecase.ToggleMuteUseCase
-import life.fxs.purr.domain.call.usecase.LoadCallRecordingsUseCase
-import life.fxs.purr.domain.call.usecase.CreateRecordingDownloadUseCase
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -46,8 +45,9 @@ class CallViewModelTest {
     private val toggleMuteUseCase = mockk<ToggleMuteUseCase>()
     private val selectAudioRouteUseCase = mockk<SelectAudioRouteUseCase>()
     private val disconnectCallUseCase = mockk<DisconnectCallUseCase>()
-    private val loadCallRecordingsUseCase = mockk<LoadCallRecordingsUseCase>()
-    private val createRecordingDownloadUseCase = mockk<CreateRecordingDownloadUseCase>()
+    private val audioLevelProvider = object : CallAudioLevelProvider {
+        override val localAudioLevel = MutableStateFlow(0f)
+    }
 
     @Before
     fun setUp() {
@@ -100,6 +100,42 @@ class CallViewModelTest {
         coVerify(exactly = 1) {
             prepareCallSessionUseCase.invoke(match { it.pairId == "pair-1" && it.recordingConsent })
         }
+        coVerify(exactly = 1) { connectCallUseCase.invoke() }
+    }
+
+    @Test
+    fun `reentering an active call attaches without preparing or connecting again`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.Recording,
+        )
+        val viewModel = createViewModel()
+
+        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { prepareCallSessionUseCase.invoke(any()) }
+        coVerify(exactly = 0) { connectCallUseCase.invoke() }
+        assertThat(viewModel.state.value.session?.callId).isEqualTo("call-1")
+        assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Active)
+    }
+
+    @Test
+    fun `reentering a prepared call resumes at the permission boundary`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Preparing,
+            localAudioState = LocalAudioState.Disabled,
+            recordingState = RecordingState.NotRecording,
+        )
+        val viewModel = createViewModel()
+
+        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+        runCurrent()
+        viewModel.onIntent(CallIntent.MicrophonePermissionResult(granted = true))
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { prepareCallSessionUseCase.invoke(any()) }
         coVerify(exactly = 1) { connectCallUseCase.invoke() }
     }
 
@@ -226,8 +262,7 @@ class CallViewModelTest {
         toggleMuteUseCase = toggleMuteUseCase,
         selectAudioRouteUseCase = selectAudioRouteUseCase,
         disconnectCallUseCase = disconnectCallUseCase,
-        loadCallRecordingsUseCase = loadCallRecordingsUseCase,
-        createRecordingDownloadUseCase = createRecordingDownloadUseCase,
+        audioLevelProvider = audioLevelProvider,
     )
 
     private fun sampleSession(
@@ -240,8 +275,6 @@ class CallViewModelTest {
         pairId = "pair-1",
         participantIdentity = ParticipantIdentity(local = "self", remote = "partner"),
         roomName = "room-1",
-        wsUrl = "wss://example.invalid",
-        token = "token",
         connectionState = connectionState,
         localAudioState = localAudioState,
         recordingState = recordingState,

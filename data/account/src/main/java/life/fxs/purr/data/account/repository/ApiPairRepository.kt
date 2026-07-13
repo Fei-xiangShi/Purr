@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import life.fxs.purr.core.common.AppResult
-import life.fxs.purr.core.common.asAppError
+import life.fxs.purr.core.network.asAppError
 import life.fxs.purr.core.model.PairBond
 import life.fxs.purr.core.network.api.PurrAccountApi
 import life.fxs.purr.domain.account.repository.PairRepository

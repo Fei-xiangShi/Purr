@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -14,7 +15,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import life.fxs.purr.core.media.livekit.CallRoomStateProvider
 import life.fxs.purr.feature.auth.AuthScreenRoute
 import life.fxs.purr.feature.call.CallScreenRoute
 import life.fxs.purr.feature.call.CallHistoryScreenRoute
@@ -31,7 +31,7 @@ private const val CALL_DESTINATION = "$CALL_ROUTE/{$PAIR_ID_ARG}"
 
 @Composable
 fun PurrNavHost(
-    roomStateProvider: CallRoomStateProvider,
+    initialCallPairId: String? = null,
     viewModel: SessionGateViewModel = hiltViewModel(),
 ) {
     val navController = rememberNavController()
@@ -76,11 +76,14 @@ fun PurrNavHost(
             val pairId = backStackEntry.arguments?.getString(PAIR_ID_ARG).orEmpty()
             CallScreenRoute(
                 pairId = pairId,
-                roomStateProvider = roomStateProvider,
                 onCallEnded = {
-                    navController.navigate(HOME_ROUTE) {
-                        popUpTo(HOME_ROUTE) { inclusive = false }
-                        launchSingleTop = true
+                    if (!navController.popBackStack()) {
+                        navController.navigate(HOME_ROUTE) { launchSingleTop = true }
+                    }
+                },
+                onNavigateHome = {
+                    if (!navController.popBackStack()) {
+                        navController.navigate(HOME_ROUTE) { launchSingleTop = true }
                     }
                 },
             )
@@ -97,6 +100,14 @@ fun PurrNavHost(
                     }
                 },
             )
+        }
+    }
+
+    LaunchedEffect(gateState.isReady, gateState.isAuthenticated, initialCallPairId) {
+        if (gateState.isReady && gateState.isAuthenticated && !initialCallPairId.isNullOrBlank()) {
+            navController.navigate("$CALL_ROUTE/$initialCallPairId") {
+                launchSingleTop = true
+            }
         }
     }
 }

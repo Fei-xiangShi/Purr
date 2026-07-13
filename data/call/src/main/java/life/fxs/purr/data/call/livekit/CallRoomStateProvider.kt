@@ -1,4 +1,4 @@
-package life.fxs.purr.core.media.livekit
+package life.fxs.purr.data.call.livekit
 
 import io.livekit.android.room.Room
 import javax.inject.Inject
@@ -13,11 +13,11 @@ interface CallRoomStateProvider {
 
 @Singleton
 class MutableCallRoomStateProvider @Inject constructor() : CallRoomStateProvider {
-    private val _room = MutableStateFlow<Room?>(null)
+    private val mutableRoom = MutableStateFlow<Room?>(null)
 
-    override val room: StateFlow<Room?> = _room.asStateFlow()
+    override val room: StateFlow<Room?> = mutableRoom.asStateFlow()
 
     fun update(room: Room?) {
-        _room.value = room
+        mutableRoom.value = room
     }
 }

@@ -17,7 +17,7 @@ kotlin {
 
 dependencies {
     implementation(libs.kotlinx.coroutines.core)
-    implementation(libs.retrofit.core)
+    implementation(libs.javax.inject)
     testImplementation(libs.junit4)
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)
