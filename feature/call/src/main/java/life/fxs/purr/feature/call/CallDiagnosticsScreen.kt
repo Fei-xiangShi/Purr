@@ -66,7 +66,7 @@ private fun CallDiagnosticsContent(
             DiagnosticMetricRow("网络验证", if (metrics.device.networkValidated) "已联网" else "未验证")
             DiagnosticMetricRow("计费网络", if (metrics.device.networkMetered) "是" else "否")
             DiagnosticMetricRow("系统通话音量", metrics.device.callVolumePercent.asPercent())
-            DiagnosticMetricRow("音频输出", context.activeRoute.toDisplayLabel())
+            DiagnosticMetricRow("音频输出", context.activeRoute.displayLabel)
             DiagnosticMetricRow("系统估算上行", metrics.device.estimatedUpstreamKbps.asBitrate())
             DiagnosticMetricRow(
                 "系统估算下行",

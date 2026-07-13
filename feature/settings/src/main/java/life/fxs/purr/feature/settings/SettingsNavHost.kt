@@ -28,7 +28,6 @@ private const val AVATAR_CROP_ROUTE = "avatar-crop"
 @Composable
 internal fun SettingsNavHost(
     state: SettingsState,
-    onBack: () -> Unit,
     onIntent: (SettingsIntent) -> Unit,
     onPickAvatar: () -> Unit,
     isPreparingAvatar: Boolean,
@@ -65,7 +64,6 @@ internal fun SettingsNavHost(
         composable(SETTINGS_OVERVIEW_ROUTE) {
             SettingsScreen(
                 state = state,
-                onBack = onBack,
                 onIntent = onIntent,
                 onPickAvatar = onPickAvatar,
                 isPreparingAvatar = isPreparingAvatar,

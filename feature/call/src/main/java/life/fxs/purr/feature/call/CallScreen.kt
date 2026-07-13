@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.CallEnd
 import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -144,7 +143,6 @@ fun CallScreen(
     onEndCall: () -> Unit,
 ) {
     val session = state.session
-    val remoteName = session?.participantIdentity?.remote ?: "通话对象"
     val canManageActiveCall = !state.isLoading &&
         (state.screenState == CallScreenState.Waiting || state.screenState == CallScreenState.Active)
     val canEndCall = state.screenState == CallScreenState.Dialing ||
@@ -162,7 +160,7 @@ fun CallScreen(
         )
 
         PurrPanel(
-            title = remoteName,
+            title = "通话房间",
             subtitle = session?.roomName ?: "",
             containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.34f),
         ) {
@@ -199,7 +197,7 @@ fun CallScreen(
         PurrPanel(title = "操作") {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(32.dp, Alignment.CenterHorizontally),
+                horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 MicrophoneLevelButton(
@@ -208,6 +206,12 @@ fun CallScreen(
                     level = localAudioLevel,
                     onClick = onMuteToggle,
                     enabled = canManageActiveCall,
+                )
+                AudioRoutePicker(
+                    routes = state.availableRoutes,
+                    activeRoute = state.activeRoute,
+                    enabled = canManageActiveCall,
+                    onRouteSelect = onRouteSelect,
                 )
                 EndCallButton(
                     onClick = onEndCall,
@@ -235,13 +239,6 @@ fun CallScreen(
             Spacer(Modifier.width(10.dp))
             Text("通话质量检测", style = MaterialTheme.typography.labelLarge)
         }
-
-        AudioRoutePanel(
-            routes = state.availableRoutes,
-            activeRoute = state.activeRoute,
-            enabled = canManageActiveCall,
-            onRouteSelect = onRouteSelect,
-        )
 
     }
 }

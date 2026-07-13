@@ -111,13 +111,8 @@ fun HomeScreen(
                 ) {
                     Text(
                         text = partnerName,
-                        style = MaterialTheme.typography.titleLarge,
+                        style = MaterialTheme.typography.headlineSmall,
                         color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = state.partner?.userId.orEmpty(),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }

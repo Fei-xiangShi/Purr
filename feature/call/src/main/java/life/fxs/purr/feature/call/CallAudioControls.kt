@@ -43,9 +43,9 @@ internal fun MicrophoneLevelButton(
             enabled = enabled,
             modifier = Modifier.size(64.dp),
             colors = IconButtonDefaults.filledIconButtonColors(
-                containerColor = LIGHT_ICON_BUTTON_BACKGROUND,
+                containerColor = CALL_CONTROL_BUTTON_BACKGROUND,
                 contentColor = Color.White,
-                disabledContainerColor = LIGHT_ICON_BUTTON_BACKGROUND.copy(alpha = 0.48f),
+                disabledContainerColor = CALL_CONTROL_BUTTON_BACKGROUND.copy(alpha = 0.48f),
                 disabledContentColor = Color.White.copy(alpha = 0.48f),
             ),
         ) {
@@ -126,6 +126,4 @@ internal fun EndCallButton(
     }
 }
 
-private val LIGHT_ICON_BUTTON_BACKGROUND = Color(0xFF263238)
 private val MICROPHONE_LEVEL_BLUE = Color(0xFF64B5F6)
-internal val END_CALL_BUTTON_BACKGROUND = Color(0xFF7A1F35)

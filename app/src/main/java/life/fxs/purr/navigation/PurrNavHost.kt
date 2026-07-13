@@ -98,7 +98,6 @@ fun PurrNavHost(
         }
         composable(SETTINGS_ROUTE) {
             SettingsScreenRoute(
-                onBack = { navController.popBackStack() },
                 onLoggedOut = {
                     navController.navigate(AUTH_ROUTE) {
                         popUpTo(HOME_ROUTE) { inclusive = true }

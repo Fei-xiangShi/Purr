@@ -61,7 +61,6 @@ import life.fxs.purr.feature.settings.avatar.DecodedAvatarImage
 
 @Composable
 fun SettingsScreenRoute(
-    onBack: () -> Unit,
     onLoggedOut: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
@@ -124,7 +123,6 @@ fun SettingsScreenRoute(
 
     SettingsNavHost(
         state = state,
-        onBack = onBack,
         onIntent = viewModel::onIntent,
         onPickAvatar = {
             avatarProcessingError = null
@@ -181,7 +179,6 @@ fun SettingsScreenRoute(
 @Composable
 fun SettingsScreen(
     state: SettingsState,
-    onBack: () -> Unit,
     onIntent: (SettingsIntent) -> Unit,
     onPickAvatar: () -> Unit,
     isPreparingAvatar: Boolean = false,
@@ -264,11 +261,6 @@ fun SettingsScreen(
                     onDone = { onIntent(SettingsIntent.SubmitDisplayName) },
                 ),
             )
-            Text(
-                text = state.self?.userId.orEmpty(),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             PurrPrimaryButton(
                 text = if (state.isUpdatingDisplayName) "保存中..." else "保存显示名",
                 onClick = { onIntent(SettingsIntent.SubmitDisplayName) },
@@ -277,34 +269,27 @@ fun SettingsScreen(
                     state.displayName.trim().isNotEmpty() &&
                     state.displayName.trim() != state.self.displayName,
             )
+            if (state.isPasswordFormVisible) {
+                PasswordChangeFields(
+                    state = state,
+                    onIntent = onIntent,
+                )
+            } else {
+                PurrSecondaryButton(
+                    text = "修改密码",
+                    onClick = { onIntent(SettingsIntent.ShowPasswordForm) },
+                    enabled = state.self != null && !state.isBusy,
+                )
+            }
         }
 
-        if (state.isPasswordFormVisible) {
-            PasswordChangePanel(
-                state = state,
-                onIntent = onIntent,
-            )
-        }
-
-        PurrPanel(title = "操作") {
-            PurrSecondaryButton(
-                text = "修改密码",
-                onClick = { onIntent(SettingsIntent.ShowPasswordForm) },
-                enabled = state.self != null && !state.isBusy && !state.isPasswordFormVisible,
-            )
-            PurrPrimaryButton(
-                text = if (state.isLoggingOut) "退出中..." else "退出登录",
-                onClick = { onIntent(SettingsIntent.Logout) },
-                enabled = !state.isBusy,
-                containerColor = MaterialTheme.colorScheme.errorContainer,
-                contentColor = MaterialTheme.colorScheme.onErrorContainer,
-            )
-            PurrSecondaryButton(
-                text = "返回",
-                onClick = onBack,
-                enabled = !state.isBusy,
-            )
-        }
+        PurrPrimaryButton(
+            text = if (state.isLoggingOut) "退出中..." else "退出登录",
+            onClick = { onIntent(SettingsIntent.Logout) },
+            enabled = !state.isBusy,
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        )
     }
 }
 
@@ -319,72 +304,75 @@ private fun AvatarImageFailure.userMessage(): String = when (this) {
 private const val GENERIC_AVATAR_ERROR = "头像处理失败，请重试"
 
 @Composable
-private fun PasswordChangePanel(
+private fun PasswordChangeFields(
     state: SettingsState,
     onIntent: (SettingsIntent) -> Unit,
 ) {
+    Text(
+        text = "修改密码",
+        style = MaterialTheme.typography.titleMedium,
+        color = MaterialTheme.colorScheme.onSurface,
+    )
     val fieldsEnabled = !state.isBusy
     val passwordTransformation = PasswordVisualTransformation()
-    PurrPanel(title = "修改密码") {
-        OutlinedTextField(
-            value = state.currentPassword,
-            onValueChange = { onIntent(SettingsIntent.CurrentPasswordChanged(it)) },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("当前密码") },
-            singleLine = true,
-            enabled = fieldsEnabled,
-            visualTransformation = passwordTransformation,
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Password,
-                imeAction = ImeAction.Next,
-            ),
-        )
-        OutlinedTextField(
-            value = state.newPassword,
-            onValueChange = { onIntent(SettingsIntent.NewPasswordChanged(it)) },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("新密码") },
-            singleLine = true,
-            enabled = fieldsEnabled,
-            visualTransformation = passwordTransformation,
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Password,
-                imeAction = ImeAction.Next,
-            ),
-        )
-        OutlinedTextField(
-            value = state.confirmPassword,
-            onValueChange = { onIntent(SettingsIntent.ConfirmPasswordChanged(it)) },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("确认新密码") },
-            singleLine = true,
-            enabled = fieldsEnabled,
-            visualTransformation = passwordTransformation,
-            isError = state.passwordError != null,
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Password,
-                imeAction = ImeAction.Done,
-            ),
-            keyboardActions = KeyboardActions(
-                onDone = { onIntent(SettingsIntent.SubmitPasswordChange) },
-            ),
-        )
-        state.passwordError?.let { message ->
-            Text(
-                text = message,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
-        PurrPrimaryButton(
-            text = if (state.isChangingPassword) "修改中..." else "确认修改",
-            onClick = { onIntent(SettingsIntent.SubmitPasswordChange) },
-            enabled = !state.isBusy,
-        )
-        PurrSecondaryButton(
-            text = "取消",
-            onClick = { onIntent(SettingsIntent.HidePasswordForm) },
-            enabled = fieldsEnabled,
+    OutlinedTextField(
+        value = state.currentPassword,
+        onValueChange = { onIntent(SettingsIntent.CurrentPasswordChanged(it)) },
+        modifier = Modifier.fillMaxWidth(),
+        label = { Text("当前密码") },
+        singleLine = true,
+        enabled = fieldsEnabled,
+        visualTransformation = passwordTransformation,
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Password,
+            imeAction = ImeAction.Next,
+        ),
+    )
+    OutlinedTextField(
+        value = state.newPassword,
+        onValueChange = { onIntent(SettingsIntent.NewPasswordChanged(it)) },
+        modifier = Modifier.fillMaxWidth(),
+        label = { Text("新密码") },
+        singleLine = true,
+        enabled = fieldsEnabled,
+        visualTransformation = passwordTransformation,
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Password,
+            imeAction = ImeAction.Next,
+        ),
+    )
+    OutlinedTextField(
+        value = state.confirmPassword,
+        onValueChange = { onIntent(SettingsIntent.ConfirmPasswordChanged(it)) },
+        modifier = Modifier.fillMaxWidth(),
+        label = { Text("确认新密码") },
+        singleLine = true,
+        enabled = fieldsEnabled,
+        visualTransformation = passwordTransformation,
+        isError = state.passwordError != null,
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Password,
+            imeAction = ImeAction.Done,
+        ),
+        keyboardActions = KeyboardActions(
+            onDone = { onIntent(SettingsIntent.SubmitPasswordChange) },
+        ),
+    )
+    state.passwordError?.let { message ->
+        Text(
+            text = message,
+            color = MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.bodyMedium,
         )
     }
+    PurrPrimaryButton(
+        text = if (state.isChangingPassword) "修改中..." else "确认修改",
+        onClick = { onIntent(SettingsIntent.SubmitPasswordChange) },
+        enabled = !state.isBusy,
+    )
+    PurrSecondaryButton(
+        text = "取消",
+        onClick = { onIntent(SettingsIntent.HidePasswordForm) },
+        enabled = fieldsEnabled,
+    )
 }
