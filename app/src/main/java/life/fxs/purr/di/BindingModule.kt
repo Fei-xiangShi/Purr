@@ -18,10 +18,15 @@ import life.fxs.purr.data.call.runtime.CallRuntimeControllerImpl
 import life.fxs.purr.data.call.runtime.CallRuntimeController
 import life.fxs.purr.data.call.runtime.MediaCallPort
 import life.fxs.purr.data.call.repository.ApiCallHistoryRepository
+import life.fxs.purr.data.call.repository.ApiCallCalendarRepository
+import life.fxs.purr.data.call.repository.ApiCallDetailRepository
+import life.fxs.purr.data.call.repository.UnavailableTranscriptionRepository
+import life.fxs.purr.data.call.repository.ApiCallTelemetryRepository
 import life.fxs.purr.data.call.repository.CallDiagnosticsRepositoryImpl
 import life.fxs.purr.data.call.repository.RecordingRepositoryImpl
 import life.fxs.purr.data.call.remote.ApiCallStatusRemoteDataSource
 import life.fxs.purr.data.call.remote.CallStatusRemoteDataSource
+import life.fxs.purr.data.call.preferences.SharedPreferencesCallOverlayStyleRepository
 import life.fxs.purr.domain.account.repository.AuthRepository
 import life.fxs.purr.domain.account.repository.AccountSecurityRepository
 import life.fxs.purr.domain.account.repository.ProfileRepository
@@ -29,8 +34,13 @@ import life.fxs.purr.domain.account.repository.PairRepository
 import life.fxs.purr.domain.account.repository.RealtimeRepository
 import life.fxs.purr.domain.call.repository.CallRepository
 import life.fxs.purr.domain.call.repository.CallHistoryRepository
+import life.fxs.purr.domain.call.repository.CallCalendarRepository
+import life.fxs.purr.domain.call.repository.CallDetailRepository
+import life.fxs.purr.domain.call.repository.TranscriptionRepository
+import life.fxs.purr.domain.call.repository.CallTelemetryRepository
 import life.fxs.purr.domain.call.repository.CallDiagnosticsRepository
 import life.fxs.purr.domain.call.repository.RecordingRepository
+import life.fxs.purr.domain.call.repository.CallOverlayStyleRepository
 import life.fxs.purr.service.AndroidCallServiceController
 
 @Module
@@ -88,9 +98,35 @@ abstract class BindingModule {
 
     @Binds
     @Singleton
+    abstract fun bindCallCalendarRepository(impl: ApiCallCalendarRepository): CallCalendarRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindCallDetailRepository(impl: ApiCallDetailRepository): CallDetailRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindTranscriptionRepository(
+        impl: UnavailableTranscriptionRepository,
+    ): TranscriptionRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindCallTelemetryRepository(
+        impl: ApiCallTelemetryRepository,
+    ): CallTelemetryRepository
+
+    @Binds
+    @Singleton
     abstract fun bindCallDiagnosticsRepository(impl: CallDiagnosticsRepositoryImpl): CallDiagnosticsRepository
 
     @Binds
     @Singleton
     abstract fun bindRecordingRepository(impl: RecordingRepositoryImpl): RecordingRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindCallOverlayStyleRepository(
+        impl: SharedPreferencesCallOverlayStyleRepository,
+    ): CallOverlayStyleRepository
 }

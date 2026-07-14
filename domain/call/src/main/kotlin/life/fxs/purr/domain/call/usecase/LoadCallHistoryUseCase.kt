@@ -6,5 +6,9 @@ import life.fxs.purr.domain.call.repository.CallHistoryRepository
 class LoadCallHistoryUseCase @Inject constructor(
     private val callHistoryRepository: CallHistoryRepository,
 ) {
-    suspend operator fun invoke(cursor: String? = null) = callHistoryRepository.loadHistory(cursor)
+    suspend operator fun invoke(
+        fromEpochMillis: Long,
+        toEpochMillis: Long,
+        cursor: String? = null,
+    ) = callHistoryRepository.loadDay(fromEpochMillis, toEpochMillis, cursor)
 }

@@ -1,6 +1,7 @@
 package life.fxs.purr.feature.settings
 
 import life.fxs.purr.core.model.SelfProfile
+import life.fxs.purr.domain.call.model.CallOverlayStyle
 
 sealed interface SettingsIntent {
     data object ShowPasswordForm : SettingsIntent
@@ -13,6 +14,7 @@ sealed interface SettingsIntent {
     data class DisplayNameChanged(val value: String) : SettingsIntent
     data object SubmitDisplayName : SettingsIntent
     data object Logout : SettingsIntent
+    data class OverlayStyleSelected(val style: CallOverlayStyle) : SettingsIntent
 }
 
 data class SettingsState(
@@ -29,6 +31,7 @@ data class SettingsState(
     val passwordError: String? = null,
     val displayName: String = "",
     val displayNameError: String? = null,
+    val callOverlayStyle: CallOverlayStyle = CallOverlayStyle.CompactSquare,
 ) {
     val isBusy: Boolean
         get() = isLoggingOut || isChangingPassword || isUploadingAvatar || isUpdatingDisplayName

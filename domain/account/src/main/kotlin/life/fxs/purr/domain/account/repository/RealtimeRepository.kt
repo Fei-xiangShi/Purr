@@ -10,5 +10,5 @@ interface RealtimeRepository {
     fun stop()
     suspend fun refreshActiveCall(): AppResult<Unit>
     suspend fun declineIncomingCall(callId: String): AppResult<Unit>
-    fun clearIncomingCall(callId: String)
+    fun consumeIncomingCall(callId: String)
 }

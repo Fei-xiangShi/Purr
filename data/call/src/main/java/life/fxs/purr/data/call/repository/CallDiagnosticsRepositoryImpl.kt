@@ -1,8 +1,6 @@
 package life.fxs.purr.data.call.repository
 
 import android.os.SystemClock
-import io.livekit.android.events.RoomEvent
-import io.livekit.android.events.collect
 import io.livekit.android.room.Room
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -20,7 +18,6 @@ import life.fxs.purr.data.call.audio.WEBRTC_STATS_SAMPLE_INTERVAL_MILLIS
 import life.fxs.purr.data.call.audio.nextSampleAtMillis
 import life.fxs.purr.data.call.diagnostics.AndroidCallEnvironmentReader
 import life.fxs.purr.data.call.diagnostics.LiveKitCallMetricsCollector
-import life.fxs.purr.data.call.diagnostics.RemoteAudioLevelSample
 import life.fxs.purr.data.call.diagnostics.RtpByteSample
 import life.fxs.purr.data.call.livekit.CallRoomStateProvider
 import life.fxs.purr.domain.call.model.CallQualityMetrics
@@ -41,15 +38,15 @@ class CallDiagnosticsRepositoryImpl @Inject constructor(
             combine(
                 observeRtcMetrics(room),
                 audioLevelProvider.localAudioLevel,
-                observeRemoteAudioLevel(room),
+                audioLevelProvider.remoteAudioLevel,
             ) { rtcMetrics, localAudioLevel, remoteAudioLevel ->
                 rtcMetrics.copy(
                     remoteConnected = room?.remoteParticipants?.isNotEmpty() == true,
                     audio = rtcMetrics.audio.copy(
                         localLevelPercent = (localAudioLevel * 100f).roundToInt().coerceIn(0, 100),
-                        remoteLevelPercent = remoteAudioLevel.levelPercent,
+                        remoteLevelPercent = (remoteAudioLevel * 100f).roundToInt().coerceIn(0, 100),
                         localSpeaking = localAudioLevel >= LOCAL_SPEAKING_LEVEL,
-                        remoteSpeaking = remoteAudioLevel.speaking,
+                        remoteSpeaking = remoteAudioLevel >= REMOTE_SPEAKING_LEVEL,
                     ),
                 )
             }
@@ -80,26 +77,10 @@ class CallDiagnosticsRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun observeRemoteAudioLevel(room: Room?): Flow<RemoteAudioLevelSample> = flow {
-        emit(liveKitCollector.collectRemoteAudioLevel(room))
-        if (room == null) return@flow
-
-        // Participant.audioLevel only changes when LiveKit receives a speaker update. Observing
-        // those events avoids a high-frequency loop that repeatedly publishes the same SDK value.
-        room.events.collect { event ->
-            when (event) {
-                is RoomEvent.ActiveSpeakersChanged,
-                is RoomEvent.ParticipantConnected,
-                is RoomEvent.ParticipantDisconnected,
-                -> emit(liveKitCollector.collectRemoteAudioLevel(room))
-                else -> Unit
-            }
-        }
-    }
-
     private companion object {
         // High-frequency collection only runs while the diagnostics screen is subscribed.
         const val WEBRTC_STATS_INTERVAL_MILLIS = WEBRTC_STATS_SAMPLE_INTERVAL_MILLIS
         const val LOCAL_SPEAKING_LEVEL = 0.035f
+        const val REMOTE_SPEAKING_LEVEL = 0.035f
     }
 }

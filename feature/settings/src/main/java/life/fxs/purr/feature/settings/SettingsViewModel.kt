@@ -21,6 +21,8 @@ import life.fxs.purr.domain.account.usecase.LogoutUseCase
 import life.fxs.purr.domain.account.usecase.ObserveAuthSessionUseCase
 import life.fxs.purr.domain.account.usecase.UploadAvatarUseCase
 import life.fxs.purr.domain.account.usecase.UpdateDisplayNameUseCase
+import life.fxs.purr.domain.call.usecase.ObserveCallOverlayStyleUseCase
+import life.fxs.purr.domain.call.usecase.SetCallOverlayStyleUseCase
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -29,6 +31,8 @@ class SettingsViewModel @Inject constructor(
     private val changePasswordUseCase: ChangePasswordUseCase,
     private val uploadAvatarUseCase: UploadAvatarUseCase,
     private val updateDisplayNameUseCase: UpdateDisplayNameUseCase,
+    observeCallOverlayStyleUseCase: ObserveCallOverlayStyleUseCase,
+    private val setCallOverlayStyleUseCase: SetCallOverlayStyleUseCase,
 ) : ViewModel() {
     private val sessionState = observeAuthSessionUseCase()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -46,6 +50,11 @@ class SettingsViewModel @Inject constructor(
                     self = session?.self,
                     displayName = session?.self?.displayName.orEmpty(),
                 )
+            }
+        }
+        viewModelScope.launch {
+            observeCallOverlayStyleUseCase().collect { style ->
+                updateState { copy(callOverlayStyle = style) }
             }
         }
     }
@@ -74,6 +83,7 @@ class SettingsViewModel @Inject constructor(
             }
             SettingsIntent.SubmitDisplayName -> updateDisplayName()
             SettingsIntent.Logout -> logout()
+            is SettingsIntent.OverlayStyleSelected -> setCallOverlayStyleUseCase(intent.style)
         }
     }
 

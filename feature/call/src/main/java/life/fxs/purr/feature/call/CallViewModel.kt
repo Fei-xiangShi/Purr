@@ -46,6 +46,7 @@ class CallViewModel @Inject constructor(
     private val _effects = MutableSharedFlow<CallEffect>()
     val effects = _effects.asSharedFlow()
     val localAudioLevel: StateFlow<Float> = audioLevelProvider.localAudioLevel
+    val remoteAudioLevel: StateFlow<Float> = audioLevelProvider.remoteAudioLevel
 
     private var prepareJob: Job? = null
     private var connectJob: Job? = null
@@ -94,7 +95,7 @@ class CallViewModel @Inject constructor(
         navigatedCallId = null
         prepareJob = viewModelScope.launch {
             val existingSession = observeCallStateUseCase().first()
-            if (existingSession?.connectionState?.canAttachToExistingCall() == true) {
+            if (existingSession?.connectionState?.isOngoing == true) {
                 currentCallId = existingSession.callId
                 updateState(existingSession)
                 if (existingSession.connectionState == CallConnectionState.Preparing) {
@@ -213,7 +214,7 @@ class CallViewModel @Inject constructor(
     }
 
     private suspend fun onSessionChanged(session: CallSession) {
-        val isTerminal = session.connectionState.isTerminal()
+        val isTerminal = session.connectionState.isTerminal
         if (!isTerminal) {
             currentCallId = session.callId
             updateState(session)
@@ -267,19 +268,3 @@ private fun CallSession.toScreenState(): CallScreenState = when (connectionState
     CallConnectionState.Disconnected -> CallScreenState.Ended
     is CallConnectionState.Failed -> CallScreenState.Ended
 }
-
-private fun CallConnectionState.canAttachToExistingCall(): Boolean = when (this) {
-    CallConnectionState.Preparing,
-    CallConnectionState.Connecting,
-    CallConnectionState.Connected,
-    CallConnectionState.Reconnecting,
-    CallConnectionState.Terminating,
-    -> true
-    CallConnectionState.Idle,
-    CallConnectionState.Disconnected,
-    is CallConnectionState.Failed,
-    -> false
-}
-
-private fun CallConnectionState.isTerminal(): Boolean =
-    this == CallConnectionState.Disconnected || this is CallConnectionState.Failed

@@ -94,7 +94,7 @@ class CallRepositoryImpl @Inject constructor(
                         mediaEvent is MediaCallEvent.Disconnected ||
                         mediaEvent is MediaCallEvent.Failed
                     ) {
-                        if (current.connectionState.isTerminal() ||
+                        if (current.connectionState.isTerminal ||
                             current.connectionState == CallConnectionState.Terminating
                         ) {
                             return@withLock null
@@ -150,7 +150,7 @@ class CallRepositoryImpl @Inject constructor(
                 return@withLock null
             }
             val existing = sessionState.value
-            if (existing != null && !existing.connectionState.isTerminal()) {
+            if (existing != null && !existing.connectionState.isTerminal) {
                 immediateResult = AppResult.Failure(AppError.Validation("A call is already in progress"))
                 return@withLock null
             }
@@ -343,7 +343,7 @@ class CallRepositoryImpl @Inject constructor(
             if (expectedCallId != null && session.callId != expectedCallId) {
                 return@withLock null
             }
-            if (session.connectionState.isTerminal()) {
+            if (session.connectionState.isTerminal) {
                 return@withLock null
             }
 
@@ -549,6 +549,3 @@ private data class ConnectOperation(
     val callId: String,
     val deferred: Deferred<AppResult<Unit>>,
 )
-
-private fun CallConnectionState.isTerminal(): Boolean =
-    this == CallConnectionState.Disconnected || this is CallConnectionState.Failed

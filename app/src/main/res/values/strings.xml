@@ -4,8 +4,4 @@
     <string name="call_notification_channel_name">语音会话</string>
     <string name="call_notification_content">语音会话正在运行</string>
     <string name="call_notification_hang_up">挂断</string>
-    <string name="incoming_call_notification_channel_name">来电</string>
-    <string name="incoming_call_notification_channel_description">收到来电时提醒</string>
-    <string name="incoming_call_notification_title">正在被呼叫</string>
-    <string name="incoming_call_notification_content">有新的来电</string>
 </resources>

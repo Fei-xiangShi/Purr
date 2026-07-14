@@ -31,6 +31,7 @@ fun HomeScreenRoute(
     onOpenCall: (String) -> Unit,
     onOpenCallHistory: () -> Unit,
     onOpenSettings: () -> Unit,
+    partnerAvatarModifier: Modifier = Modifier,
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -49,10 +50,9 @@ fun HomeScreenRoute(
         state = state,
         onStartCall = { viewModel.onIntent(HomeIntent.StartCall) },
         onRefreshStatus = { viewModel.onIntent(HomeIntent.RefreshStatus) },
-        onAcceptIncomingCall = { viewModel.onIntent(HomeIntent.AcceptIncomingCall) },
-        onDeclineIncomingCall = { viewModel.onIntent(HomeIntent.DeclineIncomingCall) },
         onOpenCallHistory = onOpenCallHistory,
         onOpenSettings = onOpenSettings,
+        partnerAvatarModifier = partnerAvatarModifier,
     )
 }
 
@@ -61,10 +61,9 @@ fun HomeScreen(
     state: HomeState,
     onStartCall: () -> Unit,
     onRefreshStatus: () -> Unit,
-    onAcceptIncomingCall: () -> Unit,
-    onDeclineIncomingCall: () -> Unit,
     onOpenCallHistory: () -> Unit,
     onOpenSettings: () -> Unit,
+    partnerAvatarModifier: Modifier = Modifier,
 ) {
     val selfName = state.self?.displayName ?: "用户"
     val partnerName = state.partner?.displayName ?: "暂无配对对象"
@@ -77,23 +76,6 @@ fun HomeScreen(
             modifier = Modifier,
         )
 
-        state.incomingCall?.let {
-            PurrPanel(
-                title = "$partnerName 正在呼叫",
-                subtitle = "",
-                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-            ) {
-                PurrPrimaryButton(
-                    text = "接听",
-                    onClick = onAcceptIncomingCall,
-                )
-                PurrSecondaryButton(
-                    text = "拒绝",
-                    onClick = onDeclineIncomingCall,
-                )
-            }
-        }
-
         PurrPanel(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.34f)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -103,6 +85,7 @@ fun HomeScreen(
                 PurrAvatar(
                     avatarUrl = state.partner?.avatarUrl,
                     contentDescription = "对方头像",
+                    modifier = partnerAvatarModifier,
                     size = 64.dp,
                 )
                 Column(

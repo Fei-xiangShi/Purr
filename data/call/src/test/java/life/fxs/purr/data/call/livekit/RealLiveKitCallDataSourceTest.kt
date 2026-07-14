@@ -6,8 +6,11 @@ import io.livekit.android.events.EventListenable
 import io.livekit.android.events.RoomEvent
 import io.livekit.android.room.Room
 import io.livekit.android.room.participant.LocalParticipant
+import io.livekit.android.room.participant.RemoteParticipant
 import io.livekit.android.room.track.LocalAudioTrack
 import io.livekit.android.room.track.LocalTrackPublication
+import io.livekit.android.room.track.RemoteAudioTrack
+import io.livekit.android.room.track.RemoteTrackPublication
 import io.livekit.android.room.track.Track
 import io.mockk.coEvery
 import io.mockk.every
@@ -106,6 +109,35 @@ class RealLiveKitCallDataSourceTest {
         source.execute(MediaCallCommand.SetMuted(callId = "call-1", muted = false))
 
         verify(exactly = 2) { harness.localAudioTrack.addSink(audioLevelProvider) }
+    }
+
+    @Test
+    fun `subscribed remote microphone uses pcm sink until call release`() = runTest(dispatcher) {
+        val harness = roomHarness()
+        val remoteTrack = mockk<RemoteAudioTrack>(relaxed = true)
+        val remotePublication = mockk<RemoteTrackPublication>()
+        val remoteParticipant = mockk<RemoteParticipant>()
+        every { roomFactory.create() } returns harness.room
+        val source = source()
+
+        source.execute(connectCommand())
+        runCurrent()
+        harness.events.emit(
+            RoomEvent.TrackSubscribed(
+                room = harness.room,
+                track = remoteTrack,
+                publication = remotePublication,
+                participant = remoteParticipant,
+            ),
+        )
+        runCurrent()
+
+        verify(exactly = 1) { remoteTrack.addSink(audioLevelProvider.remoteAudioSink) }
+
+        source.execute(MediaCallCommand.Disconnect(callId = "call-1"))
+
+        verify(exactly = 1) { remoteTrack.removeSink(audioLevelProvider.remoteAudioSink) }
+        assertThat(audioLevelProvider.remoteAudioLevel.value).isEqualTo(0f)
     }
 
     @Test

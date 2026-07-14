@@ -48,6 +48,7 @@ dependencies {
     implementation(projects.core.presentation)
     implementation(projects.core.designsystem)
     implementation(projects.domain.account)
+    implementation(projects.domain.call)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.compose.ui)

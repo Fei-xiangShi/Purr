@@ -1,16 +1,19 @@
 package life.fxs.purr.feature.call
 
-import life.fxs.purr.domain.call.model.CallHistoryEntry
+import java.time.LocalDate
+import java.time.YearMonth
+import life.fxs.purr.domain.call.model.CallCalendarDay
 
 data class CallHistoryState(
-    val calls: List<CallHistoryEntry> = emptyList(),
-    val nextCursor: String? = null,
+    val displayedMonth: YearMonth = YearMonth.now(),
+    val days: Map<LocalDate, CallCalendarDay> = emptyMap(),
     val isLoading: Boolean = false,
-    val isLoadingMore: Boolean = false,
     val errorMessage: String? = null,
 )
 
 sealed interface CallHistoryIntent {
-    data object Refresh : CallHistoryIntent
-    data object LoadMore : CallHistoryIntent
+    data object PreviousMonth : CallHistoryIntent
+    data object NextMonth : CallHistoryIntent
+    data class SelectMonth(val month: YearMonth) : CallHistoryIntent
+    data object Retry : CallHistoryIntent
 }

@@ -29,6 +29,9 @@ import life.fxs.purr.domain.account.usecase.LogoutUseCase
 import life.fxs.purr.domain.account.usecase.ObserveAuthSessionUseCase
 import life.fxs.purr.domain.account.usecase.UploadAvatarUseCase
 import life.fxs.purr.domain.account.usecase.UpdateDisplayNameUseCase
+import life.fxs.purr.domain.call.model.CallOverlayStyle
+import life.fxs.purr.domain.call.usecase.ObserveCallOverlayStyleUseCase
+import life.fxs.purr.domain.call.usecase.SetCallOverlayStyleUseCase
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -42,6 +45,9 @@ class SettingsViewModelTest {
     private val changePasswordUseCase = mockk<ChangePasswordUseCase>()
     private val uploadAvatarUseCase = mockk<UploadAvatarUseCase>()
     private val updateDisplayNameUseCase = mockk<UpdateDisplayNameUseCase>()
+    private val overlayStyle = MutableStateFlow(CallOverlayStyle.CompactSquare)
+    private val observeCallOverlayStyleUseCase = mockk<ObserveCallOverlayStyleUseCase>()
+    private val setCallOverlayStyleUseCase = mockk<SetCallOverlayStyleUseCase>()
 
     @Before
     fun setUp() {
@@ -51,6 +57,10 @@ class SettingsViewModelTest {
         coEvery { changePasswordUseCase.invoke(any(), any()) } returns AppResult.Success(Unit)
         coEvery { uploadAvatarUseCase.invoke(any(), any()) } returns AppResult.Success(SelfProfile("user-a", "User A", "https://avatar.test/a.png"))
         coEvery { updateDisplayNameUseCase.invoke(any()) } returns AppResult.Success(SelfProfile("user-a", "New Name"))
+        every { observeCallOverlayStyleUseCase.invoke() } returns overlayStyle
+        every { setCallOverlayStyleUseCase.invoke(any()) } answers {
+            overlayStyle.value = firstArg()
+        }
     }
 
     @After
@@ -217,6 +227,21 @@ class SettingsViewModelTest {
         }
     }
 
+    @Test
+    fun `overlay style selection is persisted and reflected in state`() = runTest(dispatcher) {
+        withViewModel { viewModel ->
+            runCurrent()
+
+            viewModel.onIntent(SettingsIntent.OverlayStyleSelected(CallOverlayStyle.SpeakerNames))
+            runCurrent()
+
+            assertThat(viewModel.state.value.callOverlayStyle).isEqualTo(CallOverlayStyle.SpeakerNames)
+            io.mockk.verify(exactly = 1) {
+                setCallOverlayStyleUseCase.invoke(CallOverlayStyle.SpeakerNames)
+            }
+        }
+    }
+
     private fun SettingsViewModel.enterPasswords(confirmPassword: String = "new-password") {
         onIntent(SettingsIntent.ShowPasswordForm)
         onIntent(SettingsIntent.CurrentPasswordChanged("old-password"))
@@ -231,6 +256,8 @@ class SettingsViewModelTest {
             changePasswordUseCase = changePasswordUseCase,
             uploadAvatarUseCase = uploadAvatarUseCase,
             updateDisplayNameUseCase = updateDisplayNameUseCase,
+            observeCallOverlayStyleUseCase = observeCallOverlayStyleUseCase,
+            setCallOverlayStyleUseCase = setCallOverlayStyleUseCase,
         )
         try {
             block(viewModel)

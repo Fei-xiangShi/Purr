@@ -38,6 +38,10 @@ internal fun SettingsNavHost(
     onCancelPendingAvatar: () -> Unit,
     onCropDisposed: (DecodedAvatarImage) -> Unit,
     onCropConfirm: suspend (DecodedAvatarImage, AvatarCropArea) -> Boolean,
+    overlayPermissionGranted: Boolean,
+    onRequestOverlayPermission: () -> Unit,
+    batteryOptimizationIgnored: Boolean,
+    onRequestIgnoreBatteryOptimizations: () -> Unit,
 ) {
     val navController = rememberNavController()
     val coroutineScope = rememberCoroutineScope()
@@ -68,6 +72,10 @@ internal fun SettingsNavHost(
                 onPickAvatar = onPickAvatar,
                 isPreparingAvatar = isPreparingAvatar,
                 avatarProcessingError = avatarProcessingError,
+                overlayPermissionGranted = overlayPermissionGranted,
+                onRequestOverlayPermission = onRequestOverlayPermission,
+                batteryOptimizationIgnored = batteryOptimizationIgnored,
+                onRequestIgnoreBatteryOptimizations = onRequestIgnoreBatteryOptimizations,
             )
         }
         composable(AVATAR_CROP_ROUTE) {

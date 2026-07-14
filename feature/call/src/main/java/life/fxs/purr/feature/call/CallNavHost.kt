@@ -2,6 +2,7 @@ package life.fxs.purr.feature.call
 
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -20,6 +21,11 @@ internal fun CallNavHost(
     state: CallState,
     callDurationSeconds: Long,
     localAudioLevel: Float,
+    remoteAudioLevel: Float,
+    partnerName: String,
+    partnerAvatarUrl: String?,
+    partnerAvatarModifier: Modifier,
+    onCallSurfaceVisibilityChanged: (Boolean) -> Unit,
     onMuteToggle: () -> Unit,
     onRouteSelect: (AudioRoute) -> Unit,
     onEndCall: () -> Unit,
@@ -34,10 +40,18 @@ internal fun CallNavHost(
         modifier = Modifier.fillMaxSize(),
     ) {
         composable(CALL_OVERVIEW_ROUTE) {
+            DisposableEffect(onCallSurfaceVisibilityChanged) {
+                onCallSurfaceVisibilityChanged(true)
+                onDispose { onCallSurfaceVisibilityChanged(false) }
+            }
             CallScreen(
                 state = state,
                 callDurationSeconds = callDurationSeconds,
                 localAudioLevel = localAudioLevel,
+                remoteAudioLevel = remoteAudioLevel,
+                partnerName = partnerName,
+                partnerAvatarUrl = partnerAvatarUrl,
+                partnerAvatarModifier = partnerAvatarModifier,
                 onMuteToggle = onMuteToggle,
                 onRouteSelect = onRouteSelect,
                 onShowDiagnostics = {

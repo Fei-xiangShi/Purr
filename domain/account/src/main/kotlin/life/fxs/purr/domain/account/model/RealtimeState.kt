@@ -10,5 +10,5 @@ data class IncomingCall(
 data class RealtimeState(
     val isConnected: Boolean = false,
     val partnerOnline: Boolean? = null,
-    val incomingCall: IncomingCall? = null,
+    val incomingCallCandidate: IncomingCall? = null,
 )

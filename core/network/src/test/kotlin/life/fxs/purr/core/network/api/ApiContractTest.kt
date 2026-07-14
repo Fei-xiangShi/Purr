@@ -25,7 +25,10 @@ class ApiContractTest {
         assertThat(PurrCallApi::class.java.postPath("endCall")).isEqualTo("calls/{callId}/end")
         assertThat(PurrCallApi::class.java.getPath("getCall")).isEqualTo("calls/{callId}")
         assertThat(PurrCallApi::class.java.getPath("getActiveCall")).isEqualTo("calls/active")
-        assertThat(PurrCallApi::class.java.getPath("getCallHistory")).isEqualTo("calls/history")
+        assertThat(PurrCallHistoryApi::class.java.getPath("getCalendar")).isEqualTo("calls/history/calendar")
+        assertThat(PurrCallHistoryApi::class.java.getPath("getDay")).isEqualTo("calls/history/day")
+        assertThat(PurrCallHistoryApi::class.java.getPath("getDetail")).isEqualTo("calls/{callId}/details")
+        assertThat(PurrCallTelemetryApi::class.java.postPath("report")).isEqualTo("calls/{callId}/telemetry")
     }
 
     @Test

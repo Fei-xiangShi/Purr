@@ -14,19 +14,6 @@ import kotlin.math.roundToInt
 
 @Singleton
 class LiveKitCallMetricsCollector @Inject constructor() {
-    /**
-     * Remote participant levels are supplied by LiveKit speaker messages. Their update cadence is
-     * controlled by the SDK/server; the UI interpolates between these event-driven samples.
-     */
-    fun collectRemoteAudioLevel(room: Room?): RemoteAudioLevelSample {
-        val remoteParticipant = room?.remoteParticipants?.values?.firstOrNull()
-        return RemoteAudioLevelSample(
-            levelPercent = ((remoteParticipant?.audioLevel ?: 0f) * 100f)
-                .roundToInt().coerceIn(0, 100),
-            speaking = remoteParticipant?.isSpeaking == true,
-        )
-    }
-
     suspend fun collect(
         room: Room?,
         previousSample: RtpByteSample?,
@@ -88,11 +75,6 @@ data class LiveKitMetricsResult(
     val audio: AudioQualityMetrics,
     val transport: TransportQualityMetrics,
     val sample: RtpByteSample,
-)
-
-data class RemoteAudioLevelSample(
-    val levelPercent: Int,
-    val speaking: Boolean,
 )
 
 data class RtpByteSample(

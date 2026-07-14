@@ -35,6 +35,7 @@ include(
     ":data:call",
     ":feature:auth",
     ":feature:home",
+    ":feature:incomingcall",
     ":feature:call",
     ":feature:settings",
 )

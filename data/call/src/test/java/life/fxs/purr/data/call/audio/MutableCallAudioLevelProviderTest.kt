@@ -80,6 +80,25 @@ class MutableCallAudioLevelProviderTest {
         assertThat(provider.localAudioLevel.value).isEqualTo(validLevel)
     }
 
+    @Test
+    fun `remote sink publishes pcm levels independently and can be reset`() {
+        provider.remoteAudioSink.onData(
+            pcm16(16_384, 16_384),
+            16,
+            48_000,
+            1,
+            2,
+            1L,
+        )
+
+        assertThat(provider.remoteAudioLevel.value).isWithin(0.001f).of(0.707f)
+        assertThat(provider.localAudioLevel.value).isEqualTo(0f)
+
+        provider.resetRemote()
+
+        assertThat(provider.remoteAudioLevel.value).isEqualTo(0f)
+    }
+
     private fun pcm16(vararg samples: Int): ByteBuffer = ByteBuffer
         .allocate(samples.size * 2)
         .apply {

@@ -3,6 +3,7 @@ package life.fxs.purr.feature.call
 import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
 import io.mockk.mockk
+import java.time.LocalDate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -11,9 +12,8 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import life.fxs.purr.core.common.AppResult
-import life.fxs.purr.domain.call.model.CallHistoryEntry
-import life.fxs.purr.domain.call.model.CallHistoryPage
-import life.fxs.purr.domain.call.usecase.LoadCallHistoryUseCase
+import life.fxs.purr.domain.call.model.CallCalendarDay
+import life.fxs.purr.domain.call.usecase.LoadCallCalendarUseCase
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -21,7 +21,7 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class CallHistoryViewModelTest {
     private val dispatcher = StandardTestDispatcher()
-    private val loadHistory = mockk<LoadCallHistoryUseCase>()
+    private val loadCalendar = mockk<LoadCallCalendarUseCase>()
 
     @Before
     fun setUp() {
@@ -34,25 +34,20 @@ class CallHistoryViewModelTest {
     }
 
     @Test
-    fun `loads and appends paged history without duplicates`() = runTest(dispatcher) {
-        val first = history("call-1", 2_000L)
-        val second = history("call-2", 1_000L)
-        coEvery { loadHistory.invoke(null) } returns AppResult.Success(
-            CallHistoryPage(listOf(first), "next-page"),
-        )
-        coEvery { loadHistory.invoke("next-page") } returns AppResult.Success(
-            CallHistoryPage(listOf(first, second), null),
-        )
-        val viewModel = CallHistoryViewModel(loadHistory)
+    fun `maps calendar response by date and navigates months`() = runTest(dispatcher) {
+        val calendarDay = CallCalendarDay("2026-07-12", 2, 120_000L)
+        coEvery { loadCalendar(any(), any(), any()) } returns AppResult.Success(listOf(calendarDay))
+        val viewModel = CallHistoryViewModel(loadCalendar)
+        val initialMonth = viewModel.state.value.displayedMonth
         runCurrent()
 
-        assertThat(viewModel.state.value.calls).containsExactly(first)
+        assertThat(viewModel.state.value.days[LocalDate.parse("2026-07-12")]).isEqualTo(calendarDay)
 
-        viewModel.onIntent(CallHistoryIntent.LoadMore)
+        viewModel.onIntent(CallHistoryIntent.PreviousMonth)
         runCurrent()
 
-        assertThat(viewModel.state.value.calls).containsExactly(first, second).inOrder()
-        assertThat(viewModel.state.value.nextCursor).isNull()
+        assertThat(viewModel.state.value.displayedMonth).isEqualTo(initialMonth.minusMonths(1))
+        assertThat(viewModel.state.value.isLoading).isFalse()
     }
 
     @Test
@@ -63,10 +58,4 @@ class CallHistoryViewModelTest {
         assertThat(3_723_000L.toHistoryDuration()).isEqualTo("1小时2分3秒")
         assertThat(125_000L.toHistoryDuration()).isEqualTo("2分5秒")
     }
-
-    private fun history(callId: String, startedAt: Long) = CallHistoryEntry(
-        callId = callId,
-        startedAtEpochMillis = startedAt,
-        durationMillis = 60_000L,
-    )
 }

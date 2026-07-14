@@ -5,35 +5,31 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.app.DownloadManager
+import android.content.Context
+import android.net.Uri
+import android.os.Environment
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dagger.hilt.android.AndroidEntryPoint
-import javax.inject.Inject
-import kotlinx.coroutines.launch
 import life.fxs.purr.core.designsystem.theme.PurrTheme
-import life.fxs.purr.domain.account.model.IncomingCall
-import life.fxs.purr.domain.account.usecase.ObserveRealtimeStateUseCase
 import life.fxs.purr.navigation.CallNavigationRequest
 import life.fxs.purr.navigation.CallNavigationRequestStore
 import life.fxs.purr.navigation.PurrNavHost
-import life.fxs.purr.service.IncomingCallNotificationManager
+import javax.inject.Inject
+import life.fxs.purr.overlay.CallOverlayVisibilityStore
+import life.fxs.purr.feature.call.RecordingDownloadRequest
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     @Inject
-    lateinit var observeRealtimeStateUseCase: ObserveRealtimeStateUseCase
-
-    private lateinit var incomingCallNotificationManager: IncomingCallNotificationManager
-    private var incomingCall: IncomingCall? = null
-    private var isInForeground = false
+    lateinit var callOverlayVisibilityStore: CallOverlayVisibilityStore
     private val callNavigationRequestStore = CallNavigationRequestStore()
     private var pendingCallRequest by mutableStateOf<CallNavigationRequest?>(null)
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -43,25 +39,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         updatePendingCallRequest(intent)
-        incomingCallNotificationManager = IncomingCallNotificationManager(this)
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.CREATED) {
-                observeRealtimeStateUseCase().collect { state ->
-                    incomingCall = state.incomingCall
-                    if (isInForeground || incomingCall == null) {
-                        incomingCallNotificationManager.cancel()
-                    } else {
-                        incomingCallNotificationManager.show()
-                    }
-                }
-            }
-        }
         setContent {
             PurrTheme {
                 PurrNavHost(
                     initialCallPairId = pendingCallRequest?.pairId,
                     initialCallRequestId = pendingCallRequest?.requestId,
                     onCallRequestConsumed = ::consumeCallRequest,
+                    onCallSurfaceVisibilityChanged = callOverlayVisibilityStore::setCallSurfaceVisible,
+                    onRecordingDownload = ::downloadRecording,
                 )
             }
         }
@@ -81,6 +66,16 @@ class MainActivity : ComponentActivity() {
         updatePendingCallRequest(intent)
     }
 
+    override fun onStart() {
+        super.onStart()
+        callOverlayVisibilityStore.setApplicationForeground(true)
+    }
+
+    override fun onStop() {
+        callOverlayVisibilityStore.setApplicationForeground(false)
+        super.onStop()
+    }
+
     private fun updatePendingCallRequest(intent: Intent) {
         pendingCallRequest = callNavigationRequestStore.submit(
             intent.getStringExtra(EXTRA_CALL_PAIR_ID),
@@ -94,6 +89,27 @@ class MainActivity : ComponentActivity() {
         pendingCallRequest = callNavigationRequestStore.pending
     }
 
+    private fun downloadRecording(request: RecordingDownloadRequest) {
+        val uri = Uri.parse(request.url)
+        if (uri.scheme !in setOf("http", "https")) {
+            Toast.makeText(this, "录音下载地址无效", Toast.LENGTH_SHORT).show()
+            return
+        }
+        runCatching {
+            val downloadManager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            downloadManager.enqueue(
+                DownloadManager.Request(uri)
+                    .setTitle("通话录音")
+                    .setDescription(request.fileName)
+                    .setMimeType("audio/ogg")
+                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, request.fileName),
+            )
+        }.onFailure {
+            Toast.makeText(this, "无法开始下载录音", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     companion object {
         const val EXTRA_CALL_PAIR_ID = "life.fxs.purr.extra.CALL_PAIR_ID"
 
@@ -104,23 +120,4 @@ class MainActivity : ComponentActivity() {
             }
     }
 
-    override fun onStart() {
-        super.onStart()
-        isInForeground = true
-        if (::incomingCallNotificationManager.isInitialized) {
-            incomingCallNotificationManager.cancel()
-        }
-    }
-
-    override fun onStop() {
-        isInForeground = false
-        if (
-            !isChangingConfigurations &&
-            ::incomingCallNotificationManager.isInitialized &&
-            incomingCall != null
-        ) {
-            incomingCallNotificationManager.show()
-        }
-        super.onStop()
-    }
 }

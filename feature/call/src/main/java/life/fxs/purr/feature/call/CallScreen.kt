@@ -14,52 +14,47 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.NetworkCheck
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import java.util.Locale
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collect
-import life.fxs.purr.core.designsystem.component.PurrPanel
-import life.fxs.purr.core.designsystem.component.PurrScreen
-import life.fxs.purr.core.designsystem.component.PurrSectionTitle
-import life.fxs.purr.core.designsystem.component.PurrStatusChip
+import life.fxs.purr.core.designsystem.component.VoiceCallScaffold
 import life.fxs.purr.core.model.AudioRoute
-import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.CallTiming
+import life.fxs.purr.domain.call.model.LocalAudioState
 
 @Composable
 fun CallScreenRoute(
     pairId: String,
+    partnerName: String = "对方",
+    partnerAvatarUrl: String? = null,
+    partnerAvatarModifier: Modifier = Modifier,
+    onCallSurfaceVisibilityChanged: (Boolean) -> Unit = {},
     onCallEnded: () -> Unit,
     viewModel: CallViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val localAudioLevel by viewModel.localAudioLevel.collectAsStateWithLifecycle()
-    val context = LocalContext.current
+    val remoteAudioLevel by viewModel.remoteAudioLevel.collectAsStateWithLifecycle()
+    val context = androidx.compose.ui.platform.LocalContext.current
     val callDurationSeconds = rememberCallDurationSeconds(
         timing = state.session?.timing ?: CallTiming(),
         callId = state.session?.callId,
@@ -89,16 +84,11 @@ fun CallScreenRoute(
     }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
-    ) {
-        requestMicrophonePermission()
-    }
+    ) { requestMicrophonePermission() }
 
     LaunchedEffect(pairId) {
-        if (pairId.isNotBlank()) {
-            viewModel.onIntent(CallIntent.ConnectCall(pairId = pairId))
-        }
+        if (pairId.isNotBlank()) viewModel.onIntent(CallIntent.ConnectCall(pairId = pairId))
     }
-
     LaunchedEffect(viewModel, context) {
         viewModel.effects.collect { effect ->
             when (effect) {
@@ -115,9 +105,11 @@ fun CallScreenRoute(
                         requestMicrophonePermission()
                     }
                 }
-                is CallEffect.ShowMessage -> {
-                    Toast.makeText(context, effect.message, Toast.LENGTH_SHORT).show()
-                }
+                is CallEffect.ShowMessage -> Toast.makeText(
+                    context,
+                    effect.message,
+                    Toast.LENGTH_SHORT,
+                ).show()
             }
         }
     }
@@ -126,6 +118,11 @@ fun CallScreenRoute(
         state = state,
         callDurationSeconds = callDurationSeconds,
         localAudioLevel = localAudioLevel,
+        remoteAudioLevel = remoteAudioLevel,
+        partnerName = partnerName,
+        partnerAvatarUrl = partnerAvatarUrl,
+        partnerAvatarModifier = partnerAvatarModifier,
+        onCallSurfaceVisibilityChanged = onCallSurfaceVisibilityChanged,
         onMuteToggle = { viewModel.onIntent(CallIntent.MuteToggle) },
         onRouteSelect = { route -> viewModel.onIntent(CallIntent.RouteSelect(route)) },
         onEndCall = { viewModel.onIntent(CallIntent.EndCall) },
@@ -137,172 +134,122 @@ fun CallScreen(
     state: CallState,
     callDurationSeconds: Long,
     localAudioLevel: Float,
+    partnerName: String = "对方",
+    partnerAvatarUrl: String? = null,
+    remoteAudioLevel: Float = 0f,
+    partnerAvatarModifier: Modifier = Modifier,
     onMuteToggle: () -> Unit,
     onRouteSelect: (AudioRoute) -> Unit,
     onShowDiagnostics: () -> Unit,
     onEndCall: () -> Unit,
 ) {
-    val session = state.session
     val canManageActiveCall = !state.isLoading &&
         (state.screenState == CallScreenState.Waiting || state.screenState == CallScreenState.Active)
-    val canEndCall = state.screenState == CallScreenState.Dialing ||
-        state.screenState == CallScreenState.Connecting ||
-        state.screenState == CallScreenState.Waiting ||
-        state.screenState == CallScreenState.Active ||
-        state.screenState == CallScreenState.Reconnecting
+    val canEndCall = state.screenState in setOf(
+        CallScreenState.Dialing,
+        CallScreenState.Connecting,
+        CallScreenState.Waiting,
+        CallScreenState.Active,
+        CallScreenState.Reconnecting,
+    )
+    val detail = if (state.screenState == CallScreenState.Active || callDurationSeconds > 0L) {
+        callDurationSeconds.toCallDuration()
+    } else {
+        state.screenState.connectionDetail()
+    }
 
-    PurrScreen {
-        PurrSectionTitle(
-            eyebrow = "通话",
-            title = screenTitle(state.screenState),
-            subtitle = if (callDurationSeconds > 0L) callDurationSeconds.toCallDuration() else "",
+    VoiceCallScaffold(
+        partnerName = partnerName,
+        partnerAvatarUrl = partnerAvatarUrl,
+        status = state.screenState.title(),
+        detail = detail,
+        avatarModifier = partnerAvatarModifier,
+        remoteAudioLevel = remoteAudioLevel,
+    ) {
+        Row(
             modifier = Modifier.fillMaxWidth(),
-        )
-
-        PurrPanel(
-            title = "通话房间",
-            subtitle = session?.roomName ?: "",
-            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.34f),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            PurrStatusChip(
-                label = "状态",
-                detail = state.screenState.toDisplayLabel(),
-                accentColor = state.screenState.accentColor(),
+            MicrophoneLevelButton(
+                label = if (state.localAudioState is LocalAudioState.Muted) "取消静音" else "静音",
+                muted = state.localAudioState is LocalAudioState.Muted,
+                level = localAudioLevel,
+                onClick = onMuteToggle,
+                enabled = canManageActiveCall,
             )
-            if (state.screenState == CallScreenState.Active || callDurationSeconds > 0L) {
-                PurrStatusChip(
-                    label = "通话时长",
-                    detail = callDurationSeconds.toCallDuration(),
-                    accentColor = MaterialTheme.colorScheme.primary,
-                )
-            }
-            if (state.isLoading) {
-                PurrStatusChip(
-                    label = "处理中",
-                    detail = "",
-                    accentColor = MaterialTheme.colorScheme.primary,
-                )
-            }
-            PurrStatusChip(
-                label = "麦克风",
-                detail = state.localAudioState.toDisplayLabel(),
-                accentColor = if (state.localAudioState is LocalAudioState.Muted) {
-                    MaterialTheme.colorScheme.secondary
-                } else {
-                    MaterialTheme.colorScheme.tertiary
-                },
+            AudioRoutePicker(
+                routes = state.availableRoutes,
+                activeRoute = state.activeRoute,
+                enabled = canManageActiveCall,
+                onRouteSelect = onRouteSelect,
             )
-        }
-
-        PurrPanel(title = "操作") {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                MicrophoneLevelButton(
-                    label = if (state.localAudioState is LocalAudioState.Muted) "取消静音" else "静音",
-                    muted = state.localAudioState is LocalAudioState.Muted,
-                    level = localAudioLevel,
-                    onClick = onMuteToggle,
-                    enabled = canManageActiveCall,
-                )
-                AudioRoutePicker(
-                    routes = state.availableRoutes,
-                    activeRoute = state.activeRoute,
-                    enabled = canManageActiveCall,
-                    onRouteSelect = onRouteSelect,
-                )
-                EndCallButton(
-                    onClick = onEndCall,
-                    enabled = canEndCall,
-                )
-            }
-        }
-
-        Button(
-            onClick = onShowDiagnostics,
-            modifier = Modifier
-                .fillMaxWidth()
-                .defaultMinSize(minHeight = 56.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-            ),
-            shape = MaterialTheme.shapes.medium,
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.NetworkCheck,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimary,
+            DiagnosticsButton(
+                onClick = onShowDiagnostics,
+                enabled = state.session != null,
             )
-            Spacer(Modifier.width(10.dp))
-            Text("通话质量检测", style = MaterialTheme.typography.labelLarge)
+            EndCallButton(onClick = onEndCall, enabled = canEndCall)
         }
-
     }
 }
 
 @Composable
-private fun rememberCallDurationSeconds(
-    timing: CallTiming,
-    callId: String?,
-): Long {
-    var elapsedSeconds by remember(callId) { mutableLongStateOf(0L) }
+private fun DiagnosticsButton(onClick: () -> Unit, enabled: Boolean) {
+    FilledIconButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.size(64.dp),
+        colors = IconButtonDefaults.filledIconButtonColors(
+            containerColor = Color.White.copy(alpha = 0.16f),
+            contentColor = Color.White,
+            disabledContainerColor = Color.White.copy(alpha = 0.07f),
+            disabledContentColor = Color.White.copy(alpha = 0.35f),
+        ),
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.NetworkCheck,
+            contentDescription = "通话质量检测",
+            modifier = Modifier.size(30.dp),
+        )
+    }
+}
 
+@Composable
+private fun rememberCallDurationSeconds(timing: CallTiming, callId: String?): Long {
+    val elapsedSeconds = remember(callId) { mutableLongStateOf(0L) }
     LaunchedEffect(callId, timing) {
         fun synchronizedDurationSeconds(): Long = timing
             .durationAtMonotonicMillis(System.nanoTime() / 1_000_000L)
             .div(1_000L)
-
-        elapsedSeconds = synchronizedDurationSeconds()
+        elapsedSeconds.longValue = synchronizedDurationSeconds()
         if (!timing.isRunning) return@LaunchedEffect
         while (true) {
             delay(CALL_DURATION_TICK_INTERVAL_MILLIS)
-            elapsedSeconds = synchronizedDurationSeconds()
+            elapsedSeconds.longValue = synchronizedDurationSeconds()
         }
     }
-    return elapsedSeconds
+    return elapsedSeconds.longValue
 }
 
-private fun screenTitle(state: CallScreenState): String = when (state) {
+private fun CallScreenState.title(): String = when (this) {
     CallScreenState.Idle -> "准备通话"
     CallScreenState.Dialing -> "正在呼叫"
     CallScreenState.Connecting -> "正在连接"
-    CallScreenState.Waiting -> "等待对方"
+    CallScreenState.Waiting -> "等待对方接听"
     CallScreenState.Active -> "通话中"
-    CallScreenState.Reconnecting -> "重连中"
+    CallScreenState.Reconnecting -> "正在重新连接"
     CallScreenState.Ending -> "正在结束"
     CallScreenState.Ended -> "通话结束"
 }
 
-@Composable
-private fun CallScreenState.accentColor() = when (this) {
-    CallScreenState.Active -> MaterialTheme.colorScheme.tertiary
-    CallScreenState.Waiting -> MaterialTheme.colorScheme.primary
-    CallScreenState.Ended,
-    CallScreenState.Reconnecting,
-    -> MaterialTheme.colorScheme.secondary
-    else -> MaterialTheme.colorScheme.primary
-}
-
-private fun CallScreenState.toDisplayLabel(): String = when (this) {
-    CallScreenState.Idle -> "空闲"
-    CallScreenState.Dialing -> "呼叫中"
-    CallScreenState.Connecting -> "连接中"
-    CallScreenState.Waiting -> "等待对方"
-    CallScreenState.Active -> "通话中"
-    CallScreenState.Reconnecting -> "重连中"
-    CallScreenState.Ending -> "结束中"
-    CallScreenState.Ended -> "已结束"
-}
-
-private fun LocalAudioState.toDisplayLabel(): String = when (this) {
-    LocalAudioState.Disabled -> "已关闭"
-    LocalAudioState.Enabling -> "开启中"
-    LocalAudioState.Enabled -> "已开启"
-    LocalAudioState.Muted -> "已静音"
-    is LocalAudioState.Error -> reason ?: "异常"
+private fun CallScreenState.connectionDetail(): String = when (this) {
+    CallScreenState.Dialing -> "正在发起安全语音通话"
+    CallScreenState.Connecting -> "正在建立加密连接"
+    CallScreenState.Waiting -> "对方加入后即可通话"
+    CallScreenState.Reconnecting -> "网络波动，请稍候"
+    CallScreenState.Ending -> "正在释放通话资源"
+    CallScreenState.Ended -> "感谢使用 Purr 语音"
+    else -> "Purr 语音"
 }
 
 internal fun Long.toCallDuration(): String {
@@ -310,9 +257,9 @@ internal fun Long.toCallDuration(): String {
     val minutes = (this % 3_600) / 60
     val seconds = this % 60
     return if (hours > 0) {
-        "%02d:%02d:%02d".format(hours, minutes, seconds)
+        String.format(Locale.ROOT, "%02d:%02d:%02d", hours, minutes, seconds)
     } else {
-        "%02d:%02d".format(minutes, seconds)
+        String.format(Locale.ROOT, "%02d:%02d", minutes, seconds)
     }
 }
 

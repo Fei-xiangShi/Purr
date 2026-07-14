@@ -20,6 +20,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
+import life.fxs.purr.overlay.CallOverlayCoordinator
 
 @AndroidEntryPoint
 open class CallForegroundService : Service() {
@@ -32,6 +33,9 @@ open class CallForegroundService : Service() {
 
     @Inject
     lateinit var stateStore: CallForegroundServiceStateStore
+
+    @Inject
+    lateinit var callOverlayCoordinator: CallOverlayCoordinator
 
     private var activeCallId: String? = null
     private val hangUpInProgress = AtomicBoolean(false)
@@ -82,6 +86,9 @@ open class CallForegroundService : Service() {
         if (stateStore.markStarted(callId)) {
             activeCallId = callId
         }
+        if (::callOverlayCoordinator.isInitialized) {
+            callOverlayCoordinator.start(intent.getStringExtra(EXTRA_PAIR_ID).orEmpty())
+        }
         return START_NOT_STICKY
     }
 
@@ -110,6 +117,7 @@ open class CallForegroundService : Service() {
         val destroyedCallId = stateStore.state.value.activeCallId ?: activeCallId
         stateStore.markStopped(destroyedCallId)
         activeCallId = null
+        if (::callOverlayCoordinator.isInitialized) callOverlayCoordinator.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
         if (destroyedCallId != null && !hangUpInProgress.get()) {
             applicationScope.launch {

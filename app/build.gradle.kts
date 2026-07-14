@@ -154,6 +154,7 @@ dependencies {
     implementation(projects.domain.call)
     implementation(projects.feature.auth)
     implementation(projects.feature.home)
+    implementation(projects.feature.incomingcall)
     implementation(projects.feature.call)
     implementation(projects.feature.settings)
 
@@ -174,12 +175,14 @@ dependencies {
     implementation(libs.retrofit.kotlinx.serialization)
     implementation(libs.okhttp.core)
     implementation(libs.okhttp.logging)
+    implementation(libs.coil)
 
     kapt(libs.hilt.compiler)
 
     testImplementation(libs.junit4)
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.mockk)
     testImplementation(libs.robolectric)
 
     androidTestImplementation(libs.androidx.test.junit)

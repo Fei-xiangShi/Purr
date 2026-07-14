@@ -48,6 +48,7 @@ class CallViewModelTest {
     private val disconnectCallUseCase = mockk<DisconnectCallUseCase>()
     private val audioLevelProvider = object : CallAudioLevelProvider {
         override val localAudioLevel = MutableStateFlow(0f)
+        override val remoteAudioLevel = MutableStateFlow(0f)
     }
 
     @Before

@@ -6,6 +6,7 @@ import io.livekit.android.events.collect
 import io.livekit.android.room.Room
 import io.livekit.android.room.participant.ConnectionQuality
 import io.livekit.android.room.track.LocalAudioTrack
+import io.livekit.android.room.track.RemoteAudioTrack
 import io.livekit.android.room.track.Track
 import java.util.LinkedHashSet
 import java.util.concurrent.atomic.AtomicLong
@@ -49,6 +50,7 @@ class RealLiveKitCallDataSource @Inject constructor(
     private var room: Room? = null
     private var roomEventsJob: Job? = null
     private var audioLevelTrack: LocalAudioTrack? = null
+    private var remoteAudioLevelTrack: RemoteAudioTrack? = null
 
     override suspend fun execute(command: MediaCallCommand) {
         when (command) {
@@ -97,6 +99,7 @@ class RealLiveKitCallDataSource @Inject constructor(
             val microphoneEnabled = createdRoom.localParticipant.setMicrophoneEnabled(true)
             check(microphoneEnabled) { "Unable to publish microphone track" }
             attachLocalAudioLevel(createdRoom)
+            attachRemoteAudioLevel(createdRoom)
 
             val localIdentity = createdRoom.localParticipant.identity?.value
                 ?: command.localIdentity
@@ -170,7 +173,10 @@ class RealLiveKitCallDataSource @Inject constructor(
         roomEventsJob = scope.launch {
             activeRoom.events.collect { event ->
                 when (event) {
-                    is RoomEvent.Connected -> publishParticipantChanged(activeRoom, mediaCall)
+                    is RoomEvent.Connected -> {
+                        attachRemoteAudioLevel(activeRoom)
+                        publishParticipantChanged(activeRoom, mediaCall)
+                    }
 
                     // Reconnection is deliberately not supported. A reconnect callback
                     // terminates this generation and the next call must receive new credentials.
@@ -182,7 +188,21 @@ class RealLiveKitCallDataSource @Inject constructor(
 
                     is RoomEvent.ParticipantConnected,
                     is RoomEvent.ParticipantDisconnected,
-                    -> publishParticipantChanged(activeRoom, mediaCall)
+                    -> {
+                        attachRemoteAudioLevel(activeRoom)
+                        publishParticipantChanged(activeRoom, mediaCall)
+                    }
+
+                    is RoomEvent.TrackSubscribed -> {
+                        (event.track as? RemoteAudioTrack)?.let(::attachRemoteAudioLevel)
+                    }
+
+                    is RoomEvent.TrackUnsubscribed -> {
+                        if (event.track === remoteAudioLevelTrack) {
+                            detachRemoteAudioLevel()
+                            attachRemoteAudioLevel(activeRoom)
+                        }
+                    }
 
                     is RoomEvent.ConnectionQualityChanged -> {
                         if (event.participant.identity == activeRoom.localParticipant.identity) {
@@ -291,6 +311,37 @@ class RealLiveKitCallDataSource @Inject constructor(
         audioLevelProvider.reset()
     }
 
+    private fun attachRemoteAudioLevel(activeRoom: Room) {
+        val remoteTrack = activeRoom.remoteParticipants.values
+            .asSequence()
+            .mapNotNull { participant ->
+                participant.audioTrackPublications
+                    .firstOrNull { (publication, _) -> publication.source == Track.Source.MICROPHONE }
+                    ?.second as? RemoteAudioTrack
+            }
+            .firstOrNull()
+        if (remoteTrack == null) {
+            detachRemoteAudioLevel()
+        } else {
+            attachRemoteAudioLevel(remoteTrack)
+        }
+    }
+
+    private fun attachRemoteAudioLevel(remoteTrack: RemoteAudioTrack) {
+        if (remoteAudioLevelTrack === remoteTrack) return
+        detachRemoteAudioLevel()
+        runCatching { remoteTrack.addSink(audioLevelProvider.remoteAudioSink) }
+            .onSuccess { remoteAudioLevelTrack = remoteTrack }
+            .onFailure { audioLevelProvider.resetRemote() }
+    }
+
+    private fun detachRemoteAudioLevel() {
+        val track = remoteAudioLevelTrack
+        remoteAudioLevelTrack = null
+        runCatching { track?.removeSink(audioLevelProvider.remoteAudioSink) }
+        audioLevelProvider.resetRemote()
+    }
+
     private fun isCurrent(activeRoom: Room?, generation: Long): Boolean {
         val current = activeCall.get()
         return activeRoom != null && room === activeRoom && current?.generation == generation
@@ -314,6 +365,7 @@ class RealLiveKitCallDataSource @Inject constructor(
         roomEventsJob = null
         var failure: Throwable? = null
         detachLocalAudioLevel()
+        detachRemoteAudioLevel()
         val activeRoom = room
         try {
             activeRoom?.disconnect()

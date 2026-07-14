@@ -33,8 +33,8 @@ class DeclineIncomingCallUseCase @Inject constructor(
     suspend operator fun invoke(callId: String) = repository.declineIncomingCall(callId)
 }
 
-class ClearIncomingCallUseCase @Inject constructor(
+class ConsumeIncomingCallUseCase @Inject constructor(
     private val repository: RealtimeRepository,
 ) {
-    operator fun invoke(callId: String) = repository.clearIncomingCall(callId)
+    operator fun invoke(callId: String) = repository.consumeIncomingCall(callId)
 }
