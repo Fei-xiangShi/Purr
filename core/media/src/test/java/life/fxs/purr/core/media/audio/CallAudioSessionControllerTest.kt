@@ -9,99 +9,54 @@ import org.junit.Test
 
 class CallAudioSessionControllerTest {
     @Test
-    fun `activation acquires mode focus and route in order`() = runBlocking {
-        val harness = harness(AudioRoute.Earpiece)
+    fun `activation acquires mode focus and default route in order`() = runBlocking {
+        val harness = harness()
 
         harness.controller.activate()
 
         assertThat(harness.actions).containsExactly(
-            "mode:Conversational",
-            "focus:Conversational",
-            "route:restore",
+            "mode:activate",
+            "focus:request",
+            "route:default",
         ).inOrder()
-        assertThat(harness.controller.state.value)
-            .isEqualTo(CallAudioSessionState.Active(CallAudioProfile.Conversational))
+        assertThat(harness.controller.state.value).isEqualTo(CallAudioSessionState.Active)
     }
 
     @Test
-    fun `listen-only is restricted to an active bluetooth route`() = runBlocking {
-        val harness = harness(AudioRoute.Earpiece)
+    fun `activation is idempotent once the session is active`() = runBlocking {
+        val harness = harness()
         harness.controller.activate()
         harness.actions.clear()
 
-        val outcome = harness.controller.transitionTo(CallAudioProfile.ListenOnly)
+        harness.controller.activate()
 
-        assertThat(outcome).isEqualTo(CallAudioTransitionOutcome.NotApplicable)
         assertThat(harness.actions).isEmpty()
-        assertThat(harness.controller.state.value)
-            .isEqualTo(CallAudioSessionState.Active(CallAudioProfile.Conversational))
+        assertThat(harness.controller.state.value).isEqualTo(CallAudioSessionState.Active)
     }
 
     @Test
-    fun `failed listen-only transition rolls back to conversational mode`() = runBlocking {
-        val harness = harness(AudioRoute.Bluetooth)
-        harness.controller.activate()
-        harness.actions.clear()
-        harness.modeController.failures += CallAudioProfile.ListenOnly
+    fun `failed activation releases every acquired resource and returns to released`() = runBlocking {
+        val harness = harness()
+        val routeFailure = IllegalStateException("default route failed")
+        harness.routeController.defaultFailure = routeFailure
 
-        val outcome = harness.controller.transitionTo(CallAudioProfile.ListenOnly)
+        val result = runCatching { harness.controller.activate() }
 
-        assertThat(outcome).isInstanceOf(CallAudioTransitionOutcome.Recovered::class.java)
+        assertThat(result.exceptionOrNull()).isSameInstanceAs(routeFailure)
         assertThat(harness.actions).containsExactly(
+            "mode:activate",
+            "focus:request",
+            "route:default",
             "route:release",
-            "mode:ListenOnly",
-            "mode:Conversational",
-            "focus:Conversational",
-            "route:restore",
+            "focus:abandon",
+            "mode:release",
         ).inOrder()
-        assertThat(harness.controller.state.value).isInstanceOf(CallAudioSessionState.Degraded::class.java)
-        assertThat(harness.controller.state.value.currentProfile)
-            .isEqualTo(CallAudioProfile.Conversational)
-    }
-
-    @Test
-    fun `failed state must reapply its last known profile before becoming active`() = runBlocking {
-        val harness = harness(AudioRoute.Bluetooth)
-        harness.controller.activate()
-        harness.actions.clear()
-        harness.modeController.failures += CallAudioProfile.ListenOnly
-        harness.modeController.failures += CallAudioProfile.Conversational
-        val failed = harness.controller.transitionTo(CallAudioProfile.ListenOnly)
-        assertThat(failed).isInstanceOf(CallAudioTransitionOutcome.Failed::class.java)
-        harness.actions.clear()
-
-        val recovered = harness.controller.transitionTo(CallAudioProfile.Conversational)
-
-        assertThat(recovered).isEqualTo(CallAudioTransitionOutcome.Applied)
-        assertThat(harness.actions).containsExactly(
-            "mode:Conversational",
-            "focus:Conversational",
-            "route:restore",
-        ).inOrder()
-        assertThat(harness.controller.state.value)
-            .isEqualTo(CallAudioSessionState.Active(CallAudioProfile.Conversational))
-    }
-
-    @Test
-    fun `lost focus forces the active profile to be reapplied`() = runBlocking {
-        val harness = harness(AudioRoute.Earpiece)
-        harness.controller.activate()
-        harness.actions.clear()
-        harness.focusManager.loseFocus()
-
-        val outcome = harness.controller.transitionTo(CallAudioProfile.Conversational)
-
-        assertThat(outcome).isEqualTo(CallAudioTransitionOutcome.Applied)
-        assertThat(harness.actions).containsExactly(
-            "mode:Conversational",
-            "focus:Conversational",
-            "route:restore",
-        ).inOrder()
+        assertThat(harness.controller.state.value).isEqualTo(CallAudioSessionState.Released)
     }
 
     @Test
     fun `release attempts every owned resource and aggregates failures`() = runBlocking {
-        val harness = harness(AudioRoute.Bluetooth)
+        val harness = harness()
         harness.controller.activate()
         harness.actions.clear()
         val routeFailure = IllegalStateException("route cleanup failed")
@@ -121,21 +76,19 @@ class CallAudioSessionControllerTest {
         assertThat(harness.controller.state.value).isEqualTo(CallAudioSessionState.Released)
     }
 
-    private fun harness(route: AudioRoute): Harness {
+    private fun harness(): Harness {
         val actions = mutableListOf<String>()
         val modeController = FakeModeController(actions)
         val focusManager = FakeFocusManager(actions)
-        val routeController = FakeRouteController(actions, route)
+        val routeController = FakeRouteController(actions)
         return Harness(
             actions = actions,
-            modeController = modeController,
             focusManager = focusManager,
             routeController = routeController,
             controller = CoordinatedCallAudioSessionController(
                 modeController = modeController,
                 focusManager = focusManager,
                 routeController = routeController,
-                listenOnlyEligibility = BluetoothListenOnlyEligibility(),
             ),
         )
     }
@@ -143,7 +96,6 @@ class CallAudioSessionControllerTest {
 
 private data class Harness(
     val actions: MutableList<String>,
-    val modeController: FakeModeController,
     val focusManager: FakeFocusManager,
     val routeController: FakeRouteController,
     val controller: CoordinatedCallAudioSessionController,
@@ -152,14 +104,8 @@ private data class Harness(
 private class FakeModeController(
     private val actions: MutableList<String>,
 ) : CallAudioModeController {
-    val failures = mutableListOf<CallAudioProfile>()
-
-    override suspend fun apply(profile: CallAudioProfile) {
-        actions += "mode:$profile"
-        if (failures.firstOrNull() == profile) {
-            failures.removeAt(0)
-            error("mode transition failed")
-        }
+    override suspend fun activate() {
+        actions += "mode:activate"
     }
 
     override suspend fun release() {
@@ -174,12 +120,8 @@ private class FakeFocusManager(
     override val state: StateFlow<CallAudioFocusState> = mutableState
     var abandonFailure: Throwable? = null
 
-    fun loseFocus() {
-        mutableState.value = CallAudioFocusState.Lost
-    }
-
-    override suspend fun requestFocus(profile: CallAudioProfile): Boolean {
-        actions += "focus:$profile"
+    override suspend fun requestFocus(): Boolean {
+        actions += "focus:request"
         mutableState.value = CallAudioFocusState.Granted
         return true
     }
@@ -193,10 +135,10 @@ private class FakeFocusManager(
 
 private class FakeRouteController(
     private val actions: MutableList<String>,
-    initialRoute: AudioRoute,
 ) : AudioRouteController {
-    override val availableRoutes = MutableStateFlow(listOf(initialRoute))
-    override val activeRoute = MutableStateFlow(initialRoute)
+    override val availableRoutes = MutableStateFlow(listOf(AudioRoute.Earpiece))
+    override val activeRoute = MutableStateFlow(AudioRoute.Earpiece)
+    var defaultFailure: Throwable? = null
     var releaseFailure: Throwable? = null
 
     override suspend fun selectRoute(route: AudioRoute) {
@@ -204,8 +146,9 @@ private class FakeRouteController(
         activeRoute.value = route
     }
 
-    override suspend fun restorePreferredRoute() {
-        actions += "route:restore"
+    override suspend fun selectDefaultRoute() {
+        actions += "route:default"
+        defaultFailure?.let { throw it }
     }
 
     override suspend fun releaseCallRoute() {

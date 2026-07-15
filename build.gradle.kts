@@ -132,12 +132,14 @@ val verifyTelecomOwnership by tasks.registering {
 
 val verifyIncomingCallOwnership by tasks.registering {
     group = "verification"
-    description = "Verifies that incoming-call Android entry points remain isolated in platform:incomingcall."
+    description = "Verifies incoming-call UI and platform adapter ownership boundaries."
 
     val featureSources = fileTree("feature/incomingcall/src/main") { include("**/*.kt") }
     val platformSources = fileTree("platform/incomingcall/src/main") { include("**/*.kt") }
+    val appIncomingCallSources = fileTree("app/src/main/java/life/fxs/purr/incomingcall") { include("**/*.kt") }
+    val appManifest = file("app/src/main/AndroidManifest.xml")
     val platformManifest = file("platform/incomingcall/src/main/AndroidManifest.xml")
-    inputs.files(featureSources, platformSources, platformManifest)
+    inputs.files(featureSources, platformSources, appIncomingCallSources, appManifest, platformManifest)
 
     doLast {
         val featurePlatformLeaks = featureSources.files.flatMap { file ->
@@ -174,14 +176,30 @@ val verifyIncomingCallOwnership by tasks.registering {
             "Incoming-call notifications must use CallStyle and capability-gated full-screen intents"
         }
 
-        val manifestSource = platformManifest.readText()
+        val platformManifestSource = platformManifest.readText()
         check(
-            manifestSource.contains("android.permission.USE_FULL_SCREEN_INTENT") &&
-                manifestSource.contains("android:showWhenLocked=\"true\"") &&
-                manifestSource.contains("android:turnScreenOn=\"true\"") &&
-                manifestSource.contains("android:exported=\"false\""),
+            platformManifestSource.contains("android.permission.USE_FULL_SCREEN_INTENT") &&
+                platformManifestSource.contains(".IncomingCallDeclineReceiver") &&
+                platformManifestSource.contains("android:exported=\"false\""),
         ) {
-            "platform:incomingcall must declare a private lock-screen Activity and full-screen permission"
+            "platform:incomingcall must own full-screen notification permission and a private decline receiver"
+        }
+
+        val appManifestSource = appManifest.readText()
+        check(
+            appManifestSource.contains(".incomingcall.IncomingCallActivity") &&
+                appManifestSource.contains("android:showWhenLocked=\"true\"") &&
+                appManifestSource.contains("android:turnScreenOn=\"true\"") &&
+                appManifestSource.contains("android:exported=\"false\""),
+        ) {
+            "app must own the private lock-screen incoming-call Activity"
+        }
+
+        val appActivityOwners = appIncomingCallSources.files.filter {
+            it.readText().contains("class IncomingCallActivity")
+        }
+        check(appActivityOwners.map { it.name } == listOf("IncomingCallActivity.kt")) {
+            "app must have exactly one IncomingCallActivity owner: ${appActivityOwners.joinToString()}"
         }
     }
 }
@@ -260,6 +278,7 @@ val verifyArchitecture by tasks.registering {
         "domain" to fileTree("domain") { include("*/src/main/**/*.kt") },
         "data" to fileTree("data") { include("*/src/main/**/*.kt") },
         "feature" to fileTree("feature") { include("*/src/main/**/*.kt") },
+        "platform" to fileTree("platform") { include("*/src/main/**/*.kt") },
     )
     inputs.files(sourceGroups.values)
     inputs.file("core/media/build.gradle.kts")
@@ -289,6 +308,10 @@ val verifyArchitecture by tasks.registering {
                 "life.fxs.purr.data",
                 "okhttp3.",
                 "retrofit2.",
+            ),
+            "platform" to listOf(
+                "life.fxs.purr.data",
+                "life.fxs.purr.feature",
             ),
         )
         val violations = sourceGroups.flatMap { (group, sources) ->

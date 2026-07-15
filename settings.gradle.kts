@@ -31,6 +31,7 @@ include(
     ":core:designsystem",
     ":domain:account",
     ":domain:call",
+    ":domain:incomingcall",
     ":data:account",
     ":data:call",
     ":feature:auth",

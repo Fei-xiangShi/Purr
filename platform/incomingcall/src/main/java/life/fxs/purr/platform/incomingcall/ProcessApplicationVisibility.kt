@@ -8,7 +8,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import life.fxs.purr.feature.incomingcall.ApplicationVisibility
+import life.fxs.purr.domain.incomingcall.ApplicationVisibility
 
 @Singleton
 internal class ProcessApplicationVisibility @Inject constructor() :

@@ -20,10 +20,8 @@ import life.fxs.purr.core.common.ApplicationScope
 import life.fxs.purr.core.network.asAppError
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.core.network.api.PurrCallApi
-import life.fxs.purr.core.network.model.SessionRequestDto
 import life.fxs.purr.data.call.mapper.toCallTiming
 import life.fxs.purr.data.call.mapper.toRecordingState
-import life.fxs.purr.data.call.remote.CallStatusRemoteDataSource
 import life.fxs.purr.data.call.remote.CallStatusSynchronizer
 import life.fxs.purr.data.call.runtime.CallMediaConnection
 import life.fxs.purr.data.call.runtime.MediaCallCommand
@@ -33,17 +31,15 @@ import life.fxs.purr.data.call.state.CallMediaEventReducer
 import life.fxs.purr.data.call.state.CallUiSnapshotAssembler
 import life.fxs.purr.domain.call.model.CallConnectionState
 import life.fxs.purr.domain.call.model.CallSession
-import life.fxs.purr.domain.call.model.CallUiSnapshot
 import life.fxs.purr.domain.call.model.LocalAudioState
-import life.fxs.purr.domain.call.model.ParticipantIdentity
 import life.fxs.purr.domain.call.model.PrepareCallParams
 import life.fxs.purr.domain.call.repository.CallRepository
 
 @Singleton
-class CallRepositoryImpl @Inject constructor(
+class CallRepositoryImpl @Inject internal constructor(
     private val api: PurrCallApi,
+    private val sessionPreparationCoordinator: CallSessionPreparationCoordinator,
     private val callRuntimeController: CallRuntimeController,
-    private val callStatusRemoteDataSource: CallStatusRemoteDataSource,
     private val callStatusSynchronizer: CallStatusSynchronizer,
     private val callMediaEventReducer: CallMediaEventReducer,
     private val callUiSnapshotAssembler: CallUiSnapshotAssembler,
@@ -107,12 +103,10 @@ class CallRepositoryImpl @Inject constructor(
                         mediaGeneration = null
                         callStatusSynchronizer.stop()
                         sessionState.emit(
-                            callUiSnapshotAssembler.assemble(
-                                current.copy(
-                                    connectionState = CallConnectionState.Terminating,
-                                    localAudioState = LocalAudioState.Disabled,
-                                    uiSnapshot = current.uiSnapshot.copy(remoteParticipantConnected = false),
-                                ),
+                            current.copy(
+                                connectionState = CallConnectionState.Terminating,
+                                localAudioState = LocalAudioState.Disabled,
+                                uiSnapshot = current.uiSnapshot.copy(remoteParticipantConnected = false),
                             ),
                         )
                         return@withLock when (mediaEvent) {
@@ -123,7 +117,7 @@ class CallRepositoryImpl @Inject constructor(
 
                     val synchronizedSession = callMediaEventReducer.reduce(current, mediaEvent)
                         ?: return@withLock null
-                    sessionState.emit(callUiSnapshotAssembler.assemble(synchronizedSession))
+                    sessionState.emit(synchronizedSession)
                     null
                 }
                 if (terminalState != null) {
@@ -177,44 +171,30 @@ class CallRepositoryImpl @Inject constructor(
         id: Long,
         params: PrepareCallParams,
     ): AppResult<CallSession> {
-        var createdCallId: String? = null
+        var prepared: PreparedCallSession? = null
         return try {
-            val response = api.createSession(
-                SessionRequestDto(
-                    pairId = params.pairId,
-                    recordingConsent = params.recordingConsent,
-                ),
-            )
-            createdCallId = response.callId
-            val callStatus = callStatusRemoteDataSource.getStatus(response.callId)
-            val session = callUiSnapshotAssembler.assemble(
-                CallSession(
-                    callId = response.callId,
-                    pairId = response.pairId,
-                    participantIdentity = ParticipantIdentity(local = response.participantIdentity),
-                    roomName = response.roomName,
-                    remoteDisplayName = params.remoteDisplayName,
-                    direction = params.direction,
-                    connectionState = CallConnectionState.Preparing,
-                    localAudioState = LocalAudioState.Disabled,
-                    recordingState = callStatus.recordingStatus.toRecordingState(),
-                    timing = callStatus.toCallTiming(),
-                    uiSnapshot = CallUiSnapshot(),
-                ),
-            )
+            val created = sessionPreparationCoordinator.prepare(params)
+            prepared = created
             operationMutex.withLock {
-                mediaConnection = CallMediaConnection(
-                    wsUrl = response.wsUrl,
-                    accessToken = response.token,
-                )
+                mediaConnection = created.mediaConnection
                 mediaGeneration = null
-                sessionState.emit(session)
+                sessionState.emit(created.session)
             }
-            startCallStatusSync(session.callId)
-            AppResult.Success(session)
+            startCallStatusSync(created.session.callId)
+            AppResult.Success(created.session)
         } catch (throwable: Throwable) {
+            prepared?.let { committed ->
+                sessionPreparationCoordinator.compensate(committed)
+                operationMutex.withLock {
+                    if (sessionState.value?.callId == committed.session.callId) {
+                        mediaConnection = null
+                        mediaGeneration = null
+                        callStatusSynchronizer.stop()
+                        sessionState.emit(null)
+                    }
+                }
+            }
             if (throwable is CancellationException) throw throwable
-            createdCallId?.let { bestEffortEndCall(it) }
             AppResult.Failure(throwable.asAppError())
         } finally {
             operationMutex.withLock {
@@ -279,11 +259,9 @@ class CallRepositoryImpl @Inject constructor(
                     false
                 } else {
                     sessionState.emit(
-                        callUiSnapshotAssembler.assemble(
-                            current.copy(
-                                connectionState = CallConnectionState.Connecting,
-                                localAudioState = LocalAudioState.Enabling,
-                            ),
+                        current.copy(
+                            connectionState = CallConnectionState.Connecting,
+                            localAudioState = LocalAudioState.Enabling,
                         ),
                     )
                     true
@@ -360,12 +338,10 @@ class CallRepositoryImpl @Inject constructor(
             callStatusSynchronizer.stop()
             if (session.connectionState != CallConnectionState.Terminating) {
                 sessionState.emit(
-                    callUiSnapshotAssembler.assemble(
-                        session.copy(
-                            connectionState = CallConnectionState.Terminating,
-                            localAudioState = LocalAudioState.Disabled,
-                            uiSnapshot = session.uiSnapshot.copy(remoteParticipantConnected = false),
-                        ),
+                    session.copy(
+                        connectionState = CallConnectionState.Terminating,
+                        localAudioState = LocalAudioState.Disabled,
+                        uiSnapshot = session.uiSnapshot.copy(remoteParticipantConnected = false),
                     ),
                 )
             }
@@ -420,12 +396,10 @@ class CallRepositoryImpl @Inject constructor(
                         ?.let { CallConnectionState.Failed(it.message) }
                         ?: requestedTerminalState
                     sessionState.emit(
-                        callUiSnapshotAssembler.assemble(
-                            current.copy(
-                                connectionState = finalState,
-                                localAudioState = LocalAudioState.Disabled,
-                                uiSnapshot = current.uiSnapshot.copy(remoteParticipantConnected = false),
-                            ),
+                        current.copy(
+                            connectionState = finalState,
+                            localAudioState = LocalAudioState.Disabled,
+                            uiSnapshot = current.uiSnapshot.copy(remoteParticipantConnected = false),
                         ),
                     )
                 }
@@ -452,17 +426,14 @@ class CallRepositoryImpl @Inject constructor(
             return@withLock AppResult.Failure(AppError.Validation("Microphone state is not ready"))
         }
         sessionState.emit(
-            callUiSnapshotAssembler.assemble(
-                session.copy(
-                    localAudioState = if (muted) LocalAudioState.Muting else LocalAudioState.Unmuting,
-                ),
+            session.copy(
+                localAudioState = if (muted) LocalAudioState.Muting else LocalAudioState.Unmuting,
             ),
         )
         appResult(
             onFailure = {
-                val restoredSession = callUiSnapshotAssembler.assemble(
-                    requireNotNull(sessionState.value ?: session).copy(localAudioState = previousAudioState),
-                )
+                val restoredSession = requireNotNull(sessionState.value ?: session)
+                    .copy(localAudioState = previousAudioState)
                 sessionState.emit(restoredSession)
             },
         ) {
@@ -472,10 +443,8 @@ class CallRepositoryImpl @Inject constructor(
                     muted = muted,
                 ),
             )
-            val updatedSession = callUiSnapshotAssembler.assemble(
-                requireNotNull(sessionState.value ?: session).copy(
-                    localAudioState = if (muted) LocalAudioState.Muted else LocalAudioState.Enabled,
-                ),
+            val updatedSession = requireNotNull(sessionState.value ?: session).copy(
+                localAudioState = if (muted) LocalAudioState.Muted else LocalAudioState.Enabled,
             )
             sessionState.emit(updatedSession)
         }
@@ -487,15 +456,8 @@ class CallRepositoryImpl @Inject constructor(
         if (session.connectionState != CallConnectionState.Connected) {
             return@withLock AppResult.Failure(AppError.Validation("Call media is not connected"))
         }
-        appResult(
-            onFailure = {
-                val failedSession = callUiSnapshotAssembler.assemble(session)
-                sessionState.emit(failedSession)
-            },
-        ) {
+        appResult {
             callRuntimeController.selectAudioRoute(route)
-            val updatedSession = callUiSnapshotAssembler.assemble(requireNotNull(sessionState.value ?: session))
-            sessionState.emit(updatedSession)
         }
     }
 
@@ -504,11 +466,9 @@ class CallRepositoryImpl @Inject constructor(
             operationMutex.withLock {
                 val latestSession = sessionState.value
                 if (latestSession == null || latestSession.callId != callId) return@withLock false
-                val syncedSession = callUiSnapshotAssembler.assemble(
-                    latestSession.copy(
-                        recordingState = callStatus.recordingStatus.toRecordingState(),
-                        timing = callStatus.toCallTiming(previous = latestSession.timing),
-                    ),
+                val syncedSession = latestSession.copy(
+                    recordingState = callStatus.recordingStatus.toRecordingState(),
+                    timing = callStatus.toCallTiming(previous = latestSession.timing),
                 )
                 if (callStatus.state.equals("ended", ignoreCase = true)) {
                     mediaConnection = null
@@ -516,12 +476,10 @@ class CallRepositoryImpl @Inject constructor(
                     runCatching {
                         callRuntimeController.execute(MediaCallCommand.Disconnect(callId))
                     }
-                    val endedSession = callUiSnapshotAssembler.assemble(
-                        syncedSession.copy(
-                            connectionState = CallConnectionState.Disconnected,
-                            localAudioState = LocalAudioState.Disabled,
-                            uiSnapshot = syncedSession.uiSnapshot.copy(remoteParticipantConnected = false),
-                        ),
+                    val endedSession = syncedSession.copy(
+                        connectionState = CallConnectionState.Disconnected,
+                        localAudioState = LocalAudioState.Disabled,
+                        uiSnapshot = syncedSession.uiSnapshot.copy(remoteParticipantConnected = false),
                     )
                     sessionState.emit(endedSession)
                     return@withLock false
@@ -533,15 +491,6 @@ class CallRepositoryImpl @Inject constructor(
             }
         }
     }
-
-    private suspend fun bestEffortEndCall(callId: String) {
-        try {
-            api.endCall(callId)
-        } catch (throwable: Throwable) {
-            if (throwable is CancellationException) throw throwable
-        }
-    }
-
 
     private suspend inline fun <T> appResult(
         noinline onFailure: suspend (Throwable) -> Unit = {},

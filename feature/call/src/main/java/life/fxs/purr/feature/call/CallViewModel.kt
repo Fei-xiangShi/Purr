@@ -31,10 +31,12 @@ import life.fxs.purr.domain.call.usecase.PrepareCallSessionUseCase
 import life.fxs.purr.domain.call.usecase.SelectAudioRouteUseCase
 import life.fxs.purr.domain.call.usecase.ToggleMuteUseCase
 import life.fxs.purr.domain.call.repository.CallAudioLevelProvider
+import life.fxs.purr.domain.incomingcall.PrepareIncomingCallUseCase
 
 @HiltViewModel
 class CallViewModel @Inject constructor(
     private val prepareCallSessionUseCase: PrepareCallSessionUseCase,
+    private val prepareIncomingCallUseCase: PrepareIncomingCallUseCase,
     private val connectCallUseCase: ConnectCallUseCase,
     private val observeCallStateUseCase: ObserveCallStateUseCase,
     private val toggleMuteUseCase: ToggleMuteUseCase,
@@ -70,6 +72,7 @@ class CallViewModel @Inject constructor(
                 pairId = intent.pairId,
                 remoteDisplayName = intent.remoteDisplayName,
                 direction = intent.direction,
+                expectedCallId = intent.expectedCallId,
             )
             is CallIntent.MicrophonePermissionResult -> handleMicrophonePermissionResult(intent)
             CallIntent.MuteToggle -> toggleMute()
@@ -97,6 +100,7 @@ class CallViewModel @Inject constructor(
         pairId: String,
         remoteDisplayName: String,
         direction: CallDirection,
+        expectedCallId: String?,
     ) {
         prepareJob?.cancel()
         connectJob?.cancel()
@@ -117,14 +121,19 @@ class CallViewModel @Inject constructor(
                 screenState = CallScreenState.Dialing,
                 isLoading = true,
             )
-            when (val result = prepareCallSessionUseCase(
-                PrepareCallParams(
-                    pairId = pairId,
-                    recordingConsent = true,
-                    remoteDisplayName = remoteDisplayName,
-                    direction = direction,
-                ),
-            )) {
+            val params = PrepareCallParams(
+                pairId = pairId,
+                recordingConsent = true,
+                remoteDisplayName = remoteDisplayName,
+                direction = direction,
+                expectedCallId = expectedCallId,
+            )
+            val preparation = if (expectedCallId == null) {
+                prepareCallSessionUseCase(params)
+            } else {
+                prepareIncomingCallUseCase(params)
+            }
+            when (val result = preparation) {
                 is AppResult.Success -> {
                     if (endRequested) return@launch
                     currentCallId = result.value.callId

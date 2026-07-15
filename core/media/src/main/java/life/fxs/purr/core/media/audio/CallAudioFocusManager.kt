@@ -20,7 +20,7 @@ enum class CallAudioFocusState {
 interface CallAudioFocusManager {
     val state: StateFlow<CallAudioFocusState>
 
-    suspend fun requestFocus(profile: CallAudioProfile): Boolean
+    suspend fun requestFocus(): Boolean
     suspend fun abandonFocus()
 }
 
@@ -30,7 +30,7 @@ class AndroidCallAudioFocusManager(
     private val focusMutex = Mutex()
     private val _state = MutableStateFlow(CallAudioFocusState.None)
     @Volatile
-    private var activeProfile: CallAudioProfile? = null
+    private var hasFocus: Boolean = false
 
     override val state: StateFlow<CallAudioFocusState> = _state.asStateFlow()
 
@@ -38,7 +38,7 @@ class AndroidCallAudioFocusManager(
         _state.value = when (change) {
             AudioManager.AUDIOFOCUS_GAIN -> CallAudioFocusState.Granted
             AudioManager.AUDIOFOCUS_LOSS -> {
-                activeProfile = null
+                hasFocus = false
                 CallAudioFocusState.Lost
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> CallAudioFocusState.LostTransient
@@ -47,42 +47,33 @@ class AndroidCallAudioFocusManager(
         }
     }
 
-    private val communicationFocusRequest: AudioFocusRequest = createFocusRequest(
-        usage = AudioAttributes.USAGE_VOICE_COMMUNICATION,
-    )
-    private val listenOnlyFocusRequest: AudioFocusRequest = createFocusRequest(
-        usage = AudioAttributes.USAGE_MEDIA,
-    )
+    private val focusRequest: AudioFocusRequest = createFocusRequest()
 
-    override suspend fun requestFocus(profile: CallAudioProfile): Boolean = focusMutex.withLock {
-        if (activeProfile == profile && _state.value == CallAudioFocusState.Granted) {
+    override suspend fun requestFocus(): Boolean = focusMutex.withLock {
+        if (hasFocus && _state.value == CallAudioFocusState.Granted) {
             return@withLock true
         }
-        val previousProfile = activeProfile
-        previousProfile?.let { abandonRequest(it) }
-
-        if (request(profile)) {
-            activeProfile = profile
+        if (request()) {
+            hasFocus = true
             _state.value = CallAudioFocusState.Granted
             return@withLock true
         }
-
-        activeProfile = previousProfile?.takeIf(::request)
-        _state.value = if (activeProfile == null) CallAudioFocusState.None else CallAudioFocusState.Granted
+        hasFocus = false
+        _state.value = CallAudioFocusState.None
         false
     }
 
     override suspend fun abandonFocus() = focusMutex.withLock {
-        activeProfile?.let(::abandonRequest)
-        activeProfile = null
+        if (hasFocus) audioManager.abandonAudioFocusRequest(focusRequest)
+        hasFocus = false
         _state.value = CallAudioFocusState.None
     }
 
-    private fun createFocusRequest(usage: Int): AudioFocusRequest =
+    private fun createFocusRequest(): AudioFocusRequest =
         AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
         .setAudioAttributes(
             AudioAttributes.Builder()
-                .setUsage(usage)
+                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build(),
         )
@@ -90,15 +81,6 @@ class AndroidCallAudioFocusManager(
         .setOnAudioFocusChangeListener(focusChangeListener)
         .build()
 
-    private fun request(profile: CallAudioProfile): Boolean =
-        audioManager.requestAudioFocus(requestFor(profile)) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-
-    private fun abandonRequest(profile: CallAudioProfile) {
-        audioManager.abandonAudioFocusRequest(requestFor(profile))
-    }
-
-    private fun requestFor(profile: CallAudioProfile): AudioFocusRequest = when (profile) {
-        CallAudioProfile.Conversational -> communicationFocusRequest
-        CallAudioProfile.ListenOnly -> listenOnlyFocusRequest
-    }
+    private fun request(): Boolean =
+        audioManager.requestAudioFocus(focusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
 }

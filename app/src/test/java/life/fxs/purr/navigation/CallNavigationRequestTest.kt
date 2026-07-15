@@ -48,4 +48,17 @@ class CallNavigationRequestTest {
 
         assertThat(request?.direction).isEqualTo(CallDirection.Incoming)
     }
+
+    @Test
+    fun `incoming external request preserves expected call identity`() {
+        val store = CallNavigationRequestStore()
+
+        val request = store.submit(
+            pairId = "pair-1",
+            direction = CallDirection.Incoming,
+            expectedCallId = "call-1",
+        )
+
+        assertThat(request?.expectedCallId).isEqualTo("call-1")
+    }
 }

@@ -11,7 +11,9 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
+import androidx.core.graphics.drawable.IconCompat
 import dagger.hilt.android.AndroidEntryPoint
 import life.fxs.purr.MainActivity
 import life.fxs.purr.R
@@ -19,9 +21,12 @@ import life.fxs.purr.core.common.ApplicationScope
 import life.fxs.purr.domain.call.usecase.DisconnectCallUseCase
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 import life.fxs.purr.overlay.CallOverlayCoordinator
+import life.fxs.purr.platform.incomingcall.CallNotificationAvatarLoader
 
 @AndroidEntryPoint
 open class CallForegroundService : Service() {
@@ -38,7 +43,14 @@ open class CallForegroundService : Service() {
     @Inject
     lateinit var callOverlayCoordinator: CallOverlayCoordinator
 
+    @Inject
+    internal lateinit var notificationIdentitySource: CallNotificationIdentitySource
+
+    @Inject
+    internal lateinit var notificationAvatarLoader: CallNotificationAvatarLoader
+
     private var activeCallId: String? = null
+    private var notificationIdentityJob: Job? = null
     private val hangUpInProgress = AtomicBoolean(false)
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -74,7 +86,8 @@ open class CallForegroundService : Service() {
             // Do not replace the notification owned by the active call.
             return START_NOT_STICKY
         }
-        val notification = buildNotification(callId, intent.getStringExtra(EXTRA_PAIR_ID))
+        val pairId = intent.getStringExtra(EXTRA_PAIR_ID)
+        val notification = buildNotification(callId, pairId, identity = null, callerIcon = null)
         try {
             enterForeground(notification)
         } catch (_: SecurityException) {
@@ -87,8 +100,9 @@ open class CallForegroundService : Service() {
         if (stateStore.markStarted(callId)) {
             activeCallId = callId
         }
+        observeNotificationIdentity(callId, pairId)
         if (::callOverlayCoordinator.isInitialized) {
-            callOverlayCoordinator.start(intent.getStringExtra(EXTRA_PAIR_ID).orEmpty())
+            callOverlayCoordinator.start(pairId.orEmpty())
         }
         return START_NOT_STICKY
     }
@@ -116,6 +130,8 @@ open class CallForegroundService : Service() {
         // The process-local store is the source of truth when Android recreates the
         // Service object before the previous instance has published its field state.
         val destroyedCallId = stateStore.state.value.activeCallId ?: activeCallId
+        notificationIdentityJob?.cancel()
+        notificationIdentityJob = null
         stateStore.markStopped(destroyedCallId)
         activeCallId = null
         if (::callOverlayCoordinator.isInitialized) callOverlayCoordinator.stop()
@@ -128,7 +144,37 @@ open class CallForegroundService : Service() {
         super.onDestroy()
     }
 
-    private fun buildNotification(callId: String, pairId: String?): Notification {
+    private fun observeNotificationIdentity(callId: String, pairId: String?) {
+        notificationIdentityJob?.cancel()
+        notificationIdentityJob = null
+        val expectedPairId = pairId?.takeIf(String::isNotBlank) ?: return
+        notificationIdentityJob = applicationScope.launch {
+            notificationIdentitySource.observe(expectedPairId).collectLatest { identity ->
+                val callerIcon = identity?.avatarUrl
+                    ?.takeIf(String::isNotBlank)
+                    ?.let { notificationAvatarLoader.load(it) }
+                if (stateStore.state.value.activeCallId != callId) return@collectLatest
+                updateForegroundNotification(
+                    buildNotification(callId, expectedPairId, identity, callerIcon),
+                )
+            }
+        }
+    }
+
+    protected open fun updateForegroundNotification(notification: Notification) {
+        try {
+            NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, notification)
+        } catch (_: SecurityException) {
+            // The foreground service remains valid even if notification visibility is revoked.
+        }
+    }
+
+    private fun buildNotification(
+        callId: String,
+        pairId: String?,
+        identity: CallNotificationIdentity?,
+        callerIcon: IconCompat?,
+    ): Notification {
         val openCallIntent = PendingIntent.getActivity(
             this,
             REQUEST_CODE,
@@ -147,13 +193,17 @@ open class CallForegroundService : Service() {
                 ),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val callerName = identity?.displayName
+            ?.takeIf(String::isNotBlank)
+            ?: getString(R.string.call_notification_content)
         val caller = Person.Builder()
-            .setName(getString(R.string.call_notification_content))
+            .setName(callerName)
             .setImportant(true)
+            .apply { callerIcon?.let(::setIcon) }
             .build()
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.sym_call_incoming)
-            .setContentTitle(getString(R.string.app_name))
+            .setContentTitle(callerName)
             .setContentText(getString(R.string.call_notification_content))
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)

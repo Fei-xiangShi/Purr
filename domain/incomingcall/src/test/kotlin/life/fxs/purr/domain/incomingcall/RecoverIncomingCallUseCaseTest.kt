@@ -1,7 +1,7 @@
-package life.fxs.purr.platform.incomingcall
+package life.fxs.purr.domain.incomingcall
 
+import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
-import io.mockk.coVerify
 import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.just
@@ -17,29 +17,28 @@ import life.fxs.purr.domain.account.usecase.RefreshActiveCallUseCase
 import life.fxs.purr.domain.account.usecase.StartRealtimeUpdatesUseCase
 import org.junit.Test
 
-class IncomingCallRecoveryTest {
-    private val observeAuthSession = mockk<ObserveAuthSessionUseCase>()
-    private val startRealtimeUpdates = mockk<StartRealtimeUpdatesUseCase>()
-    private val refreshActiveCall = mockk<RefreshActiveCallUseCase>()
-
+class RecoverIncomingCallUseCaseTest {
     @Test
     fun `authenticated recovery starts realtime before refreshing active call`() = runTest {
+        val observeAuthSession = mockk<ObserveAuthSessionUseCase>()
+        val startRealtimeUpdates = mockk<StartRealtimeUpdatesUseCase>()
+        val refreshActiveCall = mockk<RefreshActiveCallUseCase>()
         every { observeAuthSession() } returns MutableStateFlow(authSession())
         every { startRealtimeUpdates() } just runs
         coEvery { refreshActiveCall() } returns AppResult.Success(Unit)
-        val recovery = IncomingCallRecovery(
+        val recovery = RecoverIncomingCallUseCase(
             observeAuthSession = observeAuthSession,
             startRealtimeUpdates = startRealtimeUpdates,
             refreshActiveCall = refreshActiveCall,
         )
 
-        recovery.refreshAfterProcessRecreation()
+        val result = recovery()
 
+        assertThat(result).isEqualTo(IncomingCallRecoveryResult.Refreshed(AppResult.Success(Unit)))
         coVerifyOrder {
             startRealtimeUpdates()
             refreshActiveCall()
         }
-        coVerify(exactly = 1) { refreshActiveCall() }
     }
 
     private fun authSession() = AuthSession(

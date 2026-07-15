@@ -2,13 +2,10 @@ package life.fxs.purr.feature.incomingcall
 
 import androidx.lifecycle.viewModelScope
 import com.google.common.truth.Truth.assertThat
-import io.mockk.Runs
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
-import io.mockk.just
 import io.mockk.mockk
-import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -22,8 +19,8 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.domain.account.model.IncomingCall
-import life.fxs.purr.domain.account.usecase.ConsumeIncomingCallUseCase
 import life.fxs.purr.domain.account.usecase.DeclineIncomingCallUseCase
+import life.fxs.purr.domain.incomingcall.ObservePresentableIncomingCallUseCase
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -33,14 +30,12 @@ class IncomingCallPromptViewModelTest {
     private val dispatcher = StandardTestDispatcher()
     private val presentableCalls = MutableStateFlow<IncomingCall?>(null)
     private val observePresentableIncomingCall = mockk<ObservePresentableIncomingCallUseCase>()
-    private val consumeIncomingCall = mockk<ConsumeIncomingCallUseCase>()
     private val declineIncomingCall = mockk<DeclineIncomingCallUseCase>()
 
     @Before
     fun setUp() {
         Dispatchers.setMain(dispatcher)
         every { observePresentableIncomingCall.invoke() } returns presentableCalls
-        every { consumeIncomingCall.invoke(any()) } just Runs
         coEvery { declineIncomingCall.invoke(any()) } returns AppResult.Success(Unit)
     }
 
@@ -50,7 +45,7 @@ class IncomingCallPromptViewModelTest {
     }
 
     @Test
-    fun `accept consumes exactly that call and navigates`() = runTest(dispatcher) {
+    fun `accept preserves exact call identity and navigates without consuming it early`() = runTest(dispatcher) {
         presentableCalls.value = incomingCall()
         withViewModel { viewModel ->
             val effect = async { viewModel.effects.first() }
@@ -59,8 +54,9 @@ class IncomingCallPromptViewModelTest {
             viewModel.onIntent(IncomingCallPromptIntent.Accept)
             runCurrent()
 
-            verify(exactly = 1) { consumeIncomingCall.invoke("call-1") }
-            assertThat(effect.await()).isEqualTo(IncomingCallPromptEffect.NavigateToCall("pair-1"))
+            assertThat(effect.await()).isEqualTo(
+                IncomingCallPromptEffect.NavigateToCall(pairId = "pair-1", callId = "call-1"),
+            )
         }
     }
 
@@ -87,16 +83,16 @@ class IncomingCallPromptViewModelTest {
             viewModel.onIntent(IncomingCallPromptIntent.Accept)
             viewModel.onIntent(IncomingCallPromptIntent.Accept)
             runCurrent()
-            effect.await()
 
-            verify(exactly = 1) { consumeIncomingCall.invoke("call-1") }
+            assertThat(effect.await()).isEqualTo(
+                IncomingCallPromptEffect.NavigateToCall(pairId = "pair-1", callId = "call-1"),
+            )
         }
     }
 
     private suspend inline fun withViewModel(block: suspend (IncomingCallPromptViewModel) -> Unit) {
         val viewModel = IncomingCallPromptViewModel(
             observePresentableIncomingCall = observePresentableIncomingCall,
-            consumeIncomingCall = consumeIncomingCall,
             declineIncomingCall = declineIncomingCall,
         )
         try {

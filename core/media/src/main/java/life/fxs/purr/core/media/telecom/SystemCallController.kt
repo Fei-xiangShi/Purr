@@ -11,6 +11,8 @@ data class SystemCallDescriptor(
 )
 
 sealed interface SystemCallEvent {
+    data class AnswerRequested(val callId: String) : SystemCallEvent
+
     data class DisconnectRequested(val callId: String) : SystemCallEvent
 }
 

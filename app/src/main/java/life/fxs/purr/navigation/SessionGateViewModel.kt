@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import life.fxs.purr.domain.account.usecase.ObserveAuthSessionUseCase
 import life.fxs.purr.domain.account.usecase.ObservePairBondUseCase
-import life.fxs.purr.feature.incomingcall.ObservePresentableIncomingCallUseCase
+import life.fxs.purr.domain.incomingcall.ObservePresentableIncomingCallUseCase
 import life.fxs.purr.core.model.PairedPartner
 import life.fxs.purr.core.model.SelfProfile
 import life.fxs.purr.domain.account.model.IncomingCall

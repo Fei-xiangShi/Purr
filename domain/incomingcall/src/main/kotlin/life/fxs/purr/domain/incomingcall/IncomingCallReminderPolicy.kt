@@ -1,4 +1,4 @@
-package life.fxs.purr.feature.incomingcall
+package life.fxs.purr.domain.incomingcall
 
 import javax.inject.Inject
 import life.fxs.purr.core.model.PairedPartner

@@ -1,4 +1,4 @@
-package life.fxs.purr.feature.incomingcall
+package life.fxs.purr.domain.incomingcall
 
 import com.google.common.truth.Truth.assertThat
 import life.fxs.purr.domain.account.model.IncomingCall
@@ -9,24 +9,19 @@ import org.junit.Test
 
 class PresentableIncomingCallPolicyTest {
     @Test
-    fun `matching local session permanently consumes the same incoming call`() {
+    fun `matching local session suppresses the same incoming call permanently`() {
         val candidate = incomingCall("call-1")
 
-        val whileConnected = PresentableIncomingCallPolicy.resolve(
-            candidate,
-            session("call-1", CallConnectionState.Connected),
-        )
-        val afterDisconnect = PresentableIncomingCallPolicy.resolve(
-            candidate,
-            session("call-1", CallConnectionState.Disconnected),
-        )
-
-        assertThat(whileConnected).isNull()
-        assertThat(afterDisconnect).isNull()
+        assertThat(
+            PresentableIncomingCallPolicy.resolve(candidate, session("call-1", CallConnectionState.Connected)),
+        ).isNull()
+        assertThat(
+            PresentableIncomingCallPolicy.resolve(candidate, session("call-1", CallConnectionState.Disconnected)),
+        ).isNull()
     }
 
     @Test
-    fun `an active local call blocks another incoming presentation`() {
+    fun `active local call blocks a different incoming presentation`() {
         val result = PresentableIncomingCallPolicy.resolve(
             incomingCall("call-2"),
             session("call-1", CallConnectionState.Connected),
@@ -36,7 +31,7 @@ class PresentableIncomingCallPolicyTest {
     }
 
     @Test
-    fun `a different terminal session does not block a genuinely new call`() {
+    fun `different terminal session allows a genuinely new call`() {
         val candidate = incomingCall("call-2")
 
         val result = PresentableIncomingCallPolicy.resolve(
@@ -47,12 +42,7 @@ class PresentableIncomingCallPolicyTest {
         assertThat(result).isEqualTo(candidate)
     }
 
-    private fun incomingCall(callId: String) = IncomingCall(
-        callId = callId,
-        pairId = "pair-1",
-        callerUserId = "user-b",
-        startedAtEpochMillis = 1L,
-    )
+    private fun incomingCall(callId: String) = IncomingCall(callId, "pair-1", "user-b", 1L)
 
     private fun session(callId: String, state: CallConnectionState) = CallSession(
         callId = callId,

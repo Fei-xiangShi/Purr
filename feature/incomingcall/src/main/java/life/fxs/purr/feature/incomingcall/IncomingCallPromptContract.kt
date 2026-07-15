@@ -15,7 +15,10 @@ internal data class IncomingCallPromptState(
 )
 
 internal sealed interface IncomingCallPromptEffect {
-    data class NavigateToCall(val pairId: String) : IncomingCallPromptEffect
+    data class NavigateToCall(
+        val pairId: String,
+        val callId: String,
+    ) : IncomingCallPromptEffect
 
     data class ShowError(val message: String) : IncomingCallPromptEffect
 }

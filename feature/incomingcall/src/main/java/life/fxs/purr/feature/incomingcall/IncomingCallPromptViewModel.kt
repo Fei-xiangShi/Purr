@@ -14,13 +14,12 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.presentation.toUserMessage
-import life.fxs.purr.domain.account.usecase.ConsumeIncomingCallUseCase
 import life.fxs.purr.domain.account.usecase.DeclineIncomingCallUseCase
+import life.fxs.purr.domain.incomingcall.ObservePresentableIncomingCallUseCase
 
 @HiltViewModel
 internal class IncomingCallPromptViewModel @Inject constructor(
     observePresentableIncomingCall: ObservePresentableIncomingCallUseCase,
-    private val consumeIncomingCall: ConsumeIncomingCallUseCase,
     private val declineIncomingCall: DeclineIncomingCallUseCase,
 ) : ViewModel() {
     private val responding = MutableStateFlow(false)
@@ -49,8 +48,12 @@ internal class IncomingCallPromptViewModel @Inject constructor(
             try {
                 when (intent) {
                     IncomingCallPromptIntent.Accept -> {
-                        consumeIncomingCall(call.callId)
-                        effectsFlow.emit(IncomingCallPromptEffect.NavigateToCall(call.pairId))
+                        effectsFlow.emit(
+                            IncomingCallPromptEffect.NavigateToCall(
+                                pairId = call.pairId,
+                                callId = call.callId,
+                            ),
+                        )
                     }
                     IncomingCallPromptIntent.Decline -> when (val result = declineIncomingCall(call.callId)) {
                         is AppResult.Success -> Unit

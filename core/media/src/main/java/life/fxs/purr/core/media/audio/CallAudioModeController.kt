@@ -3,7 +3,7 @@ package life.fxs.purr.core.media.audio
 import android.media.AudioManager
 
 interface CallAudioModeController {
-    suspend fun apply(profile: CallAudioProfile)
+    suspend fun activate()
 
     suspend fun release()
 }
@@ -11,11 +11,8 @@ interface CallAudioModeController {
 class AndroidCallAudioModeController(
     private val audioManager: AudioManager,
 ) : CallAudioModeController {
-    override suspend fun apply(profile: CallAudioProfile) {
-        audioManager.mode = when (profile) {
-            CallAudioProfile.Conversational -> AudioManager.MODE_IN_COMMUNICATION
-            CallAudioProfile.ListenOnly -> AudioManager.MODE_NORMAL
-        }
+    override suspend fun activate() {
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
     }
 
     override suspend fun release() {

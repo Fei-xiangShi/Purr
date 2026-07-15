@@ -38,7 +38,9 @@ private const val CALL_ROUTE = "call"
 private const val CALL_HISTORY_ROUTE = "call-history"
 private const val PAIR_ID_ARG = "pairId"
 private const val DIRECTION_ARG = "direction"
-private const val CALL_DESTINATION = "$CALL_ROUTE/{$PAIR_ID_ARG}?$DIRECTION_ARG={$DIRECTION_ARG}"
+private const val EXPECTED_CALL_ID_ARG = "expectedCallId"
+private const val CALL_DESTINATION =
+    "$CALL_ROUTE/{$PAIR_ID_ARG}?$DIRECTION_ARG={$DIRECTION_ARG}&$EXPECTED_CALL_ID_ARG={$EXPECTED_CALL_ID_ARG}"
 private const val PARTNER_AVATAR_SHARED_KEY = "partner-avatar"
 
 @OptIn(ExperimentalSharedTransitionApi::class)
@@ -47,6 +49,7 @@ fun PurrNavHost(
     initialCallPairId: String? = null,
     initialCallRequestId: Long? = null,
     initialCallDirection: CallDirection = CallDirection.Outgoing,
+    initialExpectedCallId: String? = null,
     onCallRequestConsumed: (Long) -> Unit = {},
     onCallSurfaceVisibilityChanged: (Boolean) -> Unit = {},
     onRecordingDownload: (RecordingDownloadRequest) -> Unit = {},
@@ -97,8 +100,8 @@ fun PurrNavHost(
                     partnerName = gateState.partner?.displayName ?: "对方",
                     partnerAvatarUrl = gateState.partner?.avatarUrl,
                     avatarModifier = Modifier.partnerAvatarElement(transitionScope, this),
-                    onOpenCall = { pairId ->
-                        navController.navigate(callRoute(pairId, CallDirection.Incoming)) {
+                    onOpenCall = { pairId, callId ->
+                        navController.navigate(callRoute(pairId, CallDirection.Incoming, callId)) {
                             popUpTo(INCOMING_CALL_ROUTE) { inclusive = true }
                             launchSingleTop = true
                         }
@@ -118,15 +121,23 @@ fun PurrNavHost(
                         type = NavType.StringType
                         defaultValue = CallDirection.Outgoing.name
                     },
+                    navArgument(EXPECTED_CALL_ID_ARG) {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    },
                 ),
             ) { backStackEntry ->
                 val pairId = backStackEntry.arguments?.getString(PAIR_ID_ARG).orEmpty()
                 val direction = backStackEntry.arguments?.getString(DIRECTION_ARG)
                     ?.let { runCatching { CallDirection.valueOf(it) }.getOrNull() }
                     ?: CallDirection.Outgoing
+                val expectedCallId = backStackEntry.arguments?.getString(EXPECTED_CALL_ID_ARG)
+                    ?.takeIf(String::isNotBlank)
                 CallScreenRoute(
                     pairId = pairId,
                     direction = direction,
+                    expectedCallId = expectedCallId,
                     partnerName = gateState.partner?.displayName ?: "对方",
                     partnerAvatarUrl = gateState.partner?.avatarUrl,
                     partnerAvatarModifier = Modifier.partnerAvatarElement(transitionScope, this),
@@ -168,10 +179,19 @@ fun PurrNavHost(
 
     val callRequest = initialCallPairId
         ?.takeIf(String::isNotBlank)
-        ?.let { CallNavigationRequest(it, initialCallRequestId ?: 0L, initialCallDirection) }
+        ?.let {
+            CallNavigationRequest(
+                pairId = it,
+                requestId = initialCallRequestId ?: 0L,
+                direction = initialCallDirection,
+                expectedCallId = initialExpectedCallId,
+            )
+        }
     LaunchedEffect(gateState.isReady, gateState.isAuthenticated, callRequest) {
         if (gateState.isReady && gateState.isAuthenticated && callRequest != null) {
-            navController.navigate(callRoute(callRequest.pairId, callRequest.direction)) {
+            navController.navigate(
+                callRoute(callRequest.pairId, callRequest.direction, callRequest.expectedCallId),
+            ) {
                 launchSingleTop = true
             }
             if (callRequest.requestId != 0L) currentOnCallRequestConsumed(callRequest.requestId)
@@ -179,8 +199,16 @@ fun PurrNavHost(
     }
 }
 
-private fun callRoute(pairId: String, direction: CallDirection): String =
-    "$CALL_ROUTE/${android.net.Uri.encode(pairId)}?$DIRECTION_ARG=${direction.name}"
+private fun callRoute(
+    pairId: String,
+    direction: CallDirection,
+    expectedCallId: String? = null,
+): String = buildString {
+    append("$CALL_ROUTE/${android.net.Uri.encode(pairId)}?$DIRECTION_ARG=${direction.name}")
+    expectedCallId?.takeIf(String::isNotBlank)?.let {
+        append("&$EXPECTED_CALL_ID_ARG=${android.net.Uri.encode(it)}")
+    }
+}
 
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable

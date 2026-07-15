@@ -2,17 +2,12 @@ package life.fxs.purr.data.call.runtime
 
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import life.fxs.purr.core.media.audio.AudioRouteController
-import life.fxs.purr.core.media.audio.CallAudioProfile
 import life.fxs.purr.core.media.audio.CallAudioSessionController
-import life.fxs.purr.core.media.audio.CallAudioTransitionOutcome
-import life.fxs.purr.core.media.audio.currentProfile
-import life.fxs.purr.core.media.audio.isConversationalReady
+import life.fxs.purr.core.media.audio.isReady
 import life.fxs.purr.core.media.service.CallServiceController
 import life.fxs.purr.core.media.telecom.SystemCallController
 import life.fxs.purr.core.media.telecom.SystemCallDescriptor
@@ -92,30 +87,7 @@ class CallRuntimeControllerImpl @Inject constructor(
 
     private suspend fun setMutedLocked(command: MediaCallCommand.SetMuted) {
         check(activeCallId == command.callId) { "No active call runtime" }
-        if (command.muted) {
-            // Privacy is authoritative: stop transmission before changing the Bluetooth profile.
-            mediaCallPort.execute(command)
-            callAudioSessionController.transitionTo(CallAudioProfile.ListenOnly)
-            return
-        }
-
-        val previousProfile = callAudioSessionController.state.value.currentProfile
-        val transition = callAudioSessionController.transitionTo(CallAudioProfile.Conversational)
-        transition.requireReached(CallAudioProfile.Conversational)
-        try {
-            // The microphone is enabled only after communication mode and routing are ready.
-            mediaCallPort.execute(command)
-        } catch (error: Throwable) {
-            if (previousProfile == CallAudioProfile.ListenOnly) {
-                val rollback = withContext(NonCancellable) {
-                    callAudioSessionController.transitionTo(CallAudioProfile.ListenOnly)
-                }
-                if (rollback is CallAudioTransitionOutcome.Failed) {
-                    error.addSuppressed(rollback.error)
-                }
-            }
-            throw error
-        }
+        mediaCallPort.execute(command)
     }
 
     override suspend fun releaseResources() = lifecycleMutex.withLock {
@@ -150,26 +122,9 @@ class CallRuntimeControllerImpl @Inject constructor(
 
     override suspend fun selectAudioRoute(route: AudioRoute) = lifecycleMutex.withLock {
         check(activeCallId != null) { "No active call runtime" }
-        check(callAudioSessionController.state.value.isConversationalReady) {
-            "Audio routes can only be selected in conversational mode"
+        check(callAudioSessionController.state.value.isReady) {
+            "Audio routes can only be selected while the audio session is active"
         }
         audioRouteController.selectRoute(route)
-    }
-}
-
-private fun CallAudioTransitionOutcome.requireReached(target: CallAudioProfile) {
-    when (this) {
-        CallAudioTransitionOutcome.Applied,
-        CallAudioTransitionOutcome.AlreadyActive,
-        -> Unit
-        CallAudioTransitionOutcome.NotApplicable -> error("Audio profile $target is not applicable")
-        is CallAudioTransitionOutcome.Recovered -> throw IllegalStateException(
-            "Audio profile $target failed and was rolled back",
-            error,
-        )
-        is CallAudioTransitionOutcome.Failed -> throw IllegalStateException(
-            "Audio profile $target and its rollback both failed",
-            error,
-        )
     }
 }

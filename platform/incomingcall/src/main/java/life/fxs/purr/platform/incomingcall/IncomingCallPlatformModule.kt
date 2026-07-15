@@ -5,12 +5,18 @@ import dagger.Module
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
-import life.fxs.purr.feature.incomingcall.ApplicationVisibility
-import life.fxs.purr.feature.incomingcall.IncomingCallReminder
+import life.fxs.purr.domain.incomingcall.ApplicationVisibility
+import life.fxs.purr.domain.incomingcall.IncomingCallReminder
 
 @Module
 @InstallIn(SingletonComponent::class)
 internal abstract class IncomingCallPlatformModule {
+    @Binds
+    @Singleton
+    abstract fun bindCallNotificationAvatarLoader(
+        implementation: CoilCallNotificationAvatarLoader,
+    ): CallNotificationAvatarLoader
+
     @Binds
     @Singleton
     abstract fun bindFullScreenIntentCapability(

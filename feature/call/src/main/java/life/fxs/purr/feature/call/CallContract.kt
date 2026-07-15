@@ -22,6 +22,7 @@ sealed interface CallIntent {
         val pairId: String,
         val remoteDisplayName: String = "Purr",
         val direction: CallDirection = CallDirection.Outgoing,
+        val expectedCallId: String? = null,
     ) : CallIntent
     data class MicrophonePermissionResult(
         val granted: Boolean,

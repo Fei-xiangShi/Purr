@@ -15,6 +15,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
@@ -67,6 +68,66 @@ class CallRepositoryImplTest {
     fun tearDown() {
         applicationScope.cancel()
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun `failed preparation never ends an existing incoming call joined by this request`() = runTest(dispatcher) {
+        configureIdleRuntime()
+        coEvery { api.createSession(any()) } returns sessionResponse(createdByRequest = false)
+        coEvery { callStatusRemoteDataSource.getStatus("call-1") } throws IllegalStateException("status unavailable")
+        coEvery { api.endCall(any()) } returns Unit
+        val repository = repository()
+
+        val result = repository.prepareCall(
+            PrepareCallParams(
+                pairId = "pair-1",
+                recordingConsent = true,
+                direction = life.fxs.purr.core.model.CallDirection.Incoming,
+                expectedCallId = "call-1",
+            ),
+        )
+
+        assertThat(result).isInstanceOf(AppResult.Failure::class.java)
+        coVerify(exactly = 1) {
+            api.createSession(match { it.expectedCallId == "call-1" })
+        }
+        coVerify(exactly = 0) { api.endCall(any()) }
+    }
+
+    @Test
+    fun `failed preparation compensates only a call created by this request`() = runTest(dispatcher) {
+        configureIdleRuntime()
+        coEvery { api.createSession(any()) } returns sessionResponse(createdByRequest = true)
+        coEvery { callStatusRemoteDataSource.getStatus("call-1") } throws IllegalStateException("status unavailable")
+        coEvery { api.endCall("call-1") } returns Unit
+        val repository = repository()
+
+        val result = repository.prepareCall(PrepareCallParams(pairId = "pair-1", recordingConsent = true))
+
+        assertThat(result).isInstanceOf(AppResult.Failure::class.java)
+        coVerify(exactly = 1) { api.endCall("call-1") }
+    }
+
+    @Test
+    fun `mismatched incoming response is rejected and compensates an owned call`() = runTest(dispatcher) {
+        configureIdleRuntime()
+        coEvery { api.createSession(any()) } returns
+            sessionResponse(createdByRequest = true).copy(callId = "call-other")
+        coEvery { api.endCall("call-other") } returns Unit
+        val repository = repository()
+
+        val result = repository.prepareCall(
+            PrepareCallParams(
+                pairId = "pair-1",
+                recordingConsent = true,
+                direction = life.fxs.purr.core.model.CallDirection.Incoming,
+                expectedCallId = "call-1",
+            ),
+        )
+
+        assertThat(result).isInstanceOf(AppResult.Failure::class.java)
+        coVerify(exactly = 1) { api.endCall("call-other") }
+        coVerify(exactly = 0) { callStatusRemoteDataSource.getStatus(any()) }
     }
 
     @Test
@@ -393,10 +454,14 @@ class CallRepositoryImplTest {
     }
 
     @Test
-    fun `failed unmute restores the last stable muted state`() = runTest(dispatcher) {
+    fun `mute success and unmute rollback preserve route until its flow changes`() = runTest(dispatcher) {
         val runtimeEvents = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 4)
-        every { audioRouteController.activeRoute } returns MutableStateFlow(AudioRoute.Bluetooth)
-        every { audioRouteController.availableRoutes } returns MutableStateFlow(listOf(AudioRoute.Bluetooth))
+        val activeRoute = MutableStateFlow<AudioRoute>(AudioRoute.Earpiece)
+        val availableRoutes = MutableStateFlow(listOf(AudioRoute.Earpiece, AudioRoute.Speaker))
+        var exposedActiveRoute: StateFlow<AudioRoute> = activeRoute
+        var exposedAvailableRoutes: StateFlow<List<AudioRoute>> = availableRoutes
+        every { audioRouteController.activeRoute } answers { exposedActiveRoute }
+        every { audioRouteController.availableRoutes } answers { exposedAvailableRoutes }
         every { callServiceController.foregroundState } returns MutableStateFlow(
             ForegroundCallServiceState(activeCallId = "call-1"),
         )
@@ -434,8 +499,19 @@ class CallRepositoryImplTest {
         runCurrent()
         coEvery {
             callRuntimeController.execute(MediaCallCommand.SetMuted("call-1", muted = true))
-        } returns Unit
-        repository.setMuted(muted = true)
+        } coAnswers {
+            // Replacing the exposed snapshots simulates an unrelated synchronous re-sample.
+            // The repository must remain subscribed to the original runtime flows.
+            exposedActiveRoute = MutableStateFlow(AudioRoute.Speaker)
+            exposedAvailableRoutes = MutableStateFlow(listOf(AudioRoute.Speaker))
+        }
+        val muteResult = repository.setMuted(muted = true)
+
+        assertThat(muteResult).isInstanceOf(AppResult.Success::class.java)
+        assertThat(repository.observeCallSession().first()?.localAudioState)
+            .isEqualTo(LocalAudioState.Muted)
+        assertThat(repository.observeCallSession().first()?.uiSnapshot?.activeAudioRoute)
+            .isEqualTo(AudioRoute.Earpiece)
         coEvery {
             callRuntimeController.execute(MediaCallCommand.SetMuted("call-1", muted = false))
         } throws IllegalStateException("audio profile restore failed")
@@ -445,6 +521,19 @@ class CallRepositoryImplTest {
         assertThat(result).isInstanceOf(AppResult.Failure::class.java)
         assertThat(repository.observeCallSession().first()?.localAudioState)
             .isEqualTo(LocalAudioState.Muted)
+        assertThat(repository.observeCallSession().first()?.uiSnapshot?.activeAudioRoute)
+            .isEqualTo(AudioRoute.Earpiece)
+        assertThat(repository.observeCallSession().first()?.uiSnapshot?.availableAudioRoutes)
+            .containsExactly(AudioRoute.Earpiece, AudioRoute.Speaker).inOrder()
+
+        activeRoute.value = AudioRoute.Speaker
+        availableRoutes.value = listOf(AudioRoute.Speaker)
+        runCurrent()
+
+        assertThat(repository.observeCallSession().first()?.uiSnapshot?.activeAudioRoute)
+            .isEqualTo(AudioRoute.Speaker)
+        assertThat(repository.observeCallSession().first()?.uiSnapshot?.availableAudioRoutes)
+            .containsExactly(AudioRoute.Speaker)
     }
 
     @Test
@@ -557,11 +646,32 @@ class CallRepositoryImplTest {
 
     private fun repository() = CallRepositoryImpl(
         api = api,
+        sessionPreparationCoordinator = CallSessionPreparationCoordinator(
+            api = api,
+            callStatusRemoteDataSource = callStatusRemoteDataSource,
+            callUiSnapshotAssembler = CallUiSnapshotAssembler(audioRouteController, callServiceController),
+        ),
         callRuntimeController = callRuntimeController,
-        callStatusRemoteDataSource = callStatusRemoteDataSource,
         callStatusSynchronizer = CallStatusSynchronizer(callStatusRemoteDataSource, applicationScope),
         callMediaEventReducer = CallMediaEventReducer(),
         callUiSnapshotAssembler = CallUiSnapshotAssembler(audioRouteController, callServiceController),
         applicationScope = applicationScope,
+    )
+
+    private fun configureIdleRuntime() {
+        every { audioRouteController.activeRoute } returns MutableStateFlow(AudioRoute.Speaker)
+        every { audioRouteController.availableRoutes } returns MutableStateFlow(listOf(AudioRoute.Speaker))
+        every { callServiceController.foregroundState } returns MutableStateFlow(ForegroundCallServiceState())
+        every { callRuntimeController.mediaEvents } returns emptyFlow()
+    }
+
+    private fun sessionResponse(createdByRequest: Boolean) = SessionResponseDto(
+        callId = "call-1",
+        pairId = "pair-1",
+        roomName = "room-1",
+        participantIdentity = "self",
+        token = "token",
+        wsUrl = "wss://example.invalid",
+        createdByRequest = createdByRequest,
     )
 }

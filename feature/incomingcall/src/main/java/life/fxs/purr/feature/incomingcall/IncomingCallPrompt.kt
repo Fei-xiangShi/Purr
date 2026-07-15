@@ -40,7 +40,7 @@ fun IncomingCallPromptRoute(
     avatarModifier: Modifier = Modifier,
     expectedCallId: String? = null,
     acceptImmediately: Boolean = false,
-    onOpenCall: (String) -> Unit,
+    onOpenCall: (pairId: String, callId: String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     IncomingCallPromptRoute(
@@ -63,7 +63,7 @@ internal fun IncomingCallPromptRoute(
     avatarModifier: Modifier,
     expectedCallId: String?,
     acceptImmediately: Boolean,
-    onOpenCall: (String) -> Unit,
+    onOpenCall: (pairId: String, callId: String) -> Unit,
     onDismiss: () -> Unit,
     viewModel: IncomingCallPromptViewModel,
 ) {
@@ -77,7 +77,7 @@ internal fun IncomingCallPromptRoute(
     LaunchedEffect(viewModel, context) {
         viewModel.effects.collect { effect ->
             when (effect) {
-                is IncomingCallPromptEffect.NavigateToCall -> onOpenCall(effect.pairId)
+                is IncomingCallPromptEffect.NavigateToCall -> onOpenCall(effect.pairId, effect.callId)
                 is IncomingCallPromptEffect.ShowError -> {
                     Toast.makeText(context, effect.message, Toast.LENGTH_SHORT).show()
                 }

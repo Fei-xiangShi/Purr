@@ -1,4 +1,4 @@
-package life.fxs.purr.feature.incomingcall
+package life.fxs.purr.domain.incomingcall
 
 import com.google.common.truth.Truth.assertThat
 import life.fxs.purr.core.model.PairedPartner
@@ -41,12 +41,7 @@ class IncomingCallReminderPolicyTest {
         assertThat(target).isEqualTo(IncomingCallReminderTarget.Hidden)
     }
 
-    private fun incomingCall() = IncomingCall(
-        callId = "call-1",
-        pairId = "pair-1",
-        callerUserId = "user-b",
-        startedAtEpochMillis = 1L,
-    )
+    private fun incomingCall() = IncomingCall("call-1", "pair-1", "user-b", 1L)
 
     private fun partner(userId: String) = PairedPartner(
         userId = userId,

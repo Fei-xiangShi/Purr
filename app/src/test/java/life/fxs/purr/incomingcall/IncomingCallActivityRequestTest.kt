@@ -1,4 +1,4 @@
-package life.fxs.purr.platform.incomingcall
+package life.fxs.purr.incomingcall
 
 import android.content.Intent
 import com.google.common.truth.Truth.assertThat
@@ -13,10 +13,10 @@ class IncomingCallActivityRequestTest {
     @Test
     fun `answer action creates an immediate accept request`() {
         val request = IncomingCallActivityRequest.from(
-            Intent(IncomingCallIntentFactory.ACTION_ANSWER).apply {
-                putExtra(IncomingCallIntentFactory.EXTRA_CALL_ID, "call-1")
-                putExtra(IncomingCallIntentFactory.EXTRA_CALLER_NAME, "Partner")
-                putExtra(IncomingCallIntentFactory.EXTRA_CALLER_AVATAR_URL, "https://example.test/avatar")
+            Intent(IncomingCallActivityContract.ACTION_ANSWER).apply {
+                putExtra(IncomingCallActivityContract.EXTRA_CALL_ID, "call-1")
+                putExtra(IncomingCallActivityContract.EXTRA_CALLER_NAME, "Partner")
+                putExtra(IncomingCallActivityContract.EXTRA_CALLER_AVATAR_URL, "https://example.test/avatar")
             },
         )
 
@@ -33,17 +33,7 @@ class IncomingCallActivityRequestTest {
     @Test
     fun `unknown action is rejected`() {
         val request = IncomingCallActivityRequest.from(
-            Intent("untrusted.action").putExtra(IncomingCallIntentFactory.EXTRA_CALL_ID, "call-1"),
-        )
-
-        assertThat(request).isEqualTo(IncomingCallActivityRequest.Invalid)
-    }
-
-    @Test
-    fun `blank call id is rejected`() {
-        val request = IncomingCallActivityRequest.from(
-            Intent(IncomingCallIntentFactory.ACTION_SHOW)
-                .putExtra(IncomingCallIntentFactory.EXTRA_CALL_ID, " "),
+            Intent("untrusted.action").putExtra(IncomingCallActivityContract.EXTRA_CALL_ID, "call-1"),
         )
 
         assertThat(request).isEqualTo(IncomingCallActivityRequest.Invalid)

@@ -47,6 +47,14 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".incomingcall.IncomingCallActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true" />
+
         <service
             android:name=".service.CallForegroundService"
             android:enabled="true"

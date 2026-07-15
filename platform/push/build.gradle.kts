@@ -68,6 +68,7 @@ kotlin {
 dependencies {
     implementation(projects.core.common)
     implementation(projects.domain.account)
+    implementation(projects.domain.incomingcall)
 
     implementation(libs.androidx.hilt.work)
     implementation(libs.androidx.work.runtime.ktx)

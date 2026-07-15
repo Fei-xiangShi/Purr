@@ -44,10 +44,25 @@ import life.fxs.purr.domain.call.repository.CallDiagnosticsRepository
 import life.fxs.purr.domain.call.repository.RecordingRepository
 import life.fxs.purr.domain.call.repository.CallOverlayStyleRepository
 import life.fxs.purr.service.AndroidCallServiceController
+import life.fxs.purr.incomingcall.AppIncomingCallUiPendingIntentFactory
+import life.fxs.purr.incomingcall.IncomingCallUiLauncher
+import life.fxs.purr.platform.incomingcall.IncomingCallUiPendingIntentFactory
 
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class BindingModule {
+    @Binds
+    @Singleton
+    abstract fun bindIncomingCallUiPendingIntentFactory(
+        impl: AppIncomingCallUiPendingIntentFactory,
+    ): IncomingCallUiPendingIntentFactory
+
+    @Binds
+    @Singleton
+    abstract fun bindIncomingCallUiLauncher(
+        impl: AppIncomingCallUiPendingIntentFactory,
+    ): IncomingCallUiLauncher
+
     @Binds
     @Singleton
     abstract fun bindAccountSecurityRepository(impl: ApiAccountSecurityRepository): AccountSecurityRepository

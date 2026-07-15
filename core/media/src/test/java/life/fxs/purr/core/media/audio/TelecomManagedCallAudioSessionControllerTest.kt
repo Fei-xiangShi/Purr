@@ -12,30 +12,7 @@ class TelecomManagedCallAudioSessionControllerTest {
         controller.activate()
         controller.activate()
 
-        assertThat(controller.state.value)
-            .isEqualTo(CallAudioSessionState.Active(CallAudioProfile.Conversational))
-    }
-
-    @Test
-    fun `listen-only transition is not applicable while Telecom owns the endpoint`() = runBlocking {
-        val controller = TelecomManagedCallAudioSessionController()
-        controller.activate()
-
-        val outcome = controller.transitionTo(CallAudioProfile.ListenOnly)
-
-        assertThat(outcome).isEqualTo(CallAudioTransitionOutcome.NotApplicable)
-        assertThat(controller.state.value)
-            .isEqualTo(CallAudioSessionState.Active(CallAudioProfile.Conversational))
-    }
-
-    @Test
-    fun `transition before activation fails without mutating released state`() = runBlocking {
-        val controller = TelecomManagedCallAudioSessionController()
-
-        val outcome = controller.transitionTo(CallAudioProfile.Conversational)
-
-        assertThat(outcome).isInstanceOf(CallAudioTransitionOutcome.Failed::class.java)
-        assertThat(controller.state.value).isEqualTo(CallAudioSessionState.Released)
+        assertThat(controller.state.value).isEqualTo(CallAudioSessionState.Active)
     }
 
     @Test

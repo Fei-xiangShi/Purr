@@ -48,6 +48,7 @@ import life.fxs.purr.domain.call.model.isEffectivelyMuted
 fun CallScreenRoute(
     pairId: String,
     direction: CallDirection = CallDirection.Outgoing,
+    expectedCallId: String? = null,
     partnerName: String = "对方",
     partnerAvatarUrl: String? = null,
     partnerAvatarModifier: Modifier = Modifier,
@@ -90,13 +91,14 @@ fun CallScreenRoute(
         contract = ActivityResultContracts.RequestPermission(),
     ) { requestMicrophonePermission() }
 
-    LaunchedEffect(pairId, partnerName, direction) {
+    LaunchedEffect(pairId, partnerName, direction, expectedCallId) {
         if (pairId.isNotBlank()) {
             viewModel.onIntent(
                 CallIntent.ConnectCall(
                     pairId = pairId,
                     remoteDisplayName = partnerName,
                     direction = direction,
+                    expectedCallId = expectedCallId,
                 ),
             )
         }

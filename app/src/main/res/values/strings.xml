@@ -4,4 +4,5 @@
     <string name="call_notification_channel_name">语音会话</string>
     <string name="call_notification_content">语音会话正在运行</string>
     <string name="call_notification_hang_up">挂断</string>
+    <string name="incoming_call_unknown_caller">未知来电</string>
 </resources>

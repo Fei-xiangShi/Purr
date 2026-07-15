@@ -22,14 +22,19 @@ class ApiProfileRepository @Inject constructor(
     override suspend fun uploadAvatar(contentType: String, bytes: ByteArray): AppResult<SelfProfile> {
         return try {
             val avatar = bytes.toRequestBody(contentType.toMediaType())
+            val filename = when (contentType.lowercase()) {
+                "image/jpeg" -> "avatar.jpg"
+                "image/png" -> "avatar.png"
+                else -> error("Unsupported avatar content type: $contentType")
+            }
             val profile = accountApi.uploadAvatar(
-                MultipartBody.Part.createFormData("avatar", "avatar", avatar),
+                MultipartBody.Part.createFormData("avatar", filename, avatar),
             )
             persistProfile(profile)
             AppResult.Success(profile)
-        } catch (throwable: Throwable) {
-            if (throwable is CancellationException) throw throwable
-            AppResult.Failure(throwable.asAppError())
+        } catch (exception: Exception) {
+            if (exception is CancellationException) throw exception
+            AppResult.Failure(exception.asAppError())
         }
     }
 
@@ -38,9 +43,9 @@ class ApiProfileRepository @Inject constructor(
             val profile = accountApi.updateProfile(UpdateProfileRequestDto(displayName.trim()))
             persistProfile(profile)
             AppResult.Success(profile)
-        } catch (throwable: Throwable) {
-            if (throwable is CancellationException) throw throwable
-            AppResult.Failure(throwable.asAppError())
+        } catch (exception: Exception) {
+            if (exception is CancellationException) throw exception
+            AppResult.Failure(exception.asAppError())
         }
     }
 

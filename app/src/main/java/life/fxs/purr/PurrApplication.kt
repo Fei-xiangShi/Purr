@@ -5,10 +5,11 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
-import life.fxs.purr.feature.incomingcall.IncomingCallReminderCoordinator
+import life.fxs.purr.domain.incomingcall.IncomingCallReminderCoordinator
 import life.fxs.purr.realtime.RealtimeSessionCoordinator
 import life.fxs.purr.data.call.telemetry.CallTelemetryCoordinator
 import life.fxs.purr.platform.push.PushPlatformCoordinator
+import life.fxs.purr.telecom.IncomingSystemCallLifecycleCoordinator
 import life.fxs.purr.telecom.SystemCallEventCoordinator
 
 @HiltAndroidApp
@@ -30,6 +31,9 @@ class PurrApplication : Application(), Configuration.Provider {
 
     @Inject
     lateinit var systemCallEventCoordinator: SystemCallEventCoordinator
+
+    @Inject
+    lateinit var incomingSystemCallLifecycleCoordinator: IncomingSystemCallLifecycleCoordinator
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder().apply {
@@ -54,6 +58,9 @@ class PurrApplication : Application(), Configuration.Provider {
         }
         if (::systemCallEventCoordinator.isInitialized) {
             systemCallEventCoordinator.start()
+        }
+        if (::incomingSystemCallLifecycleCoordinator.isInitialized) {
+            incomingSystemCallLifecycleCoordinator.start()
         }
     }
 }

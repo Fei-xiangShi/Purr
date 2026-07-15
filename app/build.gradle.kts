@@ -169,6 +169,7 @@ dependencies {
     implementation(projects.data.call)
     implementation(projects.domain.account)
     implementation(projects.domain.call)
+    implementation(projects.domain.incomingcall)
     implementation(projects.feature.auth)
     implementation(projects.feature.home)
     implementation(projects.feature.incomingcall)

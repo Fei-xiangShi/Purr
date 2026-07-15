@@ -44,6 +44,7 @@ dependencies {
     implementation(projects.core.presentation)
     implementation(projects.core.designsystem)
     implementation(projects.domain.call)
+    implementation(projects.domain.incomingcall)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)

@@ -7,6 +7,9 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import androidx.core.graphics.drawable.IconCompat
+import androidx.core.os.BundleCompat
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -25,6 +28,8 @@ import life.fxs.purr.domain.call.usecase.DisconnectCallUseCase
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flowOf
+import life.fxs.purr.platform.incomingcall.CallNotificationAvatarLoader
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -208,6 +213,59 @@ class CallForegroundServiceLifecycleRobolectricTest {
     }
 
     @Test
+    fun `ongoing call notification publishes paired identity and avatar`() {
+        val stateStore = CallForegroundServiceStateStore()
+        val avatar = IconCompat.createWithBitmap(Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888))
+        val avatarLoader = RecordingAvatarLoader(avatar)
+        val service = attachService<RecordingNotificationService>(
+            stateStore = stateStore,
+            identitySource = FixedCallNotificationIdentitySource(
+                CallNotificationIdentity(
+                    displayName = "Partner",
+                    avatarUrl = "https://example.test/avatar.png",
+                ),
+            ),
+            avatarLoader = avatarLoader,
+        )
+
+        service.onStartCommand(
+            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1"),
+            0,
+            1,
+        )
+
+        val person = service.latestNotification?.callPerson()
+        assertThat(avatarLoader.loadedUrls).containsExactly("https://example.test/avatar.png")
+        assertThat(person?.name.toString()).isEqualTo("Partner")
+        assertThat(person?.icon).isNotNull()
+    }
+
+    @Test
+    fun `ongoing call notification keeps identity when avatar loading fails`() {
+        val stateStore = CallForegroundServiceStateStore()
+        val service = attachService<RecordingNotificationService>(
+            stateStore = stateStore,
+            identitySource = FixedCallNotificationIdentitySource(
+                CallNotificationIdentity(
+                    displayName = "Partner",
+                    avatarUrl = "https://example.test/missing.png",
+                ),
+            ),
+            avatarLoader = RecordingAvatarLoader(null),
+        )
+
+        service.onStartCommand(
+            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1"),
+            0,
+            1,
+        )
+
+        val person = service.latestNotification?.callPerson()
+        assertThat(person?.name.toString()).isEqualTo("Partner")
+        assertThat(person?.icon).isNull()
+    }
+
+    @Test
     fun `controller waits for the attached service lifecycle after dispatching start`() = runBlocking {
         val context = RecordingContext(RuntimeEnvironment.getApplication())
         val stateStore = CallForegroundServiceStateStore()
@@ -244,11 +302,15 @@ class CallForegroundServiceLifecycleRobolectricTest {
 
     private inline fun <reified T : CallForegroundService> attachService(
         stateStore: CallForegroundServiceStateStore,
+        identitySource: CallNotificationIdentitySource = FixedCallNotificationIdentitySource(null),
+        avatarLoader: CallNotificationAvatarLoader = RecordingAvatarLoader(null),
     ): T {
         val service = Robolectric.buildService(T::class.java).get()
         inject(service, "disconnectCallUseCase", DisconnectCallUseCase(repository))
         inject(service, "applicationScope", scope)
         inject(service, "stateStore", stateStore)
+        inject(service, "notificationIdentitySource", identitySource)
+        inject(service, "notificationAvatarLoader", avatarLoader)
         return service
     }
 
@@ -272,6 +334,18 @@ class CallForegroundServiceLifecycleRobolectricTest {
     class SecurityExceptionService : CallForegroundService() {
         override fun enterForeground(notification: Notification): Unit =
             throw SecurityException("microphone foreground service permission denied")
+    }
+
+    class RecordingNotificationService : CallForegroundService() {
+        var latestNotification: Notification? = null
+
+        override fun enterForeground(notification: Notification) {
+            latestNotification = notification
+        }
+
+        override fun updateForegroundNotification(notification: Notification) {
+            latestNotification = notification
+        }
     }
 
     private class RecordingContext(base: Context) : ContextWrapper(base) {
@@ -312,4 +386,24 @@ class CallForegroundServiceLifecycleRobolectricTest {
         override suspend fun selectAudioRoute(route: AudioRoute): AppResult<Unit> =
             error("Not used by this lifecycle test")
     }
+
+    private class FixedCallNotificationIdentitySource(
+        private val identity: CallNotificationIdentity?,
+    ) : CallNotificationIdentitySource {
+        override fun observe(pairId: String): Flow<CallNotificationIdentity?> = flowOf(identity)
+    }
+
+    private class RecordingAvatarLoader(
+        private val result: IconCompat?,
+    ) : CallNotificationAvatarLoader {
+        val loadedUrls = mutableListOf<String>()
+
+        override suspend fun load(url: String): IconCompat? {
+            loadedUrls += url
+            return result
+        }
+    }
+
+    private fun Notification.callPerson(): android.app.Person? =
+        BundleCompat.getParcelable(extras, Notification.EXTRA_CALL_PERSON, android.app.Person::class.java)
 }

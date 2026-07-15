@@ -10,10 +10,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.runTest
 import life.fxs.purr.core.media.audio.AudioRouteController
-import life.fxs.purr.core.media.audio.CallAudioProfile
 import life.fxs.purr.core.media.audio.CallAudioSessionController
 import life.fxs.purr.core.media.audio.CallAudioSessionState
-import life.fxs.purr.core.media.audio.CallAudioTransitionOutcome
 import life.fxs.purr.core.media.service.CallServiceController
 import life.fxs.purr.core.media.telecom.SystemCallController
 import life.fxs.purr.core.model.CallDirection
@@ -158,60 +156,51 @@ class CallRuntimeControllerImplTest {
     }
 
     @Test
-    fun `mute stops transmission before entering listen-only profile`() = runTest {
-        val runtime = connectedRuntime(CallAudioProfile.Conversational)
+    fun `mute changes only media transmission`() = runTest {
+        val runtime = connectedRuntime()
         val command = MediaCallCommand.SetMuted("call-1", muted = true)
         coEvery { mediaCallPort.execute(command) } returns Unit
-        coEvery { callAudioSessionController.transitionTo(CallAudioProfile.ListenOnly) } returns
-            CallAudioTransitionOutcome.Applied
 
         runtime.execute(command)
 
-        coVerifyOrder {
-            mediaCallPort.execute(command)
-            callAudioSessionController.transitionTo(CallAudioProfile.ListenOnly)
-        }
+        coVerify(exactly = 1) { mediaCallPort.execute(command) }
+        coVerify(exactly = 0) { audioRouteController.selectRoute(any()) }
+        coVerify(exactly = 0) { audioRouteController.selectDefaultRoute() }
+        coVerify(exactly = 0) { audioRouteController.releaseCallRoute() }
     }
 
     @Test
-    fun `unmute restores conversational profile before transmission`() = runTest {
-        val runtime = connectedRuntime(CallAudioProfile.ListenOnly)
+    fun `unmute changes only media transmission`() = runTest {
+        val runtime = connectedRuntime()
         val command = MediaCallCommand.SetMuted("call-1", muted = false)
-        coEvery { callAudioSessionController.transitionTo(CallAudioProfile.Conversational) } returns
-            CallAudioTransitionOutcome.Applied
         coEvery { mediaCallPort.execute(command) } returns Unit
 
         runtime.execute(command)
 
-        coVerifyOrder {
-            callAudioSessionController.transitionTo(CallAudioProfile.Conversational)
-            mediaCallPort.execute(command)
-        }
+        coVerify(exactly = 1) { mediaCallPort.execute(command) }
+        coVerify(exactly = 0) { audioRouteController.selectRoute(any()) }
+        coVerify(exactly = 0) { audioRouteController.selectDefaultRoute() }
+        coVerify(exactly = 0) { audioRouteController.releaseCallRoute() }
     }
 
     @Test
-    fun `failed unmute returns to listen-only while microphone remains muted`() = runTest {
-        val runtime = connectedRuntime(CallAudioProfile.ListenOnly)
+    fun `failed unmute does not mutate the audio session or route`() = runTest {
+        val runtime = connectedRuntime()
         val command = MediaCallCommand.SetMuted("call-1", muted = false)
         val failure = IllegalStateException("provider rejected unmute")
-        coEvery { callAudioSessionController.transitionTo(CallAudioProfile.Conversational) } returns
-            CallAudioTransitionOutcome.Applied
         coEvery { mediaCallPort.execute(command) } throws failure
-        coEvery { callAudioSessionController.transitionTo(CallAudioProfile.ListenOnly) } returns
-            CallAudioTransitionOutcome.Applied
 
         val result = runCatching { runtime.execute(command) }
 
         assertThat(result.exceptionOrNull()).isSameInstanceAs(failure)
-        coVerifyOrder {
-            callAudioSessionController.transitionTo(CallAudioProfile.Conversational)
-            mediaCallPort.execute(command)
-            callAudioSessionController.transitionTo(CallAudioProfile.ListenOnly)
-        }
+        coVerify(exactly = 1) { mediaCallPort.execute(command) }
+        coVerify(exactly = 0) { audioRouteController.selectRoute(any()) }
+        coVerify(exactly = 0) { audioRouteController.selectDefaultRoute() }
+        coVerify(exactly = 0) { audioRouteController.releaseCallRoute() }
     }
 
-    private suspend fun connectedRuntime(profile: CallAudioProfile): CallRuntimeControllerImpl {
-        val runtime = runtime(profile)
+    private suspend fun connectedRuntime(): CallRuntimeControllerImpl {
+        val runtime = runtime()
         coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } returns Unit
         coEvery { callAudioSessionController.activate() } returns Unit
         coEvery { mediaCallPort.execute(connectCommand()) } returns Unit
@@ -219,16 +208,14 @@ class CallRuntimeControllerImplTest {
         return runtime
     }
 
-    private fun runtime(
-        profile: CallAudioProfile = CallAudioProfile.Conversational,
-    ): CallRuntimeControllerImpl {
+    private fun runtime(): CallRuntimeControllerImpl {
         every { mediaCallPort.events } returns emptyFlow()
         every { systemCallController.events } returns emptyFlow()
         coEvery { systemCallController.startCall(any()) } returns Unit
         coEvery { systemCallController.activateCall(any()) } returns Unit
         coEvery { systemCallController.disconnectCall(any()) } returns Unit
         every { callAudioSessionController.state } returns MutableStateFlow(
-            CallAudioSessionState.Active(profile),
+            CallAudioSessionState.Active,
         )
         return CallRuntimeControllerImpl(
             mediaCallPort = mediaCallPort,

@@ -27,7 +27,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import life.fxs.purr.core.common.ApplicationScope
 import life.fxs.purr.core.media.audio.AudioRouteController
-import life.fxs.purr.core.media.audio.AudioRoutePreferenceStore
 import life.fxs.purr.core.media.telecom.SystemCallController
 import life.fxs.purr.core.media.telecom.SystemCallDescriptor
 import life.fxs.purr.core.media.telecom.SystemCallEvent
@@ -38,7 +37,6 @@ import life.fxs.purr.core.model.CallDirection
 class CoreTelecomSystemCallController @Inject internal constructor(
     private val callGateway: TelecomCallGateway,
     private val attributesFactory: TelecomCallAttributesFactory,
-    private val preferenceStore: AudioRoutePreferenceStore,
     @ApplicationScope private val applicationScope: CoroutineScope,
 ) : SystemCallController, AudioRouteController {
     private val lock = Any()
@@ -80,10 +78,14 @@ class CoreTelecomSystemCallController @Inject internal constructor(
     override suspend fun activateCall(callId: String) {
         val session = requireActiveSession(callId)
         val result = when (session.descriptor.direction) {
-            CallDirection.Incoming -> session.controlScope.answer(CallAttributesCompat.CALL_TYPE_AUDIO_CALL)
+            CallDirection.Incoming -> if (session.signals.telecomAnswerRequested) {
+                null
+            } else {
+                session.controlScope.answer(CallAttributesCompat.CALL_TYPE_AUDIO_CALL)
+            }
             CallDirection.Outgoing -> session.controlScope.setActive()
         }
-        result.requireSuccess("activate")
+        result?.requireSuccess("activate")
     }
 
     override suspend fun disconnectCall(callId: String) {
@@ -117,14 +119,13 @@ class CoreTelecomSystemCallController @Inject internal constructor(
             ?: error("Audio route $route is unavailable")
         session.routeRequestMutex.withLock {
             requestEndpointIfNeeded(session, route, endpoint, "change endpoint")
-            preferenceStore.save(route)
-            session.preferredRouteApplied = true
+            session.defaultRouteApplied = true
         }
     }
 
-    override suspend fun restorePreferredRoute() {
+    override suspend fun selectDefaultRoute() {
         val session = synchronized(lock) { activeSession } ?: return
-        applyPreferredRoute(session)
+        applyDefaultRoute(session)
     }
 
     override suspend fun releaseCallRoute() = Unit
@@ -134,7 +135,9 @@ class CoreTelecomSystemCallController @Inject internal constructor(
             callGateway.addCall(
                 attributes = attributesFactory.create(pending.descriptor),
                 callbacks = TelecomCallCallbacks(
-                    onAnswer = {},
+                    onAnswer = {
+                        emitAnswerRequest(pending.descriptor.callId)
+                    },
                     onDisconnect = {
                         emitDisconnectRequest(
                             callId = pending.descriptor.callId,
@@ -196,16 +199,6 @@ class CoreTelecomSystemCallController @Inject internal constructor(
 
     private fun CallControlScope.observeEndpoints(session: ActiveSession) {
         launch {
-            availableEndpoints.collect { endpoints ->
-                val mapped = endpoints.mapNotNull { endpoint ->
-                    endpoint.toAudioRoute()?.let { route -> route to endpoint }
-                }.toMap()
-                session.endpointsByRoute = mapped
-                mutableAvailableRoutes.value = mapped.keys.toList().ifEmpty { DEFAULT_ROUTES }
-                applyPreferredRoute(session)
-            }
-        }
-        launch {
             currentCallEndpoint.collect { endpoint ->
                 endpoint.toAudioRoute()?.let { route ->
                     synchronized(session.routeStateLock) {
@@ -216,15 +209,24 @@ class CoreTelecomSystemCallController @Inject internal constructor(
                 }
             }
         }
+        launch {
+            availableEndpoints.collect { endpoints ->
+                val mapped = endpoints.mapNotNull { endpoint ->
+                    endpoint.toAudioRoute()?.let { route -> route to endpoint }
+                }.toMap()
+                session.endpointsByRoute = mapped
+                mutableAvailableRoutes.value = mapped.keys.toList().ifEmpty { DEFAULT_ROUTES }
+                applyDefaultRoute(session)
+            }
+        }
     }
 
-    private suspend fun applyPreferredRoute(session: ActiveSession) {
+    private suspend fun applyDefaultRoute(session: ActiveSession) {
         session.routeRequestMutex.withLock {
-            if (session.preferredRouteApplied) return@withLock
-            val preferred = preferenceStore.load() ?: return@withLock
-            val endpoint = session.endpointsByRoute[preferred] ?: return@withLock
-            requestEndpointIfNeeded(session, preferred, endpoint, "restore endpoint")
-            session.preferredRouteApplied = true
+            if (session.defaultRouteApplied) return@withLock
+            val endpoint = session.endpointsByRoute[AudioRoute.Earpiece] ?: return@withLock
+            requestEndpointIfNeeded(session, AudioRoute.Earpiece, endpoint, "select default endpoint")
+            session.defaultRouteApplied = true
         }
     }
 
@@ -284,6 +286,26 @@ class CoreTelecomSystemCallController @Inject internal constructor(
         if (shouldEmit) mutableEvents.emit(SystemCallEvent.DisconnectRequested(callId))
     }
 
+    private suspend fun emitAnswerRequest(callId: String) {
+        val shouldEmit = synchronized(lock) {
+            val signals = activeSession
+                ?.takeIf { it.descriptor.callId == callId }
+                ?.signals
+                ?: pendingSession
+                    ?.takeIf { it.descriptor.callId == callId }
+                    ?.signals
+                ?: return@synchronized false
+            signals.telecomAnswerRequested = true
+            if (signals.answerEventEmitted) {
+                false
+            } else {
+                signals.answerEventEmitted = true
+                true
+            }
+        }
+        if (shouldEmit) mutableEvents.emit(SystemCallEvent.AnswerRequested(callId))
+    }
+
     private fun cancelPendingSession(pending: PendingSession) {
         val shouldCancel = synchronized(lock) {
             pendingSession === pending && activeSession == null
@@ -311,7 +333,7 @@ class CoreTelecomSystemCallController @Inject internal constructor(
         var endpointsByRoute: Map<AudioRoute, CallEndpointCompat> = emptyMap()
 
         @Volatile
-        var preferredRouteApplied: Boolean = false
+        var defaultRouteApplied: Boolean = false
 
         val disconnectMutex = Mutex()
         val routeRequestMutex = Mutex()
@@ -325,6 +347,12 @@ class CoreTelecomSystemCallController @Inject internal constructor(
     }
 
     private class SessionSignals {
+        @Volatile
+        var telecomAnswerRequested: Boolean = false
+
+        @Volatile
+        var answerEventEmitted: Boolean = false
+
         @Volatile
         var telecomDisconnectInProgress: Boolean = false
 

@@ -33,6 +33,7 @@ class ApiProfileRepositoryTest {
 
         assertThat(result).isEqualTo(AppResult.Success(updated))
         assertThat(part.captured.headers?.get("Content-Disposition")).contains("name=\"avatar\"")
+        assertThat(part.captured.headers?.get("Content-Disposition")).contains("filename=\"avatar.png\"")
         assertThat(part.captured.body.contentType().toString()).isEqualTo("image/png")
         coVerify(exactly = 1) { sessionWriter.persistProfile(updated) }
     }

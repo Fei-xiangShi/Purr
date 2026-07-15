@@ -22,7 +22,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import life.fxs.purr.core.media.audio.AudioRoutePreferenceStore
 import life.fxs.purr.core.media.telecom.SystemCallDescriptor
 import life.fxs.purr.core.media.telecom.SystemCallEvent
 import life.fxs.purr.core.model.AudioRoute
@@ -57,6 +56,21 @@ class CoreTelecomSystemCallControllerTest {
     }
 
     @Test
+    fun `system answer emits once and later activation does not answer twice`() = runTest {
+        val harness = harness()
+        harness.controller.startCall(descriptor(CallDirection.Incoming))
+        val event = async(start = CoroutineStart.UNDISPATCHED) { harness.controller.events.first() }
+
+        harness.gateway.callbacks!!.onAnswer(CallAttributesCompat.CALL_TYPE_AUDIO_CALL)
+        harness.gateway.callbacks!!.onAnswer(CallAttributesCompat.CALL_TYPE_AUDIO_CALL)
+        harness.controller.activateCall("call-1")
+
+        assertThat(event.await()).isEqualTo(SystemCallEvent.AnswerRequested("call-1"))
+        assertThat(harness.controlScope.answerTypes).isEmpty()
+        harness.controller.disconnectCall("call-1")
+    }
+
+    @Test
     fun `set inactive requests domain teardown but still allows final Telecom disconnect`() = runTest {
         val harness = harness()
         harness.controller.startCall(descriptor(CallDirection.Outgoing))
@@ -86,8 +100,8 @@ class CoreTelecomSystemCallControllerTest {
     }
 
     @Test
-    fun `preferred route is restored only once across duplicate endpoint snapshots`() = runTest {
-        val harness = harness(preferredRoute = AudioRoute.Speaker)
+    fun `new call selects earpiece only once when Telecom starts on speaker`() = runTest {
+        val harness = harness(initialRoute = AudioRoute.Speaker)
         harness.controller.startCall(descriptor(CallDirection.Outgoing))
         runCurrent()
 
@@ -95,12 +109,12 @@ class CoreTelecomSystemCallControllerTest {
         runCurrent()
 
         assertThat(harness.controlScope.requestedEndpoints)
-            .containsExactly(harness.controlScope.speakerEndpoint)
+            .containsExactly(harness.controlScope.earpieceEndpoint)
         harness.controller.disconnectCall("call-1")
     }
 
     @Test
-    fun `selecting the current route persists preference without a redundant endpoint request`() = runTest {
+    fun `selecting the current route avoids a redundant endpoint request`() = runTest {
         val harness = harness()
         harness.controller.startCall(descriptor(CallDirection.Outgoing))
         runCurrent()
@@ -108,7 +122,6 @@ class CoreTelecomSystemCallControllerTest {
         harness.controller.selectRoute(AudioRoute.Earpiece)
 
         assertThat(harness.controlScope.requestedEndpoints).isEmpty()
-        assertThat(harness.preferenceStore.savedRoutes).containsExactly(AudioRoute.Earpiece)
         harness.controller.disconnectCall("call-1")
     }
 
@@ -136,23 +149,20 @@ class CoreTelecomSystemCallControllerTest {
     }
 
     private fun TestScope.harness(
-        preferredRoute: AudioRoute? = null,
+        initialRoute: AudioRoute = AudioRoute.Earpiece,
         behavior: FakeTelecomCallGateway.Behavior = FakeTelecomCallGateway.Behavior.HoldOpen,
     ): Harness {
-        val controlScope = FakeCallControlScope(backgroundScope.coroutineContext)
+        val controlScope = FakeCallControlScope(backgroundScope.coroutineContext, initialRoute)
         val gateway = FakeTelecomCallGateway(controlScope, behavior)
         controlScope.onDisconnect = gateway::finishCall
-        val preferenceStore = FakeAudioRoutePreferenceStore(preferredRoute)
         return Harness(
             controller = CoreTelecomSystemCallController(
                 callGateway = gateway,
                 attributesFactory = TelecomCallAttributesFactory(),
-                preferenceStore = preferenceStore,
                 applicationScope = backgroundScope,
             ),
             gateway = gateway,
             controlScope = controlScope,
-            preferenceStore = preferenceStore,
         )
     }
 
@@ -168,7 +178,6 @@ private data class Harness(
     val controller: CoreTelecomSystemCallController,
     val gateway: FakeTelecomCallGateway,
     val controlScope: FakeCallControlScope,
-    val preferenceStore: FakeAudioRoutePreferenceStore,
 )
 
 private class FakeTelecomCallGateway(
@@ -219,11 +228,12 @@ private class FakeTelecomCallGateway(
 
 private class FakeCallControlScope(
     override val coroutineContext: CoroutineContext,
+    initialRoute: AudioRoute,
 ) : CallControlScope {
     val earpieceEndpoint = endpoint("Earpiece", CallEndpointCompat.TYPE_EARPIECE)
     val speakerEndpoint = endpoint("Speaker", CallEndpointCompat.TYPE_SPEAKER)
     private val currentEndpoint = MutableSharedFlow<CallEndpointCompat>(replay = 1).apply {
-        tryEmit(earpieceEndpoint)
+        tryEmit(if (initialRoute == AudioRoute.Speaker) speakerEndpoint else earpieceEndpoint)
     }
     private val endpoints = MutableSharedFlow<List<CallEndpointCompat>>(replay = 1).apply {
         tryEmit(listOf(earpieceEndpoint, speakerEndpoint))
@@ -268,17 +278,4 @@ private class FakeCallControlScope(
     }
 
     private fun endpoint(name: String, type: Int) = CallEndpointCompat(name, type, mockk())
-}
-
-private class FakeAudioRoutePreferenceStore(
-    private var preferredRoute: AudioRoute?,
-) : AudioRoutePreferenceStore {
-    val savedRoutes = mutableListOf<AudioRoute>()
-
-    override fun load(): AudioRoute? = preferredRoute
-
-    override fun save(route: AudioRoute) {
-        preferredRoute = route
-        savedRoutes += route
-    }
 }

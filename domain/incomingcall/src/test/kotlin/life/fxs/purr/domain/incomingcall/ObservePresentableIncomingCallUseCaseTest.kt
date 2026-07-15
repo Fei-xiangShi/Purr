@@ -1,4 +1,4 @@
-package life.fxs.purr.feature.incomingcall
+package life.fxs.purr.domain.incomingcall
 
 import com.google.common.truth.Truth.assertThat
 import io.mockk.every
@@ -109,3 +109,4 @@ class ObservePresentableIncomingCallUseCaseTest {
         connectionState = state,
     )
 }
+

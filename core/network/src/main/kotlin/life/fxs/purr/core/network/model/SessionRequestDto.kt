@@ -6,4 +6,5 @@ import kotlinx.serialization.Serializable
 data class SessionRequestDto(
     val pairId: String,
     val recordingConsent: Boolean,
+    val expectedCallId: String? = null,
 )

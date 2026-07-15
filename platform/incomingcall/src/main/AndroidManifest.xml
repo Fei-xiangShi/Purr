@@ -4,15 +4,6 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <application>
-        <activity
-            android:name=".IncomingCallActivity"
-            android:excludeFromRecents="true"
-            android:exported="false"
-            android:launchMode="singleTask"
-            android:showWhenLocked="true"
-            android:theme="@android:style/Theme.Material.NoActionBar"
-            android:turnScreenOn="true" />
-
         <receiver
             android:name=".IncomingCallDeclineReceiver"
             android:enabled="true"

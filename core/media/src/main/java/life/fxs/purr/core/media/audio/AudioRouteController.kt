@@ -19,7 +19,7 @@ interface AudioRouteController {
 
     suspend fun selectRoute(route: AudioRoute)
 
-    suspend fun restorePreferredRoute()
+    suspend fun selectDefaultRoute()
 
     /** Releases the communication device selected for the current call. */
     suspend fun releaseCallRoute()
@@ -28,7 +28,6 @@ interface AudioRouteController {
 class AndroidAudioRouteController(
     private val context: Context,
     private val audioManager: AudioManager,
-    private val preferenceStore: AudioRoutePreferenceStore,
 ) : AudioRouteController {
     private val _availableRoutes = MutableStateFlow(currentAvailableRoutes())
     private val _activeRoute = MutableStateFlow(currentActiveRoute(_availableRoutes.value))
@@ -54,17 +53,16 @@ class AndroidAudioRouteController(
     }
 
     override suspend fun selectRoute(route: AudioRoute) {
-        applyRoute(route, persist = true)
+        applyRoute(route)
     }
 
-    override suspend fun restorePreferredRoute() {
+    override suspend fun selectDefaultRoute() {
         val routes = currentAvailableRoutes()
         val route = resolveCallStartRoute(
-            preferredRoute = preferenceStore.load(),
             availableRoutes = routes,
             currentRoute = currentActiveRoute(routes),
         )
-        applyRoute(route, persist = false)
+        applyRoute(route)
     }
 
     override suspend fun releaseCallRoute() {
@@ -82,7 +80,7 @@ class AndroidAudioRouteController(
         refreshState()
     }
 
-    private fun applyRoute(route: AudioRoute, persist: Boolean) {
+    private fun applyRoute(route: AudioRoute) {
         val routes = currentAvailableRoutes()
         require(route in routes) { "Audio route $route is not available" }
 
@@ -95,7 +93,6 @@ class AndroidAudioRouteController(
         communicationRouteActive = true
         _availableRoutes.value = routes
         _activeRoute.value = route
-        if (persist) preferenceStore.save(route)
     }
 
     @RequiresApi(Build.VERSION_CODES.S)
@@ -180,13 +177,11 @@ class AndroidAudioRouteController(
 }
 
 internal fun resolveCallStartRoute(
-    preferredRoute: AudioRoute?,
     availableRoutes: List<AudioRoute>,
     currentRoute: AudioRoute,
 ): AudioRoute {
     require(availableRoutes.isNotEmpty()) { "At least one audio route must be available" }
     return when {
-        preferredRoute != null && preferredRoute in availableRoutes -> preferredRoute
         AudioRoute.Earpiece in availableRoutes -> AudioRoute.Earpiece
         currentRoute in availableRoutes -> currentRoute
         else -> availableRoutes.first()

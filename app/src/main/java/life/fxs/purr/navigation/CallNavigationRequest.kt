@@ -7,6 +7,7 @@ internal data class CallNavigationRequest(
     val pairId: String,
     val requestId: Long,
     val direction: CallDirection = CallDirection.Outgoing,
+    val expectedCallId: String? = null,
 )
 
 /**
@@ -25,11 +26,17 @@ internal class CallNavigationRequestStore {
     fun submit(
         pairId: String?,
         direction: CallDirection = CallDirection.Outgoing,
+        expectedCallId: String? = null,
     ): CallNavigationRequest? {
         val requestId = nextRequestId
         nextRequestId = if (nextRequestId == Long.MAX_VALUE) 1L else nextRequestId + 1L
         pending = pairId?.takeIf(String::isNotBlank)?.let {
-            CallNavigationRequest(pairId = it, requestId = requestId, direction = direction)
+            CallNavigationRequest(
+                pairId = it,
+                requestId = requestId,
+                direction = direction,
+                expectedCallId = expectedCallId?.takeIf(String::isNotBlank),
+            )
         }
         return pending
     }

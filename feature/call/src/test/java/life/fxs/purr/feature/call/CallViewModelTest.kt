@@ -32,6 +32,7 @@ import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
 import life.fxs.purr.domain.call.usecase.PrepareCallSessionUseCase
 import life.fxs.purr.domain.call.usecase.SelectAudioRouteUseCase
 import life.fxs.purr.domain.call.usecase.ToggleMuteUseCase
+import life.fxs.purr.domain.incomingcall.PrepareIncomingCallUseCase
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -42,6 +43,7 @@ class CallViewModelTest {
     private val sessionFlow = MutableStateFlow<CallSession?>(null)
 
     private val prepareCallSessionUseCase = mockk<PrepareCallSessionUseCase>()
+    private val prepareIncomingCallUseCase = mockk<PrepareIncomingCallUseCase>()
     private val connectCallUseCase = mockk<ConnectCallUseCase>()
     private val observeCallStateUseCase = mockk<ObserveCallStateUseCase>()
     private val toggleMuteUseCase = mockk<ToggleMuteUseCase>()
@@ -108,7 +110,7 @@ class CallViewModelTest {
 
     @Test
     fun `incoming navigation direction is preserved in call preparation`() = runTest(dispatcher) {
-        coEvery { prepareCallSessionUseCase.invoke(any()) } returns AppResult.Success(sampleSession(
+        coEvery { prepareIncomingCallUseCase.invoke(any()) } returns AppResult.Success(sampleSession(
             connectionState = CallConnectionState.Preparing,
             localAudioState = LocalAudioState.Disabled,
             recordingState = RecordingState.NotRecording,
@@ -120,19 +122,22 @@ class CallViewModelTest {
                 pairId = "pair-1",
                 remoteDisplayName = "Partner",
                 direction = CallDirection.Incoming,
+                expectedCallId = "call-1",
             ),
         )
         advanceUntilIdle()
 
         coVerify(exactly = 1) {
-            prepareCallSessionUseCase.invoke(
+            prepareIncomingCallUseCase.invoke(
                 match { params ->
                     params.pairId == "pair-1" &&
                         params.remoteDisplayName == "Partner" &&
-                        params.direction == CallDirection.Incoming
+                        params.direction == CallDirection.Incoming &&
+                        params.expectedCallId == "call-1"
                 },
             )
         }
+        coVerify(exactly = 0) { prepareCallSessionUseCase.invoke(any()) }
     }
 
     @Test
@@ -387,6 +392,7 @@ class CallViewModelTest {
 
     private fun createViewModel(): CallViewModel = CallViewModel(
         prepareCallSessionUseCase = prepareCallSessionUseCase,
+        prepareIncomingCallUseCase = prepareIncomingCallUseCase,
         connectCallUseCase = connectCallUseCase,
         observeCallStateUseCase = observeCallStateUseCase,
         toggleMuteUseCase = toggleMuteUseCase,

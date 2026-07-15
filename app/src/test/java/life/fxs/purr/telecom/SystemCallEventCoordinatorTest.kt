@@ -3,18 +3,32 @@ package life.fxs.purr.telecom
 import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.media.telecom.SystemCallController
 import life.fxs.purr.core.media.telecom.SystemCallDescriptor
 import life.fxs.purr.core.media.telecom.SystemCallEvent
-import life.fxs.purr.domain.call.repository.CallRepository
+import life.fxs.purr.core.model.CallDirection
+import life.fxs.purr.core.model.PairBond
+import life.fxs.purr.domain.account.model.IncomingCall
+import life.fxs.purr.domain.account.model.RealtimeState
+import life.fxs.purr.domain.account.usecase.DeclineIncomingCallUseCase
+import life.fxs.purr.domain.account.usecase.ObservePairBondUseCase
+import life.fxs.purr.domain.account.usecase.ObserveRealtimeStateUseCase
+import life.fxs.purr.domain.call.model.CallConnectionState
+import life.fxs.purr.domain.call.model.CallSession
+import life.fxs.purr.domain.call.model.ParticipantIdentity
 import life.fxs.purr.domain.call.usecase.DisconnectCallUseCase
+import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
+import life.fxs.purr.incomingcall.IncomingCallUiLauncher
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -22,43 +36,142 @@ import org.robolectric.RobolectricTestRunner
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 class SystemCallEventCoordinatorTest {
+    private val sessionState = MutableStateFlow<CallSession?>(null)
+    private val realtimeState = MutableStateFlow(RealtimeState())
+    private val pairBondState = MutableStateFlow<PairBond?>(null)
+    private val disconnectCall = mockk<DisconnectCallUseCase>()
+    private val declineIncomingCall = mockk<DeclineIncomingCallUseCase>()
+    private val observeCallState = mockk<ObserveCallStateUseCase>()
+    private val observeRealtimeState = mockk<ObserveRealtimeStateUseCase>()
+    private val observePairBond = mockk<ObservePairBondUseCase>()
+    private val incomingCallUiLauncher = mockk<IncomingCallUiLauncher>(relaxed = true)
+
     @Test
     fun `start is idempotent and one failed disconnect does not stop later events`() = runTest {
-        val controller = FakeSystemCallController()
-        val repository = mockk<CallRepository>()
-        coEvery { repository.disconnectCall("call-1") } throws IllegalStateException("temporary failure")
-        coEvery { repository.disconnectCall("call-2") } returns AppResult.Success(Unit)
-        val coordinator = SystemCallEventCoordinator(
-            systemCallController = controller,
-            disconnectCall = DisconnectCallUseCase(repository),
-            applicationScope = backgroundScope,
-        )
+        val harness = harness()
+        sessionState.value = session("call-1")
+        coEvery { disconnectCall.invoke("call-1") } throws IllegalStateException("temporary failure")
+        coEvery { disconnectCall.invoke("call-2") } returns AppResult.Success(Unit)
 
-        coordinator.start()
-        coordinator.start()
+        harness.coordinator.start()
+        harness.coordinator.start()
         runCurrent()
-        controller.emitDisconnect("call-1")
+        harness.controller.emit(SystemCallEvent.DisconnectRequested("call-1"))
         runCurrent()
-        controller.emitDisconnect("call-2")
+        sessionState.value = session("call-2")
+        harness.controller.emit(SystemCallEvent.DisconnectRequested("call-2"))
         runCurrent()
 
-        coVerify(exactly = 1) { repository.disconnectCall("call-1") }
-        coVerify(exactly = 1) { repository.disconnectCall("call-2") }
-        assertThat(controller.events.subscriptionCount.value).isEqualTo(1)
+        coVerify(exactly = 1) { disconnectCall.invoke("call-1") }
+        coVerify(exactly = 1) { disconnectCall.invoke("call-2") }
+        assertThat(harness.controller.events.subscriptionCount.value).isEqualTo(1)
     }
+
+    @Test
+    fun `system disconnect while ringing declines the server call`() = runTest {
+        val harness = harness()
+        realtimeState.value = RealtimeState(incomingCallCandidate = incomingCall())
+
+        harness.coordinator.start()
+        runCurrent()
+        harness.controller.emit(SystemCallEvent.DisconnectRequested("call-1"))
+        runCurrent()
+
+        coVerify(exactly = 1) { declineIncomingCall.invoke("call-1") }
+        coVerify(exactly = 0) { disconnectCall.invoke(any()) }
+    }
+
+    @Test
+    fun `system answer foregrounds the exact incoming call`() = runTest {
+        val harness = harness()
+        realtimeState.value = RealtimeState(incomingCallCandidate = incomingCall())
+
+        harness.coordinator.start()
+        runCurrent()
+        harness.controller.emit(SystemCallEvent.AnswerRequested("call-1"))
+        runCurrent()
+
+        verify(exactly = 1) {
+            incomingCallUiLauncher.launchAnswer(
+                match { content ->
+                    content.callId == "call-1" &&
+                        content.pairId == "pair-1" &&
+                        content.startedAtEpochMillis == 10L
+                },
+            )
+        }
+    }
+
+    @Test
+    fun `stale system answer releases its Telecom call without opening UI`() = runTest {
+        val harness = harness()
+
+        harness.coordinator.start()
+        runCurrent()
+        harness.controller.emit(SystemCallEvent.AnswerRequested("stale-call"))
+        runCurrent()
+
+        assertThat(harness.controller.disconnectedCallIds).containsExactly("stale-call")
+        verify(exactly = 0) { incomingCallUiLauncher.launchAnswer(any()) }
+    }
+
+    private fun TestScope.harness(): Harness {
+        every { observeCallState.invoke() } returns sessionState
+        every { observeRealtimeState.invoke() } returns realtimeState
+        every { observePairBond.invoke() } returns pairBondState
+        coEvery { disconnectCall.invoke(any()) } returns AppResult.Success(Unit)
+        coEvery { declineIncomingCall.invoke(any()) } returns AppResult.Success(Unit)
+        val controller = FakeSystemCallController()
+        return Harness(
+            controller = controller,
+            coordinator = SystemCallEventCoordinator(
+                systemCallController = controller,
+                disconnectCall = disconnectCall,
+                declineIncomingCall = declineIncomingCall,
+                observeCallState = observeCallState,
+                observeRealtimeState = observeRealtimeState,
+                observePairBond = observePairBond,
+                incomingCallUiLauncher = incomingCallUiLauncher,
+                applicationScope = backgroundScope,
+            ),
+        )
+    }
+
+    private fun incomingCall() = IncomingCall(
+        callId = "call-1",
+        pairId = "pair-1",
+        callerUserId = "partner",
+        startedAtEpochMillis = 10L,
+    )
+
+    private fun session(callId: String) = CallSession(
+        callId = callId,
+        pairId = "pair-1",
+        participantIdentity = ParticipantIdentity(local = "self"),
+        roomName = "room-1",
+        direction = CallDirection.Incoming,
+        connectionState = CallConnectionState.Connected,
+    )
 }
 
+private data class Harness(
+    val controller: FakeSystemCallController,
+    val coordinator: SystemCallEventCoordinator,
+)
+
 private class FakeSystemCallController : SystemCallController {
-    private val mutableEvents = MutableSharedFlow<SystemCallEvent>(extraBufferCapacity = 4)
-    override val events: MutableSharedFlow<SystemCallEvent> = mutableEvents
+    override val events = MutableSharedFlow<SystemCallEvent>(extraBufferCapacity = 4)
+    val disconnectedCallIds = mutableListOf<String>()
 
     override suspend fun startCall(descriptor: SystemCallDescriptor) = Unit
 
     override suspend fun activateCall(callId: String) = Unit
 
-    override suspend fun disconnectCall(callId: String) = Unit
+    override suspend fun disconnectCall(callId: String) {
+        disconnectedCallIds += callId
+    }
 
-    fun emitDisconnect(callId: String) {
-        check(mutableEvents.tryEmit(SystemCallEvent.DisconnectRequested(callId)))
+    fun emit(event: SystemCallEvent) {
+        check(events.tryEmit(event))
     }
 }

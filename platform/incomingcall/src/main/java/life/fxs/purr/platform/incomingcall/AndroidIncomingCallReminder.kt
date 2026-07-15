@@ -12,32 +12,62 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.IconCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
-import life.fxs.purr.feature.incomingcall.IncomingCallReminder
-import life.fxs.purr.feature.incomingcall.IncomingCallReminderContent
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import life.fxs.purr.core.common.ApplicationScope
+import life.fxs.purr.domain.incomingcall.IncomingCallReminder
+import life.fxs.purr.domain.incomingcall.IncomingCallReminderContent
 
 @Singleton
 internal class AndroidIncomingCallReminder @Inject constructor(
     @ApplicationContext context: Context,
     private val intentFactory: IncomingCallIntentFactory,
     private val fullScreenIntentCapability: FullScreenIntentCapability,
+    private val avatarLoader: CallNotificationAvatarLoader,
+    @ApplicationScope private val applicationScope: CoroutineScope,
 ) : IncomingCallReminder {
     private val appContext = context.applicationContext
     private val notificationManager = NotificationManagerCompat.from(appContext)
+    private val notificationLock = Any()
+    private var avatarRequestGeneration = 0L
+    private var avatarLoadJob: Job? = null
 
     override fun replace(content: IncomingCallReminderContent) {
-        if (!canPostNotifications()) {
-            dismiss()
-            return
-        }
+        synchronized(notificationLock) {
+            if (!canPostNotifications()) {
+                dismissLocked()
+                return
+            }
 
-        createNotificationChannel()
+            avatarRequestGeneration += 1L
+            avatarLoadJob?.cancel()
+            avatarLoadJob = null
+            createNotificationChannel()
+            val callerName = content.callerName
+                ?.takeIf(String::isNotBlank)
+                ?: appContext.getString(R.string.incoming_call_unknown_caller)
+            publish(content, callerName, callerIcon = null)
+            loadAvatarLocked(content, callerName, avatarRequestGeneration)
+        }
+    }
+
+    private fun publish(
+        content: IncomingCallReminderContent,
+        callerName: String,
+        callerIcon: IconCompat?,
+    ) {
         val openIntent = intentFactory.open(content)
-        val callerName = content.callerName
-            ?.takeIf(String::isNotBlank)
-            ?: appContext.getString(R.string.incoming_call_unknown_caller)
+        val caller = Person.Builder()
+            .setName(callerName)
+            .setImportant(true)
+            .apply { callerIcon?.let(::setIcon) }
+            .build()
         val notificationBuilder = NotificationCompat.Builder(appContext, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.sym_call_incoming)
             .setContentTitle(callerName)
@@ -51,10 +81,7 @@ internal class AndroidIncomingCallReminder @Inject constructor(
             .setOnlyAlertOnce(true)
             .setStyle(
                 NotificationCompat.CallStyle.forIncomingCall(
-                    Person.Builder()
-                        .setName(callerName)
-                        .setImportant(true)
-                        .build(),
+                    caller,
                     intentFactory.decline(content),
                     intentFactory.answer(content),
                 ),
@@ -71,7 +98,34 @@ internal class AndroidIncomingCallReminder @Inject constructor(
         }
     }
 
+    private fun loadAvatarLocked(
+        content: IncomingCallReminderContent,
+        callerName: String,
+        generation: Long,
+    ) {
+        val avatarUrl = content.callerAvatarUrl?.takeIf(String::isNotBlank)
+        if (avatarUrl == null) return
+        val job = applicationScope.launch(start = CoroutineStart.LAZY) {
+            val icon = avatarLoader.load(avatarUrl) ?: return@launch
+            synchronized(notificationLock) {
+                if (avatarRequestGeneration != generation || !canPostNotifications()) return@synchronized
+                publish(content, callerName, icon)
+            }
+        }
+        avatarLoadJob = job
+        job.start()
+    }
+
     override fun dismiss() {
+        synchronized(notificationLock) {
+            dismissLocked()
+        }
+    }
+
+    private fun dismissLocked() {
+        avatarRequestGeneration += 1L
+        avatarLoadJob?.cancel()
+        avatarLoadJob = null
         notificationManager.cancel(NOTIFICATION_TAG, NOTIFICATION_ID)
         notificationManager.cancel(LEGACY_NOTIFICATION_ID)
     }

@@ -7,4 +7,5 @@ data class PrepareCallParams(
     val recordingConsent: Boolean,
     val remoteDisplayName: String = "Purr",
     val direction: CallDirection = CallDirection.Outgoing,
+    val expectedCallId: String? = null,
 )

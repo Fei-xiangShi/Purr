@@ -7,19 +7,21 @@ import androidx.work.WorkerParameters
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import life.fxs.purr.core.common.AppResult
+import life.fxs.purr.domain.incomingcall.IncomingCallRecoveryResult
+import life.fxs.purr.domain.incomingcall.RecoverIncomingCallUseCase
 
 @HiltWorker
 class IncomingCallWakeWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted workerParameters: WorkerParameters,
-    private val recovery: IncomingCallWakeRecovery,
+    private val recoverIncomingCall: RecoverIncomingCallUseCase,
 ) : CoroutineWorker(appContext, workerParameters) {
     override suspend fun doWork(): Result {
         val callId = inputData.getString(KEY_CALL_ID)?.takeIf(::isValidCallId)
             ?: return Result.failure()
-        return when (val recovered = recovery.recover()) {
-            IncomingCallWakeRecoveryResult.NoAuthenticatedSession -> Result.success()
-            is IncomingCallWakeRecoveryResult.Refreshed -> when (recovered.result) {
+        return when (val recovered = recoverIncomingCall()) {
+            IncomingCallRecoveryResult.NoAuthenticatedSession -> Result.success()
+            is IncomingCallRecoveryResult.Refreshed -> when (recovered.result) {
                 is AppResult.Success -> Result.success()
                 is AppResult.Failure -> Result.retry()
             }

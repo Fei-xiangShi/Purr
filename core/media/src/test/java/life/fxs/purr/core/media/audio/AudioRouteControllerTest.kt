@@ -8,7 +8,6 @@ class AudioRouteControllerTest {
     @Test
     fun `call defaults to earpiece when no preference exists`() {
         val route = resolveCallStartRoute(
-            preferredRoute = null,
             availableRoutes = listOf(AudioRoute.Earpiece, AudioRoute.Speaker),
             currentRoute = AudioRoute.Speaker,
         )
@@ -17,20 +16,8 @@ class AudioRouteControllerTest {
     }
 
     @Test
-    fun `valid user preference remains authoritative`() {
+    fun `earpiece remains the default when the system currently uses speaker`() {
         val route = resolveCallStartRoute(
-            preferredRoute = AudioRoute.Speaker,
-            availableRoutes = listOf(AudioRoute.Earpiece, AudioRoute.Speaker),
-            currentRoute = AudioRoute.Earpiece,
-        )
-
-        assertThat(route).isEqualTo(AudioRoute.Speaker)
-    }
-
-    @Test
-    fun `unavailable preference falls back to earpiece`() {
-        val route = resolveCallStartRoute(
-            preferredRoute = AudioRoute.Bluetooth,
             availableRoutes = listOf(AudioRoute.Earpiece, AudioRoute.Speaker),
             currentRoute = AudioRoute.Speaker,
         )
@@ -41,7 +28,6 @@ class AudioRouteControllerTest {
     @Test
     fun `device without earpiece keeps its current available route`() {
         val route = resolveCallStartRoute(
-            preferredRoute = null,
             availableRoutes = listOf(AudioRoute.Bluetooth, AudioRoute.Speaker),
             currentRoute = AudioRoute.Bluetooth,
         )
