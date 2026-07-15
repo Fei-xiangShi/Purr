@@ -1,6 +1,7 @@
 package life.fxs.purr.data.call.runtime
 
 import kotlinx.coroutines.flow.Flow
+import life.fxs.purr.core.model.CallDirection
 
 /**
  * Transport-neutral commands understood by the process-local media runtime.
@@ -17,6 +18,8 @@ sealed interface MediaCallCommand {
         val pairId: String,
         val localIdentity: String,
         val connection: CallMediaConnection,
+        val remoteDisplayName: String = "Purr",
+        val direction: CallDirection = CallDirection.Outgoing,
     ) : MediaCallCommand
 
     data class Disconnect(
@@ -41,6 +44,18 @@ sealed interface MediaCallEvent {
         override val callId: String,
         override val generation: Long,
         val localIdentity: String,
+        val remoteIdentity: String?,
+        val remoteParticipantConnected: Boolean,
+    ) : MediaCallEvent
+
+    data class Reconnecting(
+        override val callId: String,
+        override val generation: Long,
+    ) : MediaCallEvent
+
+    data class Reconnected(
+        override val callId: String,
+        override val generation: Long,
         val remoteIdentity: String?,
         val remoteParticipantConnected: Boolean,
     ) : MediaCallEvent

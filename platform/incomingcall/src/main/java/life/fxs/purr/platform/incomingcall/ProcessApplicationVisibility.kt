@@ -1,12 +1,14 @@
-package life.fxs.purr.feature.incomingcall
+package life.fxs.purr.platform.incomingcall
 
 import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import life.fxs.purr.feature.incomingcall.ApplicationVisibility
 
 @Singleton
 internal class ProcessApplicationVisibility @Inject constructor() :
@@ -14,7 +16,7 @@ internal class ProcessApplicationVisibility @Inject constructor() :
     DefaultLifecycleObserver {
     private val lifecycle = ProcessLifecycleOwner.get().lifecycle
     private val foregroundState = MutableStateFlow(
-        lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED),
+        lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
     )
 
     override val isForeground = foregroundState.asStateFlow()

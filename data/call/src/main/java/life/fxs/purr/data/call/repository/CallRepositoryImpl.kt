@@ -87,7 +87,11 @@ class CallRepositoryImpl @Inject constructor(
                     ) {
                         return@withLock null
                     }
-                    if (mediaEvent is MediaCallEvent.Connected) {
+                    if (
+                        mediaEvent is MediaCallEvent.Connected ||
+                        mediaEvent is MediaCallEvent.Reconnecting ||
+                        mediaEvent is MediaCallEvent.Reconnected
+                    ) {
                         mediaGeneration = mediaEvent.generation
                     }
                     if (
@@ -189,6 +193,8 @@ class CallRepositoryImpl @Inject constructor(
                     pairId = response.pairId,
                     participantIdentity = ParticipantIdentity(local = response.participantIdentity),
                     roomName = response.roomName,
+                    remoteDisplayName = params.remoteDisplayName,
+                    direction = params.direction,
                     connectionState = CallConnectionState.Preparing,
                     localAudioState = LocalAudioState.Disabled,
                     recordingState = callStatus.recordingStatus.toRecordingState(),
@@ -290,6 +296,8 @@ class CallRepositoryImpl @Inject constructor(
                     MediaCallCommand.Connect(
                         callId = session.callId,
                         pairId = session.pairId,
+                        remoteDisplayName = session.remoteDisplayName,
+                        direction = session.direction,
                         localIdentity = session.participantIdentity.local,
                         connection = connection,
                     ),
@@ -433,12 +441,29 @@ class CallRepositoryImpl @Inject constructor(
         if (session.connectionState != CallConnectionState.Connected) {
             return@withLock AppResult.Failure(AppError.Validation("Call media is not connected"))
         }
+        val previousAudioState = session.localAudioState
+        if (muted && previousAudioState == LocalAudioState.Muted) {
+            return@withLock AppResult.Success(Unit)
+        }
+        if (!muted && previousAudioState == LocalAudioState.Enabled) {
+            return@withLock AppResult.Success(Unit)
+        }
+        if (previousAudioState != LocalAudioState.Enabled && previousAudioState != LocalAudioState.Muted) {
+            return@withLock AppResult.Failure(AppError.Validation("Microphone state is not ready"))
+        }
+        sessionState.emit(
+            callUiSnapshotAssembler.assemble(
+                session.copy(
+                    localAudioState = if (muted) LocalAudioState.Muting else LocalAudioState.Unmuting,
+                ),
+            ),
+        )
         appResult(
             onFailure = {
-                val failedSession = callUiSnapshotAssembler.assemble(
-                    session.copy(localAudioState = LocalAudioState.Error(it.message)),
+                val restoredSession = callUiSnapshotAssembler.assemble(
+                    requireNotNull(sessionState.value ?: session).copy(localAudioState = previousAudioState),
                 )
-                sessionState.emit(failedSession)
+                sessionState.emit(restoredSession)
             },
         ) {
             callRuntimeController.execute(

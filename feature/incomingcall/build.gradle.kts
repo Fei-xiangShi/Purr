@@ -45,6 +45,7 @@ kotlin {
 dependencies {
     implementation(projects.core.common)
     implementation(projects.core.designsystem)
+    implementation(projects.core.model)
     implementation(projects.core.presentation)
     implementation(projects.domain.account)
     implementation(projects.domain.call)
@@ -64,7 +65,6 @@ dependencies {
 
     testImplementation(libs.junit4)
     testImplementation(libs.truth)
-    testImplementation(projects.core.model)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.mockk)
     testImplementation(libs.robolectric)

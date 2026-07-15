@@ -18,6 +18,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.model.AudioRoute
+import life.fxs.purr.core.model.CallDirection
 import life.fxs.purr.domain.call.repository.CallAudioLevelProvider
 import life.fxs.purr.domain.call.model.CallConnectionState
 import life.fxs.purr.domain.call.model.CallSession
@@ -103,6 +104,35 @@ class CallViewModelTest {
             prepareCallSessionUseCase.invoke(match { it.pairId == "pair-1" && it.recordingConsent })
         }
         coVerify(exactly = 1) { connectCallUseCase.invoke() }
+    }
+
+    @Test
+    fun `incoming navigation direction is preserved in call preparation`() = runTest(dispatcher) {
+        coEvery { prepareCallSessionUseCase.invoke(any()) } returns AppResult.Success(sampleSession(
+            connectionState = CallConnectionState.Preparing,
+            localAudioState = LocalAudioState.Disabled,
+            recordingState = RecordingState.NotRecording,
+        ))
+        val viewModel = createViewModel()
+
+        viewModel.onIntent(
+            CallIntent.ConnectCall(
+                pairId = "pair-1",
+                remoteDisplayName = "Partner",
+                direction = CallDirection.Incoming,
+            ),
+        )
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            prepareCallSessionUseCase.invoke(
+                match { params ->
+                    params.pairId == "pair-1" &&
+                        params.remoteDisplayName == "Partner" &&
+                        params.direction == CallDirection.Incoming
+                },
+            )
+        }
     }
 
     @Test

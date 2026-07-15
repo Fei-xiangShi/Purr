@@ -15,13 +15,7 @@ internal abstract class IncomingCallReminderModule {
 
     @Binds
     @Singleton
-    abstract fun bindApplicationVisibility(
-        implementation: ProcessApplicationVisibility,
-    ): ApplicationVisibility
-
-    @Binds
-    @Singleton
-    abstract fun bindIncomingCallReminder(
-        implementation: AndroidIncomingCallReminder,
-    ): IncomingCallReminder
+    abstract fun bindIncomingCallCallerSource(
+        implementation: DomainIncomingCallCallerSource,
+    ): IncomingCallCallerSource
 }

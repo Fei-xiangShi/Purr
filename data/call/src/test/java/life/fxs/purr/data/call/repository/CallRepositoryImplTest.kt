@@ -323,6 +323,131 @@ class CallRepositoryImplTest {
     }
 
     @Test
+    fun `media reconnect never ends the server call and restores connected state`() = runTest(dispatcher) {
+        val runtimeEvents = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 4)
+        every { audioRouteController.activeRoute } returns MutableStateFlow(AudioRoute.Speaker)
+        every { audioRouteController.availableRoutes } returns MutableStateFlow(listOf(AudioRoute.Speaker))
+        every { callServiceController.foregroundState } returns MutableStateFlow(
+            ForegroundCallServiceState(activeCallId = "call-1"),
+        )
+        every { callRuntimeController.mediaEvents } returns runtimeEvents
+        coEvery { callRuntimeController.execute(any<MediaCallCommand.Connect>()) } returns Unit
+        coEvery { api.createSession(any()) } returns SessionResponseDto(
+            "call-1",
+            "pair-1",
+            "room-1",
+            "self-1",
+            "token-1",
+            "wss://one",
+        )
+        coEvery { callStatusRemoteDataSource.getStatus("call-1") } returns CallStatusDto(
+            callId = "call-1",
+            pairId = "pair-1",
+            state = "active",
+            recordingStatus = "idle",
+            startedAtEpochMillis = 1L,
+        )
+        every { callStatusRemoteDataSource.observeStatus("call-1") } returns emptyFlow()
+        val repository = repository()
+        runCurrent()
+
+        repository.prepareCall(PrepareCallParams("pair-1", true))
+        repository.connectCall()
+        runtimeEvents.emit(
+            MediaCallEvent.Connected(
+                callId = "call-1",
+                generation = 1L,
+                localIdentity = "self-1",
+                remoteIdentity = "partner",
+                remoteParticipantConnected = true,
+            ),
+        )
+        runCurrent()
+        runtimeEvents.emit(MediaCallEvent.Reconnecting(callId = "call-1", generation = 1L))
+        runCurrent()
+
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Reconnecting)
+        coVerify(exactly = 0) { api.endCall(any()) }
+        coVerify(exactly = 0) {
+            callRuntimeController.execute(match { it is MediaCallCommand.Disconnect })
+        }
+
+        runtimeEvents.emit(
+            MediaCallEvent.Reconnected(
+                callId = "call-1",
+                generation = 1L,
+                remoteIdentity = "partner",
+                remoteParticipantConnected = true,
+            ),
+        )
+        runCurrent()
+
+        val restored = repository.observeCallSession().first()
+        assertThat(restored?.connectionState).isEqualTo(CallConnectionState.Connected)
+        assertThat(restored?.localAudioState).isEqualTo(LocalAudioState.Enabled)
+        coVerify(exactly = 0) { api.endCall(any()) }
+        coVerify(exactly = 0) {
+            callRuntimeController.execute(match { it is MediaCallCommand.Disconnect })
+        }
+    }
+
+    @Test
+    fun `failed unmute restores the last stable muted state`() = runTest(dispatcher) {
+        val runtimeEvents = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 4)
+        every { audioRouteController.activeRoute } returns MutableStateFlow(AudioRoute.Bluetooth)
+        every { audioRouteController.availableRoutes } returns MutableStateFlow(listOf(AudioRoute.Bluetooth))
+        every { callServiceController.foregroundState } returns MutableStateFlow(
+            ForegroundCallServiceState(activeCallId = "call-1"),
+        )
+        every { callRuntimeController.mediaEvents } returns runtimeEvents
+        coEvery { callRuntimeController.execute(any<MediaCallCommand.Connect>()) } returns Unit
+        coEvery { api.createSession(any()) } returns SessionResponseDto(
+            "call-1",
+            "pair-1",
+            "room-1",
+            "self-1",
+            "token-1",
+            "wss://one",
+        )
+        coEvery { callStatusRemoteDataSource.getStatus("call-1") } returns CallStatusDto(
+            callId = "call-1",
+            pairId = "pair-1",
+            state = "active",
+            recordingStatus = "idle",
+            startedAtEpochMillis = 1L,
+        )
+        every { callStatusRemoteDataSource.observeStatus("call-1") } returns emptyFlow()
+        val repository = repository()
+        runCurrent()
+        repository.prepareCall(PrepareCallParams("pair-1", true))
+        repository.connectCall()
+        runtimeEvents.emit(
+            MediaCallEvent.Connected(
+                callId = "call-1",
+                generation = 1L,
+                localIdentity = "self-1",
+                remoteIdentity = "partner",
+                remoteParticipantConnected = true,
+            ),
+        )
+        runCurrent()
+        coEvery {
+            callRuntimeController.execute(MediaCallCommand.SetMuted("call-1", muted = true))
+        } returns Unit
+        repository.setMuted(muted = true)
+        coEvery {
+            callRuntimeController.execute(MediaCallCommand.SetMuted("call-1", muted = false))
+        } throws IllegalStateException("audio profile restore failed")
+
+        val result = repository.setMuted(muted = false)
+
+        assertThat(result).isInstanceOf(AppResult.Failure::class.java)
+        assertThat(repository.observeCallSession().first()?.localAudioState)
+            .isEqualTo(LocalAudioState.Muted)
+    }
+
+    @Test
     fun `delayed runtime event from a previous call cannot terminate the current call`() = runTest(dispatcher) {
         val runtimeEvents = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 4)
         every { audioRouteController.activeRoute } returns MutableStateFlow(AudioRoute.Speaker)

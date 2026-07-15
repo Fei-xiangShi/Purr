@@ -178,13 +178,21 @@ class RealLiveKitCallDataSource @Inject constructor(
                         publishParticipantChanged(activeRoom, mediaCall)
                     }
 
-                    // Reconnection is deliberately not supported. A reconnect callback
-                    // terminates this generation and the next call must receive new credentials.
-                    is RoomEvent.Reconnecting,
-                    is RoomEvent.Disconnected,
-                    -> terminateCurrentCall(activeRoom, mediaCall)
+                    // LiveKit owns the retry window. Reconnecting is a transient transport
+                    // state and must not be promoted to a business-level hang-up.
+                    is RoomEvent.Reconnecting -> publishReconnecting(activeRoom, mediaCall)
 
-                    is RoomEvent.Reconnected -> Unit
+                    is RoomEvent.Reconnected -> {
+                        attachLocalAudioLevel(activeRoom)
+                        attachRemoteAudioLevel(activeRoom)
+                        publishReconnected(activeRoom, mediaCall)
+                    }
+
+                    is RoomEvent.Disconnected -> terminateCurrentCall(
+                        activeRoom = activeRoom,
+                        mediaCall = mediaCall,
+                        failure = event.error,
+                    )
 
                     is RoomEvent.ParticipantConnected,
                     is RoomEvent.ParticipantDisconnected,
@@ -220,6 +228,38 @@ class RealLiveKitCallDataSource @Inject constructor(
                     else -> Unit
                 }
             }
+        }
+    }
+
+    private suspend fun publishReconnecting(
+        activeRoom: Room,
+        mediaCall: ActiveMediaCall,
+    ) {
+        lifecycleMutex.withLock {
+            if (!isCurrent(activeRoom, mediaCall.generation)) return@withLock
+            eventBus.emit(
+                MediaCallEvent.Reconnecting(
+                    callId = mediaCall.callId,
+                    generation = mediaCall.generation,
+                ),
+            )
+        }
+    }
+
+    private suspend fun publishReconnected(
+        activeRoom: Room,
+        mediaCall: ActiveMediaCall,
+    ) {
+        lifecycleMutex.withLock {
+            if (!isCurrent(activeRoom, mediaCall.generation)) return@withLock
+            eventBus.emit(
+                MediaCallEvent.Reconnected(
+                    callId = mediaCall.callId,
+                    generation = mediaCall.generation,
+                    remoteIdentity = activeRoom.remoteParticipants.keys.firstOrNull()?.value,
+                    remoteParticipantConnected = activeRoom.remoteParticipants.isNotEmpty(),
+                ),
+            )
         }
     }
 
@@ -293,10 +333,13 @@ class RealLiveKitCallDataSource @Inject constructor(
     }
 
     private fun attachLocalAudioLevel(activeRoom: Room) {
-        val microphoneTrack = activeRoom.localParticipant
+        val publication = activeRoom.localParticipant
             .getTrackPublication(Track.Source.MICROPHONE)
-            ?.track as? LocalAudioTrack
-            ?: return
+        val microphoneTrack = publication?.track as? LocalAudioTrack
+        if (publication == null || publication.muted || microphoneTrack == null) {
+            detachLocalAudioLevel()
+            return
+        }
         if (audioLevelTrack === microphoneTrack) return
         detachLocalAudioLevel()
         runCatching { microphoneTrack.addSink(audioLevelProvider) }

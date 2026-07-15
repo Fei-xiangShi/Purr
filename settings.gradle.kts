@@ -38,4 +38,7 @@ include(
     ":feature:incomingcall",
     ":feature:call",
     ":feature:settings",
+    ":platform:incomingcall",
+    ":platform:push",
+    ":platform:telecom",
 )

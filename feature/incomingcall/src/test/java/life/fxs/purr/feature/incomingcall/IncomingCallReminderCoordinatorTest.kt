@@ -5,6 +5,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import life.fxs.purr.core.model.PairedPartner
 import life.fxs.purr.domain.account.model.IncomingCall
 import org.junit.Test
 
@@ -24,7 +25,7 @@ class IncomingCallReminderCoordinatorTest {
         calls.value = incomingCall("call-2")
         runCurrent()
 
-        assertThat(reminder.visibleCall?.callId).isEqualTo("call-2")
+        assertThat(reminder.visibleContent?.callId).isEqualTo("call-2")
         assertThat(reminder.maximumSimultaneousReminders).isEqualTo(1)
     }
 
@@ -40,7 +41,7 @@ class IncomingCallReminderCoordinatorTest {
         visibility.state.value = true
         runCurrent()
 
-        assertThat(reminder.visibleCall).isNull()
+        assertThat(reminder.visibleContent).isNull()
         assertThat(reminder.dismissCount).isEqualTo(1)
     }
 
@@ -64,6 +65,7 @@ class IncomingCallReminderCoordinatorTest {
         reminder: RecordingReminder,
     ) = IncomingCallReminderCoordinator(
         source = IncomingCallSource { calls },
+        callerSource = IncomingCallCallerSource { MutableStateFlow(partner()) },
         visibility = visibility,
         reminder = reminder,
         policy = IncomingCallReminderPolicy(),
@@ -76,7 +78,7 @@ class IncomingCallReminderCoordinatorTest {
     }
 
     private class RecordingReminder : IncomingCallReminder {
-        var visibleCall: IncomingCall? = null
+        var visibleContent: IncomingCallReminderContent? = null
             private set
         var replaceCount = 0
             private set
@@ -85,15 +87,15 @@ class IncomingCallReminderCoordinatorTest {
         var maximumSimultaneousReminders = 0
             private set
 
-        override fun replace(call: IncomingCall) {
-            visibleCall = call
+        override fun replace(content: IncomingCallReminderContent) {
+            visibleContent = content
             replaceCount++
             maximumSimultaneousReminders = maxOf(maximumSimultaneousReminders, 1)
         }
 
         override fun dismiss() {
-            if (visibleCall != null) dismissCount++
-            visibleCall = null
+            if (visibleContent != null) dismissCount++
+            visibleContent = null
         }
     }
 
@@ -102,5 +104,10 @@ class IncomingCallReminderCoordinatorTest {
         pairId = "pair-1",
         callerUserId = "user-b",
         startedAtEpochMillis = 1L,
+    )
+
+    private fun partner() = PairedPartner(
+        userId = "user-b",
+        displayName = "Partner",
     )
 }

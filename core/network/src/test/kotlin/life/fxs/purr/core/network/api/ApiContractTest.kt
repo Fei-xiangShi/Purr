@@ -2,6 +2,7 @@ package life.fxs.purr.core.network.api
 
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
+import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.PUT
@@ -38,6 +39,14 @@ class ApiContractTest {
         assertThat(PurrRecordingApi::class.java.postPath("createRecordingDownload"))
             .isEqualTo("calls/{callId}/recordings/{recordingId}/download")
     }
+
+    @Test
+    fun `push device paths match the server contract`() {
+        assertThat(PurrPushApi::class.java.putPath("register"))
+            .isEqualTo("devices/push/{installationId}")
+        assertThat(PurrPushApi::class.java.deletePath("unregister"))
+            .isEqualTo("devices/push/{installationId}")
+    }
 }
 
 private fun Class<*>.getPath(methodName: String): String = methods
@@ -53,4 +62,9 @@ private fun Class<*>.postPath(methodName: String): String = methods
 private fun Class<*>.putPath(methodName: String): String = methods
     .single { it.name == methodName }
     .getAnnotation(PUT::class.java)
+    .value
+
+private fun Class<*>.deletePath(methodName: String): String = methods
+    .single { it.name == methodName }
+    .getAnnotation(DELETE::class.java)
     .value

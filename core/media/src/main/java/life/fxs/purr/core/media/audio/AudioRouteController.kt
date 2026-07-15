@@ -32,6 +32,8 @@ class AndroidAudioRouteController(
 ) : AudioRouteController {
     private val _availableRoutes = MutableStateFlow(currentAvailableRoutes())
     private val _activeRoute = MutableStateFlow(currentActiveRoute(_availableRoutes.value))
+    @Volatile
+    private var communicationRouteActive = currentCommunicationRouteIsSelected()
 
     override val availableRoutes: StateFlow<List<AudioRoute>> = _availableRoutes.asStateFlow()
     override val activeRoute: StateFlow<AudioRoute> = _activeRoute.asStateFlow()
@@ -56,15 +58,17 @@ class AndroidAudioRouteController(
     }
 
     override suspend fun restorePreferredRoute() {
-        val preferredRoute = preferenceStore.load() ?: return
-        if (preferredRoute in currentAvailableRoutes()) {
-            applyRoute(preferredRoute, persist = false)
-        } else {
-            refreshState()
-        }
+        val routes = currentAvailableRoutes()
+        val route = resolveCallStartRoute(
+            preferredRoute = preferenceStore.load(),
+            availableRoutes = routes,
+            currentRoute = currentActiveRoute(routes),
+        )
+        applyRoute(route, persist = false)
     }
 
     override suspend fun releaseCallRoute() {
+        communicationRouteActive = false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             audioManager.clearCommunicationDevice()
         } else {
@@ -81,7 +85,6 @@ class AndroidAudioRouteController(
     private fun applyRoute(route: AudioRoute, persist: Boolean) {
         val routes = currentAvailableRoutes()
         require(route in routes) { "Audio route $route is not available" }
-        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             applyModernRoute(route)
@@ -89,6 +92,7 @@ class AndroidAudioRouteController(
             applyLegacyRoute(route)
         }
 
+        communicationRouteActive = true
         _availableRoutes.value = routes
         _activeRoute.value = route
         if (persist) preferenceStore.save(route)
@@ -129,7 +133,11 @@ class AndroidAudioRouteController(
     private fun refreshState() {
         val routes = currentAvailableRoutes()
         _availableRoutes.value = routes
-        _activeRoute.value = currentActiveRoute(routes)
+        _activeRoute.value = if (communicationRouteActive || _activeRoute.value !in routes) {
+            currentActiveRoute(routes)
+        } else {
+            _activeRoute.value
+        }
     }
 
     private fun currentAvailableRoutes(): List<AudioRoute> {
@@ -162,6 +170,27 @@ class AndroidAudioRouteController(
     private fun hasBuiltInEarpiece(devices: List<AudioDeviceInfo>): Boolean =
         context.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY) ||
             devices.any { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
+
+    private fun currentCommunicationRouteIsSelected(): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        audioManager.communicationDevice != null
+    } else {
+        @Suppress("DEPRECATION")
+        audioManager.isBluetoothScoOn || audioManager.isSpeakerphoneOn
+    }
+}
+
+internal fun resolveCallStartRoute(
+    preferredRoute: AudioRoute?,
+    availableRoutes: List<AudioRoute>,
+    currentRoute: AudioRoute,
+): AudioRoute {
+    require(availableRoutes.isNotEmpty()) { "At least one audio route must be available" }
+    return when {
+        preferredRoute != null && preferredRoute in availableRoutes -> preferredRoute
+        AudioRoute.Earpiece in availableRoutes -> AudioRoute.Earpiece
+        currentRoute in availableRoutes -> currentRoute
+        else -> availableRoutes.first()
+    }
 }
 
 private fun AudioDeviceInfo.toAudioRoute(): AudioRoute? = when (type) {

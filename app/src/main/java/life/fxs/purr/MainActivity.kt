@@ -19,12 +19,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dagger.hilt.android.AndroidEntryPoint
 import life.fxs.purr.core.designsystem.theme.PurrTheme
+import life.fxs.purr.core.model.CallDirection
 import life.fxs.purr.navigation.CallNavigationRequest
 import life.fxs.purr.navigation.CallNavigationRequestStore
 import life.fxs.purr.navigation.PurrNavHost
 import javax.inject.Inject
 import life.fxs.purr.overlay.CallOverlayVisibilityStore
 import life.fxs.purr.feature.call.RecordingDownloadRequest
+import life.fxs.purr.feature.incomingcall.IncomingCallNavigationContract
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -44,6 +46,7 @@ class MainActivity : ComponentActivity() {
                 PurrNavHost(
                     initialCallPairId = pendingCallRequest?.pairId,
                     initialCallRequestId = pendingCallRequest?.requestId,
+                    initialCallDirection = pendingCallRequest?.direction ?: CallDirection.Outgoing,
                     onCallRequestConsumed = ::consumeCallRequest,
                     onCallSurfaceVisibilityChanged = callOverlayVisibilityStore::setCallSurfaceVisible,
                     onRecordingDownload = ::downloadRecording,
@@ -79,12 +82,18 @@ class MainActivity : ComponentActivity() {
     private fun updatePendingCallRequest(intent: Intent) {
         pendingCallRequest = callNavigationRequestStore.submit(
             intent.getStringExtra(EXTRA_CALL_PAIR_ID),
+            intent.callDirection(),
         )
     }
 
     private fun consumeCallRequest(requestId: Long) {
         if (callNavigationRequestStore.consume(requestId)) {
-            setIntent(Intent(intent).apply { removeExtra(EXTRA_CALL_PAIR_ID) })
+            setIntent(
+                Intent(intent).apply {
+                    removeExtra(EXTRA_CALL_PAIR_ID)
+                    removeExtra(EXTRA_CALL_DIRECTION)
+                },
+            )
         }
         pendingCallRequest = callNavigationRequestStore.pending
     }
@@ -111,7 +120,8 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
-        const val EXTRA_CALL_PAIR_ID = "life.fxs.purr.extra.CALL_PAIR_ID"
+        const val EXTRA_CALL_PAIR_ID = IncomingCallNavigationContract.EXTRA_CALL_PAIR_ID
+        const val EXTRA_CALL_DIRECTION = IncomingCallNavigationContract.EXTRA_CALL_DIRECTION
 
         fun intent(context: android.content.Context, pairId: String?): Intent =
             Intent(context, MainActivity::class.java).apply {
@@ -121,3 +131,8 @@ class MainActivity : ComponentActivity() {
     }
 
 }
+
+private fun Intent.callDirection(): CallDirection =
+    getStringExtra(MainActivity.EXTRA_CALL_DIRECTION)
+        ?.let { serialized -> runCatching { CallDirection.valueOf(serialized) }.getOrNull() }
+        ?: CallDirection.Outgoing

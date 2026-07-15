@@ -19,6 +19,7 @@ import life.fxs.purr.core.common.ApplicationScope
 @Singleton
 class IncomingCallReminderCoordinator @Inject internal constructor(
     private val source: IncomingCallSource,
+    private val callerSource: IncomingCallCallerSource,
     private val visibility: ApplicationVisibility,
     private val reminder: IncomingCallReminder,
     private val policy: IncomingCallReminderPolicy,
@@ -29,12 +30,17 @@ class IncomingCallReminderCoordinator @Inject internal constructor(
     fun start() {
         if (!started.compareAndSet(false, true)) return
 
-        combine(source.observe(), visibility.isForeground, policy::resolve)
+        combine(
+            source.observe(),
+            callerSource.observe(),
+            visibility.isForeground,
+            policy::resolve,
+        )
             .distinctUntilChanged()
             .onEach { target ->
                 when (target) {
                     IncomingCallReminderTarget.Hidden -> reminder.dismiss()
-                    is IncomingCallReminderTarget.Visible -> reminder.replace(target.call)
+                    is IncomingCallReminderTarget.Visible -> reminder.replace(target.content)
                 }
             }
             .launchIn(applicationScope)

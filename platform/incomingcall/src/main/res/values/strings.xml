@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="incoming_call_notification_channel_name">来电</string>
+    <string name="incoming_call_notification_channel_description">收到来电时提醒</string>
+    <string name="incoming_call_unknown_caller">对方</string>
+    <string name="incoming_call_notification_content">语音来电</string>
+    <string name="incoming_call_notification_answer">接听</string>
+    <string name="incoming_call_notification_decline">拒绝</string>
+</resources>

@@ -6,7 +6,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
@@ -15,20 +14,12 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.rounded.BatterySaver
-import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,8 +30,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -69,7 +58,6 @@ import life.fxs.purr.feature.settings.avatar.AvatarImageDecoder
 import life.fxs.purr.feature.settings.avatar.AvatarImageFailure
 import life.fxs.purr.feature.settings.avatar.AvatarImageProcessingException
 import life.fxs.purr.feature.settings.avatar.DecodedAvatarImage
-import life.fxs.purr.domain.call.model.CallOverlayStyle
 
 @Composable
 fun SettingsScreenRoute(
@@ -185,6 +173,10 @@ fun SettingsScreenRoute(
                 isExportingAvatar = false
             }
         },
+        notificationsEnabled = systemPermissions.notificationsEnabled,
+        onOpenNotificationSettings = systemPermissions.openNotificationSettings,
+        fullScreenIntentGranted = systemPermissions.canUseFullScreenIntent,
+        onRequestFullScreenIntent = systemPermissions.openFullScreenIntentPermission,
         overlayPermissionGranted = systemPermissions.canDrawOverlays,
         onRequestOverlayPermission = systemPermissions.openOverlayPermission,
         batteryOptimizationIgnored = systemPermissions.ignoresBatteryOptimizations,
@@ -199,6 +191,10 @@ fun SettingsScreen(
     onPickAvatar: () -> Unit,
     isPreparingAvatar: Boolean = false,
     avatarProcessingError: String? = null,
+    notificationsEnabled: Boolean = false,
+    onOpenNotificationSettings: () -> Unit = {},
+    fullScreenIntentGranted: Boolean = false,
+    onRequestFullScreenIntent: () -> Unit = {},
     overlayPermissionGranted: Boolean = false,
     onRequestOverlayPermission: () -> Unit = {},
     batteryOptimizationIgnored: Boolean = false,
@@ -303,56 +299,21 @@ fun SettingsScreen(
             }
         }
 
-        PurrPanel(
-            title = "通话悬浮窗",
-            subtitle = "通话页之外持续显示，可随时点按返回通话",
-        ) {
-            Text(
-                text = "显示样式",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            OverlayStylePreference(
-                title = "方形计时",
-                description = "通话图标与通话时长",
-                selected = state.callOverlayStyle == CallOverlayStyle.CompactSquare,
-                onClick = {
-                    onIntent(SettingsIntent.OverlayStyleSelected(CallOverlayStyle.CompactSquare))
-                },
-            )
-            OverlayStylePreference(
-                title = "顶部说话者",
-                description = "根据实时音量突出双方姓名",
-                selected = state.callOverlayStyle == CallOverlayStyle.SpeakerNames,
-                onClick = {
-                    onIntent(SettingsIntent.OverlayStyleSelected(CallOverlayStyle.SpeakerNames))
-                },
-            )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
-            SystemPermissionPreference(
-                icon = Icons.Rounded.PictureInPictureAlt,
-                title = "显示在其他应用上层",
-                description = if (overlayPermissionGranted) {
-                    "已允许，离开通话页面后显示悬浮窗"
-                } else {
-                    "需要授权后才能显示通话悬浮窗"
-                },
-                granted = overlayPermissionGranted,
-                onClick = onRequestOverlayPermission,
-            )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
-            SystemPermissionPreference(
-                icon = Icons.Rounded.BatterySaver,
-                title = "忽略电池优化",
-                description = if (batteryOptimizationIgnored) {
-                    "已允许，系统不会限制后台通话服务"
-                } else {
-                    "避免锁屏或后台运行时中断通话"
-                },
-                granted = batteryOptimizationIgnored,
-                onClick = onRequestIgnoreBatteryOptimizations,
-            )
-        }
+        IncomingCallPermissionsPanel(
+            notificationsEnabled = notificationsEnabled,
+            onOpenNotificationSettings = onOpenNotificationSettings,
+            fullScreenIntentGranted = fullScreenIntentGranted,
+            onRequestFullScreenIntent = onRequestFullScreenIntent,
+        )
+
+        CallOverlayPermissionsPanel(
+            selectedStyle = state.callOverlayStyle,
+            onStyleSelected = { onIntent(SettingsIntent.OverlayStyleSelected(it)) },
+            overlayPermissionGranted = overlayPermissionGranted,
+            onRequestOverlayPermission = onRequestOverlayPermission,
+            batteryOptimizationIgnored = batteryOptimizationIgnored,
+            onRequestIgnoreBatteryOptimizations = onRequestIgnoreBatteryOptimizations,
+        )
 
         PurrPrimaryButton(
             text = if (state.isLoggingOut) "退出中..." else "退出登录",
@@ -362,71 +323,6 @@ fun SettingsScreen(
             contentColor = MaterialTheme.colorScheme.onErrorContainer,
         )
     }
-}
-
-@Composable
-private fun OverlayStylePreference(
-    title: String,
-    description: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .selectable(
-                selected = selected,
-                role = Role.RadioButton,
-                onClick = onClick,
-            ),
-        shape = MaterialTheme.shapes.medium,
-        color = if (selected) {
-            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)
-        } else {
-            Color.Transparent
-        },
-    ) {
-        ListItem(
-            headlineContent = { Text(title) },
-            supportingContent = { Text(description) },
-            trailingContent = {
-                RadioButton(
-                    selected = selected,
-                    onClick = null,
-                )
-            },
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        )
-    }
-}
-
-@Composable
-private fun SystemPermissionPreference(
-    icon: ImageVector,
-    title: String,
-    description: String,
-    granted: Boolean,
-    onClick: () -> Unit,
-) {
-    ListItem(
-        headlineContent = { Text(title) },
-        supportingContent = { Text(description) },
-        leadingContent = {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        },
-        trailingContent = {
-            if (granted) {
-                TextButton(onClick = onClick) { Text("管理") }
-            } else {
-                FilledTonalButton(onClick = onClick) { Text("授权") }
-            }
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-    )
 }
 
 private fun AvatarImageFailure.userMessage(): String = when (this) {

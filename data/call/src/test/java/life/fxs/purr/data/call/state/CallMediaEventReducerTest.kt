@@ -62,6 +62,38 @@ class CallMediaEventReducerTest {
         assertThat(reduced?.uiSnapshot?.remoteParticipantConnected).isFalse()
     }
 
+    @Test
+    fun `reconnect lifecycle is non terminal and preserves microphone state`() {
+        val reconnecting = reducer.reduce(
+            session = session().copy(
+                connectionState = CallConnectionState.Connected,
+                localAudioState = LocalAudioState.Muted,
+            ),
+            event = MediaCallEvent.Reconnecting(
+                callId = "call-1",
+                generation = 7L,
+            ),
+        )
+
+        assertThat(reconnecting?.connectionState).isEqualTo(CallConnectionState.Reconnecting)
+        assertThat(reconnecting?.localAudioState).isEqualTo(LocalAudioState.Muted)
+
+        val reconnected = reducer.reduce(
+            session = requireNotNull(reconnecting),
+            event = MediaCallEvent.Reconnected(
+                callId = "call-1",
+                generation = 7L,
+                remoteIdentity = "remote-restored",
+                remoteParticipantConnected = true,
+            ),
+        )
+
+        assertThat(reconnected?.connectionState).isEqualTo(CallConnectionState.Connected)
+        assertThat(reconnected?.localAudioState).isEqualTo(LocalAudioState.Muted)
+        assertThat(reconnected?.participantIdentity?.remote).isEqualTo("remote-restored")
+        assertThat(reconnected?.uiSnapshot?.remoteParticipantConnected).isTrue()
+    }
+
     private fun session() = CallSession(
         callId = "call-1",
         pairId = "pair-1",
@@ -71,4 +103,3 @@ class CallMediaEventReducerTest {
         localAudioState = LocalAudioState.Enabling,
     )
 }
-

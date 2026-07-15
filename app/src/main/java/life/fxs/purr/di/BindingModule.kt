@@ -10,6 +10,7 @@ import life.fxs.purr.data.account.repository.ApiAccountSecurityRepository
 import life.fxs.purr.data.account.repository.ApiAuthRepository
 import life.fxs.purr.data.account.repository.ApiProfileRepository
 import life.fxs.purr.data.account.repository.ApiPairRepository
+import life.fxs.purr.data.account.repository.ApiPushRegistrationRepository
 import life.fxs.purr.data.account.realtime.ApiRealtimeRepository
 import life.fxs.purr.data.call.livekit.LiveKitCallDataSource
 import life.fxs.purr.data.call.livekit.RealLiveKitCallDataSource
@@ -32,6 +33,7 @@ import life.fxs.purr.domain.account.repository.AccountSecurityRepository
 import life.fxs.purr.domain.account.repository.ProfileRepository
 import life.fxs.purr.domain.account.repository.PairRepository
 import life.fxs.purr.domain.account.repository.RealtimeRepository
+import life.fxs.purr.domain.account.repository.PushRegistrationRepository
 import life.fxs.purr.domain.call.repository.CallRepository
 import life.fxs.purr.domain.call.repository.CallHistoryRepository
 import life.fxs.purr.domain.call.repository.CallCalendarRepository
@@ -65,6 +67,12 @@ abstract class BindingModule {
     @Binds
     @Singleton
     abstract fun bindRealtimeRepository(impl: ApiRealtimeRepository): RealtimeRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindPushRegistrationRepository(
+        impl: ApiPushRegistrationRepository,
+    ): PushRegistrationRepository
 
     @Binds
     @Singleton

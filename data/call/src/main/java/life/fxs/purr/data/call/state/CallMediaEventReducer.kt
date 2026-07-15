@@ -31,6 +31,20 @@ class CallMediaEventReducer @Inject constructor() {
                 ),
             )
 
+            is MediaCallEvent.Reconnecting -> session.copy(
+                connectionState = CallConnectionState.Reconnecting,
+            )
+
+            is MediaCallEvent.Reconnected -> session.copy(
+                participantIdentity = session.participantIdentity.copy(
+                    remote = event.remoteIdentity,
+                ),
+                connectionState = CallConnectionState.Connected,
+                uiSnapshot = session.uiSnapshot.copy(
+                    remoteParticipantConnected = event.remoteParticipantConnected,
+                ),
+            )
+
             is MediaCallEvent.ParticipantChanged -> session.copy(
                 participantIdentity = session.participantIdentity.copy(
                     remote = event.remoteIdentity,
@@ -72,4 +86,3 @@ class CallMediaEventReducer @Inject constructor() {
         }
     }
 }
-

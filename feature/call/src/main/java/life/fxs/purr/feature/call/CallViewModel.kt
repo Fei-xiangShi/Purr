@@ -17,11 +17,13 @@ import kotlinx.coroutines.launch
 import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.model.AudioRoute
+import life.fxs.purr.core.model.CallDirection
 import life.fxs.purr.core.presentation.toUserMessage
 import life.fxs.purr.domain.call.model.CallConnectionState
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.PrepareCallParams
+import life.fxs.purr.domain.call.model.isEffectivelyMuted
 import life.fxs.purr.domain.call.usecase.ConnectCallUseCase
 import life.fxs.purr.domain.call.usecase.DisconnectCallUseCase
 import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
@@ -64,7 +66,11 @@ class CallViewModel @Inject constructor(
 
     fun onIntent(intent: CallIntent) {
         when (intent) {
-            is CallIntent.ConnectCall -> startCall(intent.pairId)
+            is CallIntent.ConnectCall -> startCall(
+                pairId = intent.pairId,
+                remoteDisplayName = intent.remoteDisplayName,
+                direction = intent.direction,
+            )
             is CallIntent.MicrophonePermissionResult -> handleMicrophonePermissionResult(intent)
             CallIntent.MuteToggle -> toggleMute()
             is CallIntent.RouteSelect -> updateRoute(intent.route)
@@ -87,7 +93,11 @@ class CallViewModel @Inject constructor(
         endCall()
     }
 
-    private fun startCall(pairId: String) {
+    private fun startCall(
+        pairId: String,
+        remoteDisplayName: String,
+        direction: CallDirection,
+    ) {
         prepareJob?.cancel()
         connectJob?.cancel()
         endRequested = false
@@ -108,7 +118,12 @@ class CallViewModel @Inject constructor(
                 isLoading = true,
             )
             when (val result = prepareCallSessionUseCase(
-                PrepareCallParams(pairId = pairId, recordingConsent = true),
+                PrepareCallParams(
+                    pairId = pairId,
+                    recordingConsent = true,
+                    remoteDisplayName = remoteDisplayName,
+                    direction = direction,
+                ),
             )) {
                 is AppResult.Success -> {
                     if (endRequested) return@launch
@@ -149,7 +164,7 @@ class CallViewModel @Inject constructor(
 
     private fun toggleMute() {
         viewModelScope.launch {
-            val currentlyMuted = _state.value.localAudioState is LocalAudioState.Muted
+            val currentlyMuted = _state.value.localAudioState.isEffectivelyMuted
             handleActionResult(toggleMuteUseCase(currentlyMuted))
         }
     }

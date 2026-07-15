@@ -33,6 +33,7 @@ internal fun MicrophoneLevelButton(
     onClick: () -> Unit,
     enabled: Boolean,
 ) {
+    val iconColor = microphoneIconColor(muted)
     TooltipBox(
         positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
         tooltip = { PlainTooltip { androidx.compose.material3.Text(label) } },
@@ -53,11 +54,15 @@ internal fun MicrophoneLevelButton(
                 Icon(
                     imageVector = Icons.Rounded.MicOff,
                     contentDescription = label,
-                    tint = Color.White,
+                    tint = iconColor,
                     modifier = Modifier.size(32.dp),
                 )
             } else {
-                MicrophoneLevelIcon(level = level, contentDescription = label)
+                MicrophoneLevelIcon(
+                    level = level,
+                    contentDescription = label,
+                    baseColor = iconColor,
+                )
             }
         }
     }
@@ -67,6 +72,7 @@ internal fun MicrophoneLevelButton(
 private fun MicrophoneLevelIcon(
     level: Float,
     contentDescription: String,
+    baseColor: Color,
 ) {
     // The source is sampled at the audio display cadence; Compose interpolates it on
     // the frame clock so the icon does not jump between sparse samples.
@@ -80,7 +86,7 @@ private fun MicrophoneLevelIcon(
         with(microphonePainter) {
             draw(
                 size = size,
-                colorFilter = ColorFilter.tint(Color.White.copy(alpha = 0.34f)),
+                colorFilter = ColorFilter.tint(baseColor),
             )
         }
         if (normalizedLevel > 0f) {

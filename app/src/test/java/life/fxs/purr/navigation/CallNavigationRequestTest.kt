@@ -1,6 +1,7 @@
 package life.fxs.purr.navigation
 
 import com.google.common.truth.Truth.assertThat
+import life.fxs.purr.core.model.CallDirection
 import org.junit.Test
 
 class CallNavigationRequestTest {
@@ -37,5 +38,14 @@ class CallNavigationRequestTest {
 
         assertThat(store.submit("  ")).isNull()
         assertThat(store.pending).isNull()
+    }
+
+    @Test
+    fun `incoming external request preserves direction`() {
+        val store = CallNavigationRequestStore()
+
+        val request = store.submit("pair-1", CallDirection.Incoming)
+
+        assertThat(request?.direction).isEqualTo(CallDirection.Incoming)
     }
 }

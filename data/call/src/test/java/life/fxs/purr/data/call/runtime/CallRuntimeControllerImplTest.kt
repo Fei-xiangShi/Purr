@@ -6,92 +6,118 @@ import io.mockk.coVerify
 import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.runTest
 import life.fxs.purr.core.media.audio.AudioRouteController
-import life.fxs.purr.core.media.audio.CallAudioFocusManager
+import life.fxs.purr.core.media.audio.CallAudioProfile
+import life.fxs.purr.core.media.audio.CallAudioSessionController
+import life.fxs.purr.core.media.audio.CallAudioSessionState
+import life.fxs.purr.core.media.audio.CallAudioTransitionOutcome
 import life.fxs.purr.core.media.service.CallServiceController
+import life.fxs.purr.core.media.telecom.SystemCallController
+import life.fxs.purr.core.model.CallDirection
 import org.junit.Test
 
 class CallRuntimeControllerImplTest {
     private val mediaCallPort = mockk<MediaCallPort>()
     private val audioRouteController = mockk<AudioRouteController>()
-    private val callAudioFocusManager = mockk<CallAudioFocusManager>()
+    private val callAudioSessionController = mockk<CallAudioSessionController>()
     private val callServiceController = mockk<CallServiceController>()
+    private val systemCallController = mockk<SystemCallController>()
 
     @Test
-    fun `connect establishes Android call runtime before media`() = runTest {
-        every { mediaCallPort.events } returns emptyFlow()
-        coEvery { callAudioFocusManager.requestFocus() } returns true
-        coEvery { audioRouteController.releaseCallRoute() } returns Unit
-        coEvery { audioRouteController.restorePreferredRoute() } returns Unit
-        coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } returns Unit
-        coEvery { mediaCallPort.execute(any()) } returns Unit
+    fun `connect establishes Android call session before media`() = runTest {
         val runtime = runtime()
+        coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } returns Unit
+        coEvery { callAudioSessionController.activate() } returns Unit
+        coEvery { mediaCallPort.execute(any()) } returns Unit
 
         runtime.execute(connectCommand())
 
         coVerifyOrder {
             callServiceController.startForegroundCall("call-1", "pair-1")
-            callAudioFocusManager.requestFocus()
-            audioRouteController.restorePreferredRoute()
+            systemCallController.startCall(any())
+            systemCallController.activateCall("call-1")
+            callAudioSessionController.activate()
             mediaCallPort.execute(connectCommand())
         }
     }
 
     @Test
-    fun `duplicate connect for the active call is idempotent`() = runTest {
-        every { mediaCallPort.events } returns emptyFlow()
-        coEvery { callAudioFocusManager.requestFocus() } returns true
-        coEvery { audioRouteController.releaseCallRoute() } returns Unit
-        coEvery { audioRouteController.restorePreferredRoute() } returns Unit
-        coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } returns Unit
-        coEvery { mediaCallPort.execute(any()) } returns Unit
+    fun `incoming direction and remote identity reach the system call boundary`() = runTest {
         val runtime = runtime()
+        val command = connectCommand(
+            direction = CallDirection.Incoming,
+            remoteDisplayName = "Partner",
+        )
+        coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } returns Unit
+        coEvery { callAudioSessionController.activate() } returns Unit
+        coEvery { mediaCallPort.execute(command) } returns Unit
+
+        runtime.execute(command)
+
+        coVerify(exactly = 1) {
+            systemCallController.startCall(
+                match { descriptor ->
+                    descriptor.callId == "call-1" &&
+                        descriptor.pairId == "pair-1" &&
+                        descriptor.remoteDisplayName == "Partner" &&
+                        descriptor.direction == CallDirection.Incoming
+                },
+            )
+        }
+        coVerify(exactly = 1) { systemCallController.activateCall("call-1") }
+    }
+
+    @Test
+    fun `duplicate connect for the active call is idempotent`() = runTest {
+        val runtime = runtime()
+        coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } returns Unit
+        coEvery { callAudioSessionController.activate() } returns Unit
+        coEvery { mediaCallPort.execute(any()) } returns Unit
 
         runtime.execute(connectCommand())
         runtime.execute(connectCommand())
 
         coVerify(exactly = 1) { callServiceController.startForegroundCall("call-1", "pair-1") }
-        coVerify(exactly = 1) { callAudioFocusManager.requestFocus() }
+        coVerify(exactly = 1) { systemCallController.startCall(any()) }
+        coVerify(exactly = 1) { systemCallController.activateCall("call-1") }
+        coVerify(exactly = 1) { callAudioSessionController.activate() }
         coVerify(exactly = 1) { mediaCallPort.execute(connectCommand()) }
     }
 
     @Test
-    fun `media connection failure releases foreground service and audio focus`() = runTest {
-        every { mediaCallPort.events } returns emptyFlow()
-        coEvery { callAudioFocusManager.requestFocus() } returns true
-        coEvery { audioRouteController.releaseCallRoute() } returns Unit
-        coEvery { audioRouteController.restorePreferredRoute() } returns Unit
+    fun `media connection failure releases foreground service and audio session`() = runTest {
+        val runtime = runtime()
         coEvery { callServiceController.startForegroundCall(any(), any()) } returns Unit
+        coEvery { callAudioSessionController.activate() } returns Unit
         coEvery { mediaCallPort.execute(any<MediaCallCommand.Connect>()) } throws
             IllegalStateException("connect failed")
+        coEvery { callAudioSessionController.release() } returns Unit
         coEvery { callServiceController.stopForegroundCall("call-1") } returns Unit
-        coEvery { callAudioFocusManager.abandonFocus() } returns Unit
-        val runtime = runtime()
 
         runCatching { runtime.execute(connectCommand()) }
 
         coVerifyOrder {
-            callAudioFocusManager.abandonFocus()
+            callAudioSessionController.release()
+            systemCallController.disconnectCall("call-1")
             callServiceController.stopForegroundCall("call-1")
         }
     }
 
     @Test
     fun `connect keeps original failure and attaches cleanup failure`() = runTest {
-        every { mediaCallPort.events } returns emptyFlow()
-        coEvery { callAudioFocusManager.requestFocus() } returns true
-        coEvery { audioRouteController.releaseCallRoute() } returns Unit
-        coEvery { audioRouteController.restorePreferredRoute() } returns Unit
+        val runtime = runtime()
         coEvery { callServiceController.startForegroundCall(any(), any()) } returns Unit
+        coEvery { callAudioSessionController.activate() } returns Unit
         val connectFailure = IllegalStateException("connect failed")
         val cleanupFailure = IllegalStateException("cleanup failed")
         coEvery { mediaCallPort.execute(any<MediaCallCommand.Connect>()) } throws connectFailure
-        coEvery { callAudioFocusManager.abandonFocus() } throws cleanupFailure
+        coEvery { callAudioSessionController.release() } throws cleanupFailure
         coEvery { callServiceController.stopForegroundCall("call-1") } returns Unit
 
-        val result = runCatching { runtime().execute(connectCommand()) }
+        val result = runCatching { runtime.execute(connectCommand()) }
 
         assertThat(result.exceptionOrNull()).isSameInstanceAs(connectFailure)
         assertThat(connectFailure.suppressed.single()).isSameInstanceAs(cleanupFailure)
@@ -100,50 +126,123 @@ class CallRuntimeControllerImplTest {
 
     @Test
     fun `disconnect is idempotent when runtime was not acquired`() = runTest {
-        every { mediaCallPort.events } returns emptyFlow()
-        coEvery { audioRouteController.releaseCallRoute() } returns Unit
-        coEvery { callAudioFocusManager.abandonFocus() } returns Unit
-        coEvery { callServiceController.stopForegroundCall("call-1") } returns Unit
         val runtime = runtime()
+        coEvery { callAudioSessionController.release() } returns Unit
+        coEvery { callServiceController.stopForegroundCall("call-1") } returns Unit
 
         runtime.execute(MediaCallCommand.Disconnect("call-1"))
 
-        coVerify(exactly = 1) { audioRouteController.releaseCallRoute() }
-        coVerify(exactly = 1) { callAudioFocusManager.abandonFocus() }
+        coVerify(exactly = 1) { callAudioSessionController.release() }
+        coVerify(exactly = 1) { systemCallController.disconnectCall("call-1") }
         coVerify(exactly = 1) { callServiceController.stopForegroundCall("call-1") }
     }
 
     @Test
-    fun `disconnect releases media route focus and foreground service`() = runTest {
-        every { mediaCallPort.events } returns emptyFlow()
-        coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } returns Unit
-        coEvery { callAudioFocusManager.requestFocus() } returns true
-        coEvery { audioRouteController.restorePreferredRoute() } returns Unit
-        coEvery { mediaCallPort.execute(any()) } returns Unit
-        coEvery { audioRouteController.releaseCallRoute() } returns Unit
-        coEvery { callAudioFocusManager.abandonFocus() } returns Unit
-        coEvery { callServiceController.stopForegroundCall("call-1") } returns Unit
+    fun `disconnect releases media session and foreground service`() = runTest {
         val runtime = runtime()
+        coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } returns Unit
+        coEvery { callAudioSessionController.activate() } returns Unit
+        coEvery { mediaCallPort.execute(any()) } returns Unit
+        coEvery { callAudioSessionController.release() } returns Unit
+        coEvery { callServiceController.stopForegroundCall("call-1") } returns Unit
         runtime.execute(connectCommand())
 
         runtime.execute(MediaCallCommand.Disconnect("call-1"))
 
         coVerifyOrder {
             mediaCallPort.execute(MediaCallCommand.Disconnect("call-1"))
-            audioRouteController.releaseCallRoute()
-            callAudioFocusManager.abandonFocus()
+            callAudioSessionController.release()
+            systemCallController.disconnectCall("call-1")
             callServiceController.stopForegroundCall("call-1")
         }
     }
 
-    private fun runtime() = CallRuntimeControllerImpl(
-        mediaCallPort = mediaCallPort,
-        audioRouteController = audioRouteController,
-        callAudioFocusManager = callAudioFocusManager,
-        callServiceController = callServiceController,
-    )
+    @Test
+    fun `mute stops transmission before entering listen-only profile`() = runTest {
+        val runtime = connectedRuntime(CallAudioProfile.Conversational)
+        val command = MediaCallCommand.SetMuted("call-1", muted = true)
+        coEvery { mediaCallPort.execute(command) } returns Unit
+        coEvery { callAudioSessionController.transitionTo(CallAudioProfile.ListenOnly) } returns
+            CallAudioTransitionOutcome.Applied
 
-    private fun connectCommand() = MediaCallCommand.Connect(
+        runtime.execute(command)
+
+        coVerifyOrder {
+            mediaCallPort.execute(command)
+            callAudioSessionController.transitionTo(CallAudioProfile.ListenOnly)
+        }
+    }
+
+    @Test
+    fun `unmute restores conversational profile before transmission`() = runTest {
+        val runtime = connectedRuntime(CallAudioProfile.ListenOnly)
+        val command = MediaCallCommand.SetMuted("call-1", muted = false)
+        coEvery { callAudioSessionController.transitionTo(CallAudioProfile.Conversational) } returns
+            CallAudioTransitionOutcome.Applied
+        coEvery { mediaCallPort.execute(command) } returns Unit
+
+        runtime.execute(command)
+
+        coVerifyOrder {
+            callAudioSessionController.transitionTo(CallAudioProfile.Conversational)
+            mediaCallPort.execute(command)
+        }
+    }
+
+    @Test
+    fun `failed unmute returns to listen-only while microphone remains muted`() = runTest {
+        val runtime = connectedRuntime(CallAudioProfile.ListenOnly)
+        val command = MediaCallCommand.SetMuted("call-1", muted = false)
+        val failure = IllegalStateException("provider rejected unmute")
+        coEvery { callAudioSessionController.transitionTo(CallAudioProfile.Conversational) } returns
+            CallAudioTransitionOutcome.Applied
+        coEvery { mediaCallPort.execute(command) } throws failure
+        coEvery { callAudioSessionController.transitionTo(CallAudioProfile.ListenOnly) } returns
+            CallAudioTransitionOutcome.Applied
+
+        val result = runCatching { runtime.execute(command) }
+
+        assertThat(result.exceptionOrNull()).isSameInstanceAs(failure)
+        coVerifyOrder {
+            callAudioSessionController.transitionTo(CallAudioProfile.Conversational)
+            mediaCallPort.execute(command)
+            callAudioSessionController.transitionTo(CallAudioProfile.ListenOnly)
+        }
+    }
+
+    private suspend fun connectedRuntime(profile: CallAudioProfile): CallRuntimeControllerImpl {
+        val runtime = runtime(profile)
+        coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } returns Unit
+        coEvery { callAudioSessionController.activate() } returns Unit
+        coEvery { mediaCallPort.execute(connectCommand()) } returns Unit
+        runtime.execute(connectCommand())
+        return runtime
+    }
+
+    private fun runtime(
+        profile: CallAudioProfile = CallAudioProfile.Conversational,
+    ): CallRuntimeControllerImpl {
+        every { mediaCallPort.events } returns emptyFlow()
+        every { systemCallController.events } returns emptyFlow()
+        coEvery { systemCallController.startCall(any()) } returns Unit
+        coEvery { systemCallController.activateCall(any()) } returns Unit
+        coEvery { systemCallController.disconnectCall(any()) } returns Unit
+        every { callAudioSessionController.state } returns MutableStateFlow(
+            CallAudioSessionState.Active(profile),
+        )
+        return CallRuntimeControllerImpl(
+            mediaCallPort = mediaCallPort,
+            audioRouteController = audioRouteController,
+            callAudioSessionController = callAudioSessionController,
+            callServiceController = callServiceController,
+            systemCallController = systemCallController,
+        )
+    }
+
+    private fun connectCommand(
+        direction: CallDirection = CallDirection.Outgoing,
+        remoteDisplayName: String = "Purr",
+    ) = MediaCallCommand.Connect(
         callId = "call-1",
         pairId = "pair-1",
         localIdentity = "self",
@@ -151,5 +250,7 @@ class CallRuntimeControllerImplTest {
             wsUrl = "wss://example.invalid",
             accessToken = "token",
         ),
+        remoteDisplayName = remoteDisplayName,
+        direction = direction,
     )
 }

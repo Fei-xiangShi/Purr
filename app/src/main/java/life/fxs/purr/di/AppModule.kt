@@ -15,6 +15,7 @@ import life.fxs.purr.core.network.api.PurrCallApi
 import life.fxs.purr.core.network.api.PurrCallHistoryApi
 import life.fxs.purr.core.network.api.PurrCallTelemetryApi
 import life.fxs.purr.core.network.api.PurrRecordingApi
+import life.fxs.purr.core.network.api.PurrPushApi
 import life.fxs.purr.data.account.network.BearerTokenInterceptor
 import life.fxs.purr.data.account.network.RefreshTokenAuthenticator
 import life.fxs.purr.data.account.realtime.RealtimeEndpoint
@@ -84,6 +85,10 @@ object NetworkModule {
     @Provides
     @Singleton
     fun providePurrRecordingApi(retrofit: Retrofit): PurrRecordingApi = retrofit.create(PurrRecordingApi::class.java)
+
+    @Provides
+    @Singleton
+    fun providePurrPushApi(retrofit: Retrofit): PurrPushApi = retrofit.create(PurrPushApi::class.java)
 
     @Provides
     @Singleton

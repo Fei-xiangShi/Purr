@@ -2,8 +2,11 @@ package life.fxs.purr.data.call.livekit
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.livekit.android.AudioOptions
 import io.livekit.android.LiveKit
+import io.livekit.android.LiveKitOverrides
 import io.livekit.android.RoomOptions
+import io.livekit.android.audio.NoAudioHandler
 import io.livekit.android.room.Room
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -15,5 +18,13 @@ class LiveKitRoomFactory @Inject constructor(
     fun create(): Room = LiveKit.create(
         appContext = appContext,
         options = RoomOptions(),
+        overrides = applicationOwnedAudioOverrides(),
     )
 }
+
+internal fun applicationOwnedAudioOverrides(): LiveKitOverrides = LiveKitOverrides(
+    audioOptions = AudioOptions(
+        audioHandler = NoAudioHandler(),
+        disableCommunicationModeWorkaround = true,
+    ),
+)

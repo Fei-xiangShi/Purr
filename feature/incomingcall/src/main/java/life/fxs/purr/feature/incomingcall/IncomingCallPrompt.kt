@@ -18,6 +18,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -26,6 +29,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
 import life.fxs.purr.core.designsystem.component.VoiceCallScaffold
 
 @Composable
@@ -34,6 +38,8 @@ fun IncomingCallPromptRoute(
     partnerName: String,
     partnerAvatarUrl: String?,
     avatarModifier: Modifier = Modifier,
+    expectedCallId: String? = null,
+    acceptImmediately: Boolean = false,
     onOpenCall: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -41,6 +47,8 @@ fun IncomingCallPromptRoute(
         partnerName = partnerName,
         partnerAvatarUrl = partnerAvatarUrl,
         avatarModifier = avatarModifier,
+        expectedCallId = expectedCallId,
+        acceptImmediately = acceptImmediately,
         onOpenCall = onOpenCall,
         onDismiss = onDismiss,
         viewModel = hiltViewModel(),
@@ -53,12 +61,18 @@ internal fun IncomingCallPromptRoute(
     partnerName: String,
     partnerAvatarUrl: String?,
     avatarModifier: Modifier,
+    expectedCallId: String?,
+    acceptImmediately: Boolean,
     onOpenCall: (String) -> Unit,
     onDismiss: () -> Unit,
     viewModel: IncomingCallPromptViewModel,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val matchesExpectedCall = expectedCallId == null || state.call?.callId == expectedCallId
+    var immediateAcceptConsumed by rememberSaveable(expectedCallId, acceptImmediately) {
+        mutableStateOf(false)
+    }
 
     LaunchedEffect(viewModel, context) {
         viewModel.effects.collect { effect ->
@@ -70,19 +84,47 @@ internal fun IncomingCallPromptRoute(
             }
         }
     }
-    LaunchedEffect(state.isReady, state.call) {
-        if (state.isReady && state.call == null && !state.isResponding) onDismiss()
+    LaunchedEffect(
+        acceptImmediately,
+        immediateAcceptConsumed,
+        matchesExpectedCall,
+        state.call?.callId,
+        state.isResponding,
+    ) {
+        if (
+            acceptImmediately &&
+            !immediateAcceptConsumed &&
+            matchesExpectedCall &&
+            state.call != null &&
+            !state.isResponding
+        ) {
+            immediateAcceptConsumed = true
+            viewModel.onIntent(IncomingCallPromptIntent.Accept)
+        }
+    }
+    LaunchedEffect(state.isReady, state.call?.callId, expectedCallId, state.isResponding) {
+        if (!state.isReady || state.isResponding) return@LaunchedEffect
+        when {
+            state.call != null && !matchesExpectedCall -> onDismiss()
+            state.call == null && expectedCallId == null -> onDismiss()
+            state.call == null -> {
+                delay(EXPECTED_CALL_RECOVERY_GRACE_MILLIS)
+                onDismiss()
+            }
+        }
     }
 
     IncomingCallPrompt(
         partnerName = partnerName,
         partnerAvatarUrl = partnerAvatarUrl,
         avatarModifier = avatarModifier,
-        enabled = state.call != null && !state.isResponding,
+        enabled = state.call != null && matchesExpectedCall && !state.isResponding,
         onAccept = { viewModel.onIntent(IncomingCallPromptIntent.Accept) },
         onDecline = { viewModel.onIntent(IncomingCallPromptIntent.Decline) },
     )
 }
+
+private const val EXPECTED_CALL_RECOVERY_GRACE_MILLIS = 5_000L
 
 @Composable
 @SuppressLint("ModifierParameter")

@@ -1,9 +1,12 @@
 package life.fxs.purr.navigation
 
+import life.fxs.purr.core.model.CallDirection
+
 /** A one-shot request to show a call destination from an external entry point. */
 internal data class CallNavigationRequest(
     val pairId: String,
     val requestId: Long,
+    val direction: CallDirection = CallDirection.Outgoing,
 )
 
 /**
@@ -19,11 +22,14 @@ internal class CallNavigationRequestStore {
     var pending: CallNavigationRequest? = null
         private set
 
-    fun submit(pairId: String?): CallNavigationRequest? {
+    fun submit(
+        pairId: String?,
+        direction: CallDirection = CallDirection.Outgoing,
+    ): CallNavigationRequest? {
         val requestId = nextRequestId
         nextRequestId = if (nextRequestId == Long.MAX_VALUE) 1L else nextRequestId + 1L
         pending = pairId?.takeIf(String::isNotBlank)?.let {
-            CallNavigationRequest(pairId = it, requestId = requestId)
+            CallNavigationRequest(pairId = it, requestId = requestId, direction = direction)
         }
         return pending
     }

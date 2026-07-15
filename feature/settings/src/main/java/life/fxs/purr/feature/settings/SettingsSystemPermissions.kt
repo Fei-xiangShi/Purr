@@ -3,6 +3,8 @@ package life.fxs.purr.feature.settings
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.app.NotificationManager
+import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -21,8 +23,12 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 
 @Stable
 internal class SettingsSystemPermissions internal constructor(
+    val notificationsEnabled: Boolean,
+    val canUseFullScreenIntent: Boolean,
     val canDrawOverlays: Boolean,
     val ignoresBatteryOptimizations: Boolean,
+    val openNotificationSettings: () -> Unit,
+    val openFullScreenIntentPermission: () -> Unit,
     val openOverlayPermission: () -> Unit,
     val openBatteryOptimizationPermission: () -> Unit,
 )
@@ -34,16 +40,33 @@ internal fun rememberSettingsSystemPermissions(): SettingsSystemPermissions {
     val powerManager = remember(context.applicationContext) {
         context.applicationContext.getSystemService(PowerManager::class.java)
     }
+    val notificationManager = remember(context.applicationContext) {
+        context.applicationContext.getSystemService(NotificationManager::class.java)
+    }
+    var notificationsEnabled by remember {
+        mutableStateOf(notificationManager.areNotificationsEnabled())
+    }
+    var canUseFullScreenIntent by remember {
+        mutableStateOf(notificationManager.canUseFullScreenIntentCompat())
+    }
     var canDrawOverlays by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     var ignoresBatteryOptimizations by remember {
         mutableStateOf(powerManager.isIgnoringBatteryOptimizations(context.packageName))
     }
 
     fun refresh() {
+        notificationsEnabled = notificationManager.areNotificationsEnabled()
+        canUseFullScreenIntent = notificationManager.canUseFullScreenIntentCompat()
         canDrawOverlays = Settings.canDrawOverlays(context)
         ignoresBatteryOptimizations = powerManager.isIgnoringBatteryOptimizations(context.packageName)
     }
 
+    val notificationSettingsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { refresh() }
+    val fullScreenIntentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { refresh() }
     val overlayPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { refresh() }
@@ -60,8 +83,28 @@ internal fun rememberSettingsSystemPermissions(): SettingsSystemPermissions {
     }
 
     return SettingsSystemPermissions(
+        notificationsEnabled = notificationsEnabled,
+        canUseFullScreenIntent = canUseFullScreenIntent,
         canDrawOverlays = canDrawOverlays,
         ignoresBatteryOptimizations = ignoresBatteryOptimizations,
+        openNotificationSettings = {
+            notificationSettingsLauncher.launch(
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                }.resolvableOrFallback(context),
+            )
+        },
+        openFullScreenIntentPermission = {
+            val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                Intent(
+                    Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                    Uri.parse("package:${context.packageName}"),
+                )
+            } else {
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+            }
+            fullScreenIntentLauncher.launch(intent.resolvableOrFallback(context))
+        },
         openOverlayPermission = {
             overlayPermissionLauncher.launch(
                 Intent(
@@ -79,11 +122,25 @@ internal fun rememberSettingsSystemPermissions(): SettingsSystemPermissions {
                     Uri.parse("package:${context.packageName}"),
                 )
             }
-            batteryOptimizationLauncher.launch(intent.resolvableOrFallback(context))
+            batteryOptimizationLauncher.launch(
+                intent.resolvableOrFallback(
+                    context = context,
+                    fallback = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                ),
+            )
         },
     )
 }
 
-private fun Intent.resolvableOrFallback(context: Context): Intent =
+private fun Intent.resolvableOrFallback(
+    context: Context,
+    fallback: Intent = Intent(
+        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+        Uri.parse("package:${context.packageName}"),
+    ),
+): Intent =
     takeIf { resolveActivity(context.packageManager) != null }
-        ?: Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        ?: fallback
+
+private fun NotificationManager.canUseFullScreenIntentCompat(): Boolean =
+    Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE || canUseFullScreenIntent()

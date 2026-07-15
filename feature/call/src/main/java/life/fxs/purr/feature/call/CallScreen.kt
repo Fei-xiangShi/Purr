@@ -38,12 +38,16 @@ import java.util.Locale
 import kotlinx.coroutines.delay
 import life.fxs.purr.core.designsystem.component.VoiceCallScaffold
 import life.fxs.purr.core.model.AudioRoute
+import life.fxs.purr.core.model.CallDirection
 import life.fxs.purr.domain.call.model.CallTiming
 import life.fxs.purr.domain.call.model.LocalAudioState
+import life.fxs.purr.domain.call.model.canToggleMute
+import life.fxs.purr.domain.call.model.isEffectivelyMuted
 
 @Composable
 fun CallScreenRoute(
     pairId: String,
+    direction: CallDirection = CallDirection.Outgoing,
     partnerName: String = "对方",
     partnerAvatarUrl: String? = null,
     partnerAvatarModifier: Modifier = Modifier,
@@ -86,8 +90,16 @@ fun CallScreenRoute(
         contract = ActivityResultContracts.RequestPermission(),
     ) { requestMicrophonePermission() }
 
-    LaunchedEffect(pairId) {
-        if (pairId.isNotBlank()) viewModel.onIntent(CallIntent.ConnectCall(pairId = pairId))
+    LaunchedEffect(pairId, partnerName, direction) {
+        if (pairId.isNotBlank()) {
+            viewModel.onIntent(
+                CallIntent.ConnectCall(
+                    pairId = pairId,
+                    remoteDisplayName = partnerName,
+                    direction = direction,
+                ),
+            )
+        }
     }
     LaunchedEffect(viewModel, context) {
         viewModel.effects.collect { effect ->
@@ -145,6 +157,7 @@ fun CallScreen(
 ) {
     val canManageActiveCall = !state.isLoading &&
         (state.screenState == CallScreenState.Waiting || state.screenState == CallScreenState.Active)
+    val microphoneMuted = state.localAudioState.isEffectivelyMuted
     val canEndCall = state.screenState in setOf(
         CallScreenState.Dialing,
         CallScreenState.Connecting,
@@ -172,16 +185,16 @@ fun CallScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             MicrophoneLevelButton(
-                label = if (state.localAudioState is LocalAudioState.Muted) "取消静音" else "静音",
-                muted = state.localAudioState is LocalAudioState.Muted,
+                label = if (microphoneMuted) "取消静音" else "静音",
+                muted = microphoneMuted,
                 level = localAudioLevel,
                 onClick = onMuteToggle,
-                enabled = canManageActiveCall,
+                enabled = canManageActiveCall && state.localAudioState.canToggleMute,
             )
             AudioRoutePicker(
                 routes = state.availableRoutes,
                 activeRoute = state.activeRoute,
-                enabled = canManageActiveCall,
+                enabled = canManageActiveCall && state.localAudioState == LocalAudioState.Enabled,
                 onRouteSelect = onRouteSelect,
             )
             DiagnosticsButton(

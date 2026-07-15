@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.Person
 import dagger.hilt.android.AndroidEntryPoint
 import life.fxs.purr.MainActivity
 import life.fxs.purr.R
@@ -144,8 +145,12 @@ open class CallForegroundService : Service() {
                 .setIdentifier(
                     CallForegroundServiceCommandPolicy.pendingIntentIdentifier(ACTION_HANG_UP, callId),
                 ),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val caller = Person.Builder()
+            .setName(getString(R.string.call_notification_content))
+            .setImportant(true)
+            .build()
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.sym_call_incoming)
             .setContentTitle(getString(R.string.app_name))
@@ -153,13 +158,8 @@ open class CallForegroundService : Service() {
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setContentIntent(openCallIntent)
-            .addAction(
-                NotificationCompat.Action.Builder(
-                    android.R.drawable.ic_menu_close_clear_cancel,
-                    getString(R.string.call_notification_hang_up),
-                    hangUpIntent,
-                ).build(),
-            )
+            .setStyle(NotificationCompat.CallStyle.forOngoingCall(caller, hangUpIntent))
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setOngoing(true)
             .build()
     }

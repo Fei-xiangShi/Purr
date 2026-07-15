@@ -95,6 +95,35 @@ class RealLiveKitCallDataSourceTest {
     }
 
     @Test
+    fun `reconnecting keeps the active room and publishes recovery facts`() = runTest(dispatcher) {
+        val harness = roomHarness()
+        every { roomFactory.create() } returns harness.room
+        val source = source()
+        val observed = mutableListOf<MediaCallEvent>()
+        val observer = launch { source.events.toList(observed) }
+
+        source.execute(connectCommand())
+        runCurrent()
+        harness.events.emit(RoomEvent.Reconnecting(harness.room))
+        runCurrent()
+
+        assertThat(observed.filterIsInstance<MediaCallEvent.Reconnecting>()).hasSize(1)
+        assertThat(observed.filterIsInstance<MediaCallEvent.Disconnected>()).isEmpty()
+        assertThat(roomStateProvider.room.value).isSameInstanceAs(harness.room)
+        verify(exactly = 0) { harness.room.disconnect() }
+        verify(exactly = 0) { harness.room.release() }
+
+        harness.events.emit(RoomEvent.Reconnected(harness.room))
+        runCurrent()
+
+        assertThat(observed.filterIsInstance<MediaCallEvent.Reconnected>()).hasSize(1)
+        assertThat(roomStateProvider.room.value).isSameInstanceAs(harness.room)
+        verify(exactly = 0) { harness.room.disconnect() }
+        verify(exactly = 0) { harness.room.release() }
+        observer.cancel()
+    }
+
+    @Test
     fun `muting detaches pcm sink and unmuting reattaches it`() = runTest(dispatcher) {
         val harness = roomHarness()
         every { roomFactory.create() } returns harness.room
@@ -105,6 +134,12 @@ class RealLiveKitCallDataSourceTest {
 
         assertThat(audioLevelProvider.localAudioLevel.value).isEqualTo(0f)
         verify(exactly = 1) { harness.localAudioTrack.removeSink(audioLevelProvider) }
+
+        harness.events.emit(RoomEvent.Reconnecting(harness.room))
+        harness.events.emit(RoomEvent.Reconnected(harness.room))
+        runCurrent()
+
+        verify(exactly = 1) { harness.localAudioTrack.addSink(audioLevelProvider) }
 
         source.execute(MediaCallCommand.SetMuted(callId = "call-1", muted = false))
 
@@ -270,14 +305,17 @@ class RealLiveKitCallDataSourceTest {
         val localParticipant = mockk<LocalParticipant>()
         val microphonePublication = mockk<LocalTrackPublication>()
         val localAudioTrack = mockk<LocalAudioTrack>(relaxed = true)
+        var microphoneMuted = false
         every { eventListenable.events } returns events
         every { room.events } returns eventListenable
         every { room.localParticipant } returns localParticipant
         every { room.remoteParticipants } returns emptyMap()
         every { localParticipant.identity } returns null
         every { localParticipant.getTrackPublication(Track.Source.MICROPHONE) } returns microphonePublication
+        every { microphonePublication.muted } answers { microphoneMuted }
         every { microphonePublication.track } returns localAudioTrack
         coEvery { localParticipant.setMicrophoneEnabled(any()) } coAnswers {
+            microphoneMuted = !firstArg<Boolean>()
             connectStarted?.complete(Unit)
             allowConnect?.await()
             true

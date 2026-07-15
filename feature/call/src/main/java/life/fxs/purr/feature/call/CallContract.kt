@@ -1,6 +1,7 @@
 package life.fxs.purr.feature.call
 
 import life.fxs.purr.core.model.AudioRoute
+import life.fxs.purr.core.model.CallDirection
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.RecordingState
@@ -17,7 +18,11 @@ enum class CallScreenState {
 }
 
 sealed interface CallIntent {
-    data class ConnectCall(val pairId: String) : CallIntent
+    data class ConnectCall(
+        val pairId: String,
+        val remoteDisplayName: String = "Purr",
+        val direction: CallDirection = CallDirection.Outgoing,
+    ) : CallIntent
     data class MicrophonePermissionResult(
         val granted: Boolean,
         val permanentlyDenied: Boolean = false,

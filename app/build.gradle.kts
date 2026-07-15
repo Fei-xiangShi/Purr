@@ -31,6 +31,13 @@ val purrBaseUrl = normalizedBaseUrl(
 )
 val purrVersionCode = providers.gradleProperty("PURR_VERSION_CODE").get().toInt()
 val purrVersionName = providers.gradleProperty("PURR_VERSION_NAME").get()
+val firebaseReleaseProperties = listOf(
+    "PURR_FIREBASE_APPLICATION_ID",
+    "PURR_FIREBASE_API_KEY",
+    "PURR_FIREBASE_PROJECT_ID",
+    "PURR_FIREBASE_SENDER_ID",
+)
+val googleServicesFile = project.file("google-services.json")
 
 plugins {
     alias(libs.plugins.android.application)
@@ -38,6 +45,10 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.hilt)
     alias(libs.plugins.kapt)
+}
+
+if (googleServicesFile.isFile) {
+    apply(plugin = "com.google.gms.google-services")
 }
 
 android {
@@ -129,6 +140,12 @@ val validateReleaseConfiguration by tasks.registering {
                 "Release signing property is missing: $key"
             }
         }
+        val hasFirebasePropertyFallback = firebaseReleaseProperties.all { key ->
+            providers.gradleProperty(key).orNull?.isNotBlank() == true
+        }
+        require(googleServicesFile.isFile || hasFirebasePropertyFallback) {
+            "Release builds require app/google-services.json or all PURR_FIREBASE_* Gradle properties"
+        }
     }
 }
 
@@ -157,6 +174,9 @@ dependencies {
     implementation(projects.feature.incomingcall)
     implementation(projects.feature.call)
     implementation(projects.feature.settings)
+    implementation(projects.platform.incomingcall)
+    implementation(projects.platform.push)
+    implementation(projects.platform.telecom)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -168,6 +188,8 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.annotation)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.hilt.work)
     implementation(libs.hilt.android)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)

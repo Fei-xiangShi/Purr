@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "322689116790",
+    "project_id": "purr-92f08",
+    "storage_bucket": "purr-92f08.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:322689116790:android:c6d97faf1c6f24b309cd57",
+        "android_client_info": {
+          "package_name": "life.fxs.purr"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCkScc5LI2HhWDYKBw9Oq-2bip8LxFQeNY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
