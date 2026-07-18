@@ -2,9 +2,12 @@ package life.fxs.purr.data.call.runtime
 
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import life.fxs.purr.core.common.PurrLogger
 import life.fxs.purr.core.media.audio.AudioRouteController
 import life.fxs.purr.core.media.audio.CallAudioSessionController
 import life.fxs.purr.core.media.audio.isReady
@@ -20,6 +23,7 @@ class CallRuntimeControllerImpl @Inject constructor(
     private val callAudioSessionController: CallAudioSessionController,
     private val callServiceController: CallServiceController,
     private val systemCallController: SystemCallController,
+    private val logger: PurrLogger,
 ) : CallRuntimeController {
     override val mediaEvents: Flow<MediaCallEvent> = mediaCallPort.events
     private val lifecycleMutex = Mutex()
@@ -46,21 +50,30 @@ class CallRuntimeControllerImpl @Inject constructor(
         try {
             // Start the foreground service while the user-initiated call is still eligible
             // under Android's while-in-use/background-start rules.
-            callServiceController.startForegroundCall(command.callId, command.pairId)
-            systemCallController.startCall(
-                SystemCallDescriptor(
-                    callId = command.callId,
-                    pairId = command.pairId,
-                    remoteDisplayName = command.remoteDisplayName,
-                    direction = command.direction,
-                ),
-            )
-            systemCallController.activateCall(command.callId)
-            callAudioSessionController.activate()
-            mediaCallPort.execute(command)
+            runStage(command, "service.start") {
+                callServiceController.startForegroundCall(command.callId, command.pairId)
+            }
+            runStage(command, "telecom.start") {
+                systemCallController.startCall(
+                    SystemCallDescriptor(
+                        callId = command.callId,
+                        pairId = command.pairId,
+                        remoteDisplayName = command.remoteDisplayName,
+                        direction = command.direction,
+                    ),
+                )
+            }
+            runStage(command, "telecom.activate") {
+                systemCallController.activateCall(command.callId)
+            }
+            runStage(command, "audio.activate") { callAudioSessionController.activate() }
+            runStage(command, "livekit.connect") { mediaCallPort.execute(command) }
+            command.terminationSignal.throwIfRequested()
         } catch (throwable: Throwable) {
-            releaseResourcesLocked()?.let(throwable::addSuppressed)
-            activeCallId = null
+            withContext(NonCancellable) {
+                releaseResourcesLocked()?.let(throwable::addSuppressed)
+                activeCallId = null
+            }
             throw throwable
         }
     }
@@ -118,6 +131,39 @@ class CallRuntimeControllerImpl @Inject constructor(
             }
         }
         return failure
+    }
+
+    private suspend fun <T> runStage(
+        command: MediaCallCommand.Connect,
+        stage: String,
+        block: suspend () -> T,
+    ): T {
+        val startedAt = System.nanoTime()
+        logger.d(LOG_TAG, "callId=${command.callId} phase=$stage event=begin")
+        return try {
+            command.terminationSignal.runStage(block).also {
+                logger.d(
+                    LOG_TAG,
+                    "callId=${command.callId} phase=$stage event=end elapsedMs=${elapsedMillis(startedAt)}",
+                )
+            }
+        } catch (throwable: Throwable) {
+            val event = if (throwable is CallTerminationException) "cancel" else "error"
+            val message =
+                "callId=${command.callId} phase=$stage event=$event elapsedMs=${elapsedMillis(startedAt)}"
+            if (throwable is CallTerminationException) {
+                logger.d(LOG_TAG, message)
+            } else {
+                logger.e(LOG_TAG, throwable, message)
+            }
+            throw throwable
+        }
+    }
+
+    private fun elapsedMillis(startedAt: Long): Long = (System.nanoTime() - startedAt) / 1_000_000L
+
+    private companion object {
+        const val LOG_TAG = "CallRuntime"
     }
 
     override suspend fun selectAudioRoute(route: AudioRoute) = lifecycleMutex.withLock {

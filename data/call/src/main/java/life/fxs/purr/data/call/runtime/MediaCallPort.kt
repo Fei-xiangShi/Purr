@@ -1,7 +1,49 @@
 package life.fxs.purr.data.call.runtime
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.selects.select
 import life.fxs.purr.core.model.CallDirection
+
+class CallTerminationSignal {
+    private val requested = CompletableDeferred<Unit>()
+
+    val isRequested: Boolean
+        get() = requested.isCompleted
+
+    fun request() {
+        requested.complete(Unit)
+    }
+
+    fun throwIfRequested() {
+        if (isRequested) throw CallTerminationException()
+    }
+
+    suspend fun <T> runStage(block: suspend () -> T): T = coroutineScope {
+        throwIfRequested()
+        val stage = async(start = CoroutineStart.DEFAULT) { block() }
+        select {
+            stage.onAwait { it }
+            requested.onAwait {
+                stage.cancel(CallTerminationException())
+                try {
+                    stage.await()
+                } catch (_: CancellationException) {
+                    // The stage acknowledged cancellation.
+                }
+                // A provider may suppress cancellation while finishing synchronous cleanup.
+                // Termination still wins once that cleanup returns.
+                throw CallTerminationException()
+            }
+        }
+    }
+}
+
+internal class CallTerminationException : CancellationException("Call termination requested")
 
 /**
  * Transport-neutral commands understood by the process-local media runtime.
@@ -20,6 +62,7 @@ sealed interface MediaCallCommand {
         val connection: CallMediaConnection,
         val remoteDisplayName: String = "Purr",
         val direction: CallDirection = CallDirection.Outgoing,
+        internal val terminationSignal: CallTerminationSignal = CallTerminationSignal(),
     ) : MediaCallCommand
 
     data class Disconnect(

@@ -7,8 +7,10 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 import kotlinx.serialization.json.Json
+import android.util.Log
 import life.fxs.purr.BuildConfig
 import life.fxs.purr.config.AppConfig
+import life.fxs.purr.core.common.PurrLogger
 import life.fxs.purr.core.network.api.PurrAuthApi
 import life.fxs.purr.core.network.api.PurrAccountApi
 import life.fxs.purr.core.network.api.PurrCallApi
@@ -28,6 +30,18 @@ import retrofit2.Retrofit
 @Module
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
+    @Provides
+    @Singleton
+    fun providePurrLogger(): PurrLogger = object : PurrLogger {
+        override fun d(tag: String, message: String) {
+            Log.d(tag, message)
+        }
+
+        override fun e(tag: String, throwable: Throwable?, message: String) {
+            Log.e(tag, message, throwable)
+        }
+    }
+
     @Provides
     @Singleton
     fun provideJson(): Json = Json {

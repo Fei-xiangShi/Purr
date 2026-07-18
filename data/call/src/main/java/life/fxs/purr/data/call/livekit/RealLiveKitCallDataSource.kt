@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import life.fxs.purr.core.common.ApplicationScope
+import life.fxs.purr.core.common.PurrLogger
 import life.fxs.purr.data.call.audio.MutableCallAudioLevelProvider
 import life.fxs.purr.data.call.runtime.MediaCallCommand
 import life.fxs.purr.data.call.runtime.MediaCallEvent
@@ -32,6 +33,7 @@ class RealLiveKitCallDataSource @Inject constructor(
     private val roomFactory: LiveKitRoomFactory,
     private val roomStateProvider: MutableCallRoomStateProvider,
     private val audioLevelProvider: MutableCallAudioLevelProvider,
+    private val logger: PurrLogger,
     @ApplicationScope private val applicationScope: CoroutineScope,
 ) : LiveKitCallDataSource {
     private val scope = applicationScope
@@ -91,6 +93,7 @@ class RealLiveKitCallDataSource @Inject constructor(
                     video = false,
                 ),
             )
+            command.terminationSignal.throwIfRequested()
 
             check(isCurrent(createdRoom, generation)) {
                 "LiveKit call session was superseded while connecting"
@@ -98,6 +101,7 @@ class RealLiveKitCallDataSource @Inject constructor(
 
             val microphoneEnabled = createdRoom.localParticipant.setMicrophoneEnabled(true)
             check(microphoneEnabled) { "Unable to publish microphone track" }
+            command.terminationSignal.throwIfRequested()
             attachLocalAudioLevel(createdRoom)
             attachRemoteAudioLevel(createdRoom)
 
@@ -410,14 +414,30 @@ class RealLiveKitCallDataSource @Inject constructor(
         detachLocalAudioLevel()
         detachRemoteAudioLevel()
         val activeRoom = room
+        val disconnectStartedAt = System.nanoTime()
+        logger.d(LOG_TAG, "phase=livekit.disconnect event=begin")
         try {
             activeRoom?.disconnect()
+            logger.d(LOG_TAG, "phase=livekit.disconnect event=end elapsedMs=${elapsedMillis(disconnectStartedAt)}")
         } catch (throwable: Throwable) {
+            logger.e(
+                LOG_TAG,
+                throwable,
+                "phase=livekit.disconnect event=error elapsedMs=${elapsedMillis(disconnectStartedAt)}",
+            )
             failure?.addSuppressed(throwable) ?: run { failure = throwable }
         }
+        val releaseStartedAt = System.nanoTime()
+        logger.d(LOG_TAG, "phase=livekit.release event=begin")
         try {
             activeRoom?.release()
+            logger.d(LOG_TAG, "phase=livekit.release event=end elapsedMs=${elapsedMillis(releaseStartedAt)}")
         } catch (throwable: Throwable) {
+            logger.e(
+                LOG_TAG,
+                throwable,
+                "phase=livekit.release event=error elapsedMs=${elapsedMillis(releaseStartedAt)}",
+            )
             failure?.addSuppressed(throwable) ?: run { failure = throwable }
         }
         room = null
@@ -430,7 +450,10 @@ class RealLiveKitCallDataSource @Inject constructor(
         val generation: Long,
     )
 
+    private fun elapsedMillis(startedAt: Long): Long = (System.nanoTime() - startedAt) / 1_000_000L
+
     private companion object {
+        const val LOG_TAG = "CallLiveKit"
         const val EVENT_BUFFER_SIZE = 64
         const val MAX_TERMINATED_CALL_IDS = 128
     }

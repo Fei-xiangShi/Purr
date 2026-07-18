@@ -2,7 +2,10 @@ package life.fxs.purr.data.call.repository
 
 import javax.inject.Inject
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import life.fxs.purr.core.common.PurrLogger
 import life.fxs.purr.core.network.api.PurrCallApi
 import life.fxs.purr.core.network.model.SessionRequestDto
 import life.fxs.purr.data.call.mapper.toCallTiming
@@ -22,7 +25,9 @@ internal class CallSessionPreparationCoordinator @Inject constructor(
     private val api: PurrCallApi,
     private val callStatusRemoteDataSource: CallStatusRemoteDataSource,
     private val callUiSnapshotAssembler: CallUiSnapshotAssembler,
+    private val logger: PurrLogger,
 ) {
+    internal var compensationTimeoutMillis: Long = DEFAULT_COMPENSATION_TIMEOUT_MILLIS
     suspend fun prepare(params: PrepareCallParams): PreparedCallSession {
         var ownedCallId: String? = null
         try {
@@ -73,8 +78,36 @@ internal class CallSessionPreparationCoordinator @Inject constructor(
 
     private suspend fun compensateOwnedCall(callId: String) {
         withContext(NonCancellable) {
-            runCatching { api.endCall(callId) }
+            val startedAt = System.nanoTime()
+            try {
+                withTimeout(compensationTimeoutMillis) { api.endCall(callId) }
+                logger.d(
+                    LOG_TAG,
+                    "callId=$callId phase=prepare.compensation event=end elapsedMs=${elapsedMillis(startedAt)}",
+                )
+            } catch (timeout: TimeoutCancellationException) {
+                logger.e(
+                    LOG_TAG,
+                    timeout,
+                    "callId=$callId phase=prepare.compensation event=timeout " +
+                        "elapsedMs=${elapsedMillis(startedAt)} reconciliation=server-status",
+                )
+            } catch (throwable: Throwable) {
+                logger.e(
+                    LOG_TAG,
+                    throwable,
+                    "callId=$callId phase=prepare.compensation event=error " +
+                        "elapsedMs=${elapsedMillis(startedAt)} reconciliation=server-status",
+                )
+            }
         }
+    }
+
+    private fun elapsedMillis(startedAt: Long): Long = (System.nanoTime() - startedAt) / 1_000_000L
+
+    private companion object {
+        const val LOG_TAG = "CallLifecycle"
+        const val DEFAULT_COMPENSATION_TIMEOUT_MILLIS = 10_000L
     }
 }
 

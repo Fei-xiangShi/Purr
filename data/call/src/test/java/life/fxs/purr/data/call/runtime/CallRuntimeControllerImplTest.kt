@@ -6,9 +6,14 @@ import io.mockk.coVerify
 import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.runTest
+import life.fxs.purr.core.common.NoOpPurrLogger
 import life.fxs.purr.core.media.audio.AudioRouteController
 import life.fxs.purr.core.media.audio.CallAudioSessionController
 import life.fxs.purr.core.media.audio.CallAudioSessionState
@@ -38,7 +43,7 @@ class CallRuntimeControllerImplTest {
             systemCallController.startCall(any())
             systemCallController.activateCall("call-1")
             callAudioSessionController.activate()
-            mediaCallPort.execute(connectCommand())
+            mediaCallPort.execute(any<MediaCallCommand.Connect>())
         }
     }
 
@@ -82,7 +87,34 @@ class CallRuntimeControllerImplTest {
         coVerify(exactly = 1) { systemCallController.startCall(any()) }
         coVerify(exactly = 1) { systemCallController.activateCall("call-1") }
         coVerify(exactly = 1) { callAudioSessionController.activate() }
-        coVerify(exactly = 1) { mediaCallPort.execute(connectCommand()) }
+        coVerify(exactly = 1) { mediaCallPort.execute(any<MediaCallCommand.Connect>()) }
+    }
+
+    @Test
+    fun `termination waits for cancellation-suppressing stage cleanup and does not continue setup`() = runTest {
+        val runtime = runtime()
+        val signal = CallTerminationSignal()
+        val serviceStarted = CompletableDeferred<Unit>()
+        val releaseServiceStart = CompletableDeferred<Unit>()
+        coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } coAnswers {
+            serviceStarted.complete(Unit)
+            withContext(NonCancellable) { releaseServiceStart.await() }
+        }
+        coEvery { callAudioSessionController.release() } returns Unit
+        coEvery { callServiceController.stopForegroundCall("call-1") } returns Unit
+
+        val connect = async { runCatching { runtime.execute(connectCommand(signal)) } }
+        serviceStarted.await()
+        signal.request()
+        assertThat(connect.isCompleted).isFalse()
+
+        releaseServiceStart.complete(Unit)
+        val failure = connect.await().exceptionOrNull()
+
+        assertThat(failure).isInstanceOf(CallTerminationException::class.java)
+        coVerify(exactly = 0) { systemCallController.startCall(any()) }
+        coVerify(exactly = 1) { callAudioSessionController.release() }
+        coVerify(exactly = 1) { callServiceController.stopForegroundCall("call-1") }
     }
 
     @Test
@@ -117,8 +149,9 @@ class CallRuntimeControllerImplTest {
 
         val result = runCatching { runtime.execute(connectCommand()) }
 
-        assertThat(result.exceptionOrNull()).isSameInstanceAs(connectFailure)
-        assertThat(connectFailure.suppressed.single()).isSameInstanceAs(cleanupFailure)
+        assertThat(result.exceptionOrNull()).isInstanceOf(IllegalStateException::class.java)
+        assertThat(result.exceptionOrNull()?.message).isEqualTo(connectFailure.message)
+        assertThat(result.exceptionOrNull()?.suppressed?.single()).isSameInstanceAs(cleanupFailure)
         coVerify(exactly = 1) { callServiceController.stopForegroundCall("call-1") }
     }
 
@@ -203,7 +236,7 @@ class CallRuntimeControllerImplTest {
         val runtime = runtime()
         coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } returns Unit
         coEvery { callAudioSessionController.activate() } returns Unit
-        coEvery { mediaCallPort.execute(connectCommand()) } returns Unit
+        coEvery { mediaCallPort.execute(any<MediaCallCommand.Connect>()) } returns Unit
         runtime.execute(connectCommand())
         return runtime
     }
@@ -223,10 +256,12 @@ class CallRuntimeControllerImplTest {
             callAudioSessionController = callAudioSessionController,
             callServiceController = callServiceController,
             systemCallController = systemCallController,
+            logger = NoOpPurrLogger,
         )
     }
 
     private fun connectCommand(
+        terminationSignal: CallTerminationSignal = CallTerminationSignal(),
         direction: CallDirection = CallDirection.Outgoing,
         remoteDisplayName: String = "Purr",
     ) = MediaCallCommand.Connect(
@@ -239,5 +274,6 @@ class CallRuntimeControllerImplTest {
         ),
         remoteDisplayName = remoteDisplayName,
         direction = direction,
+        terminationSignal = terminationSignal,
     )
 }

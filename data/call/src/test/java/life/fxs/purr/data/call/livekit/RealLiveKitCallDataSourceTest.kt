@@ -31,6 +31,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import life.fxs.purr.core.common.NoOpPurrLogger
 import life.fxs.purr.data.call.audio.MutableCallAudioLevelProvider
 import life.fxs.purr.data.call.runtime.CallMediaConnection
 import life.fxs.purr.data.call.runtime.MediaCallCommand
@@ -282,6 +283,7 @@ class RealLiveKitCallDataSourceTest {
         roomFactory = roomFactory,
         roomStateProvider = roomStateProvider,
         audioLevelProvider = audioLevelProvider,
+        logger = NoOpPurrLogger,
         applicationScope = applicationScope,
     )
 
