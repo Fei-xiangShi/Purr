@@ -14,6 +14,7 @@ data class HomeState(
     val activeCallPairId: String? = null,
     val self: SelfProfile? = null,
     val partner: PairedPartner? = null,
+    val partnerPresenceOnline: Boolean? = null,
     val isCallable: Boolean = false,
     val lastSessionSummary: CallSessionSummary? = null,
     val isLoading: Boolean = false,

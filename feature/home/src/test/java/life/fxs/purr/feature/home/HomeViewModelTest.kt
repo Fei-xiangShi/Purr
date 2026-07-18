@@ -66,20 +66,30 @@ class HomeViewModelTest {
     }
 
     @Test
-    fun `realtime presence overrides stale REST presence`() = runTest(dispatcher) {
+    fun `paired partner is callable for online offline and unknown presence`() = runTest(dispatcher) {
         withViewModel { viewModel ->
             runCurrent()
 
-            realtimeState.value = RealtimeState(isConnected = true, partnerOnline = true)
-            runCurrent()
+            listOf(true, false, null).forEach { partnerOnline ->
+                realtimeState.value = RealtimeState(
+                    isConnected = partnerOnline != null,
+                    partnerOnline = partnerOnline,
+                )
+                runCurrent()
 
-            assertThat(viewModel.uiState.value.partner?.isOnline).isTrue()
-            assertThat(viewModel.uiState.value.isCallable).isTrue()
+                assertThat(viewModel.uiState.value.partner?.isOnline)
+                    .isEqualTo(partnerOnline == true)
+                assertThat(viewModel.uiState.value.partnerPresenceOnline)
+                    .isEqualTo(partnerOnline)
+                assertThat(viewModel.uiState.value.isCallable).isTrue()
+                assertThat(viewModel.uiState.value.partner?.isCallable).isTrue()
+            }
         }
     }
 
     @Test
-    fun `active call remains available when partner presence is offline`() = runTest(dispatcher) {
+    fun `active call is resumed when partner presence is offline`() = runTest(dispatcher) {
+        realtimeState.value = RealtimeState(isConnected = true, partnerOnline = false)
         callState.value = callSession(CallConnectionState.Connected, pairId = "active-pair")
         withViewModel { viewModel ->
             runCurrent()
@@ -98,7 +108,7 @@ class HomeViewModelTest {
     }
 
     @Test
-    fun `all non terminal call states expose the active call`() = runTest(dispatcher) {
+    fun `every ongoing call state blocks new call admission`() = runTest(dispatcher) {
         withViewModel { viewModel ->
             runCurrent()
 
@@ -114,38 +124,54 @@ class HomeViewModelTest {
 
                 assertThat(viewModel.uiState.value.hasActiveCall).isTrue()
                 assertThat(viewModel.uiState.value.activeCallPairId).isEqualTo("pair-1")
+                assertThat(viewModel.uiState.value.isCallable).isFalse()
+                assertThat(viewModel.uiState.value.partner?.isCallable).isFalse()
             }
         }
     }
 
     @Test
-    fun `terminal call restores start call behavior when partner is online`() = runTest(dispatcher) {
-        realtimeState.value = RealtimeState(isConnected = true, partnerOnline = true)
-        callState.value = callSession(CallConnectionState.Disconnected, pairId = "ended-pair")
+    fun `every terminal call state allows a new call regardless of presence`() = runTest(dispatcher) {
         withViewModel { viewModel ->
             runCurrent()
-            val effect = async { viewModel.effects.first() }
-            runCurrent()
 
-            assertThat(viewModel.uiState.value.hasActiveCall).isFalse()
-            assertThat(viewModel.uiState.value.activeCallPairId).isNull()
+            listOf(
+                CallConnectionState.Disconnected to true,
+                CallConnectionState.Failed("ended") to false,
+            ).forEach { (connectionState, partnerOnline) ->
+                realtimeState.value = RealtimeState(
+                    isConnected = true,
+                    partnerOnline = partnerOnline,
+                )
+                callState.value = callSession(connectionState, pairId = "ended-pair")
+                runCurrent()
+                val effect = async { viewModel.effects.first() }
+                runCurrent()
 
-            viewModel.onIntent(HomeIntent.StartCall)
-            runCurrent()
+                assertThat(viewModel.uiState.value.hasActiveCall).isFalse()
+                assertThat(viewModel.uiState.value.activeCallPairId).isNull()
+                assertThat(viewModel.uiState.value.isCallable).isTrue()
 
-            assertThat(effect.await()).isEqualTo(HomeEffect.NavigateToCall("pair-1"))
+                viewModel.onIntent(HomeIntent.StartCall)
+                runCurrent()
+
+                assertThat(effect.await()).isEqualTo(HomeEffect.NavigateToCall("pair-1"))
+            }
         }
     }
 
     @Test
-    fun `terminal call cannot start a new call while partner is offline`() = runTest(dispatcher) {
-        callState.value = callSession(CallConnectionState.Failed("ended"))
+    fun `unpaired user cannot start a call`() = runTest(dispatcher) {
+        pairState.value = null
+        realtimeState.value = RealtimeState(isConnected = true, partnerOnline = true)
         withViewModel { viewModel ->
             runCurrent()
             val effect = async { viewModel.effects.first() }
             runCurrent()
 
-            assertThat(viewModel.uiState.value.hasActiveCall).isFalse()
+            assertThat(viewModel.uiState.value.pairId).isNull()
+            assertThat(viewModel.uiState.value.partner).isNull()
+            assertThat(viewModel.uiState.value.isCallable).isFalse()
 
             viewModel.onIntent(HomeIntent.StartCall)
             runCurrent()
@@ -154,6 +180,20 @@ class HomeViewModelTest {
         }
     }
 
+    @Test
+    fun `start call uses latest pair and call snapshots`() = runTest(dispatcher) {
+        withViewModel { viewModel ->
+            runCurrent()
+            val effect = async { viewModel.effects.first() }
+
+            pairState.value = null
+            callState.value = callSession(CallConnectionState.Connected, pairId = "active-pair")
+            viewModel.onIntent(HomeIntent.StartCall)
+            runCurrent()
+
+            assertThat(effect.await()).isEqualTo(HomeEffect.NavigateToCall("active-pair"))
+        }
+    }
     @Test
     fun `background recovery does not show blocking loading state`() = runTest(dispatcher) {
         val recoveryGate = CompletableDeferred<Unit>()
@@ -172,6 +212,34 @@ class HomeViewModelTest {
 
             assertThat(viewModel.uiState.value.isLoading).isFalse()
             recoveryGate.complete(Unit)
+            runCurrent()
+        }
+    }
+
+    @Test
+    fun `manual refresh does not block a known paired call`() = runTest(dispatcher) {
+        val refreshGate = CompletableDeferred<Unit>()
+        var refreshCount = 0
+        coEvery { refreshPairBondUseCase.invoke() } coAnswers {
+            refreshCount++
+            if (refreshCount > 1) refreshGate.await()
+            AppResult.Success(pairBond())
+        }
+        withViewModel { viewModel ->
+            runCurrent()
+            viewModel.onIntent(HomeIntent.RefreshStatus)
+            runCurrent()
+
+            assertThat(viewModel.uiState.value.isLoading).isTrue()
+            assertThat(viewModel.uiState.value.isCallable).isTrue()
+
+            val effect = async { viewModel.effects.first() }
+            runCurrent()
+            viewModel.onIntent(HomeIntent.StartCall)
+            runCurrent()
+
+            assertThat(effect.await()).isEqualTo(HomeEffect.NavigateToCall("pair-1"))
+            refreshGate.complete(Unit)
             runCurrent()
         }
     }

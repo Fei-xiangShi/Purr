@@ -85,15 +85,17 @@ class HomeViewModel @Inject constructor(
             }.collect { sources ->
                 val (session, bond, realtimePartnerOnline, activeCallPairId) = sources
                 val partnerOnline = realtimePartnerOnline ?: bond?.partner?.isOnline ?: false
+                val isCallable = bond?.pairId != null && activeCallPairId == null
                 _uiState.value = _uiState.value.copy(
                     self = session?.self,
                     pairId = bond?.pairId,
                     activeCallPairId = activeCallPairId,
                     partner = bond?.partner?.copy(
-                        isOnline = partnerOnline,
-                        isCallable = partnerOnline,
+                        isOnline = partnerOnline == true,
+                        isCallable = isCallable,
                     ),
-                    isCallable = partnerOnline,
+                    partnerPresenceOnline = realtimePartnerOnline,
+                    isCallable = isCallable,
                     isLoading = false,
                 )
             }
@@ -116,12 +118,13 @@ class HomeViewModel @Inject constructor(
 
             HomeIntent.StartCall -> {
                 viewModelScope.launch {
-                    val state = _uiState.value
-                    val activeCallPairId = state.activeCallPairId
-                    if (activeCallPairId != null) {
-                        _effects.emit(HomeEffect.NavigateToCall(activeCallPairId))
-                    } else if (state.isCallable && state.pairId != null) {
-                        _effects.emit(HomeEffect.NavigateToCall(state.pairId))
+                    // Re-read source snapshots so a just-emitted call state cannot be bypassed by stale UI state.
+                    val latestPair = pairBondState.value
+                    val latestActiveCallPairId = callSessionState.value.activePairIdOrNull()
+                    if (latestActiveCallPairId != null) {
+                        _effects.emit(HomeEffect.NavigateToCall(latestActiveCallPairId))
+                    } else if (latestPair?.pairId != null) {
+                        _effects.emit(HomeEffect.NavigateToCall(latestPair.pairId))
                     } else {
                         _effects.emit(HomeEffect.ShowError("当前无法发起通话"))
                     }

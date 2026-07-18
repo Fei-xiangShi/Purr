@@ -100,12 +100,15 @@ fun HomeScreen(
                 }
             }
             PurrStatusChip(
-                label = if (state.partner?.isOnline == true) "对方在线" else "对方离线",
-                detail = if (state.isCallable) "可通话" else "暂不可通话",
-                accentColor = if (state.partner?.isOnline == true) {
-                    MaterialTheme.colorScheme.tertiary
-                } else {
-                    MaterialTheme.colorScheme.secondary
+                label = when (state.partnerPresenceOnline) {
+                    true -> "对方在线"
+                    false -> "对方离线"
+                    null -> "对方状态未知"
+                },
+                detail = if (state.isCallable) "可发起通话" else "暂不可通话",
+                accentColor = when (state.partnerPresenceOnline) {
+                    true -> MaterialTheme.colorScheme.tertiary
+                    false, null -> MaterialTheme.colorScheme.secondary
                 },
             )
             if (state.isLoading) {
@@ -125,7 +128,7 @@ fun HomeScreen(
                     else -> "暂不可通话"
                 },
                 onClick = onStartCall,
-                enabled = state.hasActiveCall || (!state.isLoading && state.isCallable),
+                enabled = state.hasActiveCall || state.isCallable,
             )
             PurrSecondaryButton(
                 text = if (state.isLoading) "刷新中..." else "刷新状态",
