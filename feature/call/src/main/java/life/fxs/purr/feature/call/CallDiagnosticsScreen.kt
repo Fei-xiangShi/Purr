@@ -295,6 +295,7 @@ private fun CallScreenState.diagnosticsLabel(): String = when (this) {
     CallScreenState.Reconnecting -> "重连中"
     CallScreenState.Ending -> "结束中"
     CallScreenState.Ended -> "已结束"
+    CallScreenState.Failed -> "失败"
 }
 
 private fun NetworkTransport.toDisplayLabel(): String = when (this) {

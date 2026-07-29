@@ -17,7 +17,6 @@ import kotlinx.coroutines.withContext
 import life.fxs.purr.core.common.ApplicationScope
 import life.fxs.purr.domain.account.usecase.ObserveAuthSessionUseCase
 import life.fxs.purr.domain.account.usecase.ObservePairBondUseCase
-import life.fxs.purr.domain.call.model.CallConnectionState
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.repository.CallAudioLevelProvider
 import life.fxs.purr.domain.call.usecase.ObserveCallOverlayStyleUseCase
@@ -121,4 +120,4 @@ private data class OverlayBase(
 )
 
 private fun CallSession?.isOverlayActive(): Boolean =
-    this?.connectionState?.let { it.isOngoing && it != CallConnectionState.Terminating } == true
+    this?.connectionState?.isResumable == true

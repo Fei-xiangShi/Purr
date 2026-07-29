@@ -106,7 +106,7 @@ fun CallScreenRoute(
         viewModel.effects.collect { effect ->
             when (effect) {
                 CallEffect.OpenAppSettings -> context.openAppSettings()
-                is CallEffect.NavigateHome -> onCallEnded()
+                CallEffect.NavigateHome -> onCallEnded()
                 CallEffect.RequestMicrophonePermission -> {
                     if (
                         Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -165,11 +165,14 @@ fun CallScreen(
         CallScreenState.Waiting,
         CallScreenState.Active,
         CallScreenState.Reconnecting,
+        CallScreenState.Failed,
     )
-    val detail = if (state.screenState == CallScreenState.Active || callDurationSeconds > 0L) {
-        callDurationSeconds.toCallDuration()
-    } else {
-        state.screenState.connectionDetail()
+    val detail = when {
+        state.screenState == CallScreenState.Failed ->
+            state.failureMessage ?: "通话连接失败，请稍后重试"
+        state.screenState == CallScreenState.Active || callDurationSeconds > 0L ->
+            callDurationSeconds.toCallDuration()
+        else -> state.screenState.connectionDetail()
     }
 
     VoiceCallScaffold(
@@ -254,6 +257,7 @@ private fun CallScreenState.title(): String = when (this) {
     CallScreenState.Reconnecting -> "正在重新连接"
     CallScreenState.Ending -> "正在结束"
     CallScreenState.Ended -> "通话结束"
+    CallScreenState.Failed -> "通话失败"
 }
 
 private fun CallScreenState.connectionDetail(): String = when (this) {
@@ -263,6 +267,7 @@ private fun CallScreenState.connectionDetail(): String = when (this) {
     CallScreenState.Reconnecting -> "网络波动，请稍候"
     CallScreenState.Ending -> "正在释放通话资源"
     CallScreenState.Ended -> "感谢使用 Purr 语音"
+    CallScreenState.Failed -> "通话连接失败，请稍后重试"
     else -> "Purr 语音"
 }
 

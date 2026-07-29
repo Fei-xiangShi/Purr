@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -35,6 +37,7 @@ import life.fxs.purr.data.call.runtime.CallRuntimeController
 import life.fxs.purr.data.call.state.CallMediaEventReducer
 import life.fxs.purr.data.call.state.CallUiSnapshotAssembler
 import life.fxs.purr.domain.call.model.CallConnectionState
+import life.fxs.purr.domain.call.model.CallLifecycleState
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.PrepareCallParams
@@ -53,6 +56,7 @@ class CallRepositoryImpl @Inject internal constructor(
 ) : CallRepository {
     private val repositoryScope = applicationScope
     private val sessionState = MutableStateFlow<CallSession?>(null)
+    private val disconnectingCallIdState = MutableStateFlow<String?>(null)
     private val operationMutex = Mutex()
     private var mediaConnection: CallMediaConnection? = null
     private var mediaGeneration: Long? = null
@@ -138,6 +142,16 @@ class CallRepositoryImpl @Inject internal constructor(
     }
 
     override fun observeCallSession(): Flow<CallSession?> = sessionState.asStateFlow()
+
+    override fun observeCallLifecycle(): Flow<CallLifecycleState> = combine(
+        sessionState,
+        disconnectingCallIdState,
+    ) { session, disconnectingCallId ->
+        CallLifecycleState(
+            session = session,
+            disconnectingCallId = disconnectingCallId,
+        )
+    }.distinctUntilChanged()
 
     override suspend fun prepareCall(params: PrepareCallParams): AppResult<CallSession> {
         var immediateResult: AppResult<CallSession>? = null
@@ -391,6 +405,7 @@ class CallRepositoryImpl @Inject internal constructor(
                 generation = generation,
                 deferred = deferred,
             )
+            disconnectingCallIdState.value = session.callId
             deferred
         }
 
@@ -486,6 +501,9 @@ class CallRepositoryImpl @Inject internal constructor(
                         ),
                     )
                     logStage(session.callId, generation, "terminal.emit", "end")
+                }
+                if (disconnectingCallIdState.value == session.callId) {
+                    disconnectingCallIdState.value = null
                 }
             }
         }

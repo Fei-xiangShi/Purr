@@ -26,4 +26,24 @@ class CallConnectionStateTest {
         assertThat(CallConnectionState.Failed().isTerminal).isTrue()
         assertThat(CallConnectionState.Idle.isTerminal).isFalse()
     }
+
+    @Test
+    fun `terminating owns resources but cannot be resumed`() {
+        val resumable = listOf(
+            CallConnectionState.Preparing,
+            CallConnectionState.Connecting,
+            CallConnectionState.Connected,
+            CallConnectionState.Reconnecting,
+        )
+        val notResumable = listOf(
+            CallConnectionState.Idle,
+            CallConnectionState.Terminating,
+            CallConnectionState.Disconnected,
+            CallConnectionState.Failed(),
+        )
+
+        assertThat(resumable.all(CallConnectionState::isResumable)).isTrue()
+        assertThat(notResumable.any(CallConnectionState::isResumable)).isFalse()
+        assertThat(CallConnectionState.Terminating.isOngoing).isTrue()
+    }
 }

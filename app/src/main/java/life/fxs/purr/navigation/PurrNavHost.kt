@@ -85,8 +85,10 @@ fun PurrNavHost(
             }
             composable(HOME_ROUTE) {
                 HomeScreenRoute(
-                    onOpenCall = { pairId ->
-                        navController.navigate(callRoute(pairId, CallDirection.Outgoing)) {
+                    onOpenCall = { target ->
+                        navController.navigate(
+                            callRoute(target.pairId, target.direction, target.expectedCallId),
+                        ) {
                             launchSingleTop = true
                         }
                     },

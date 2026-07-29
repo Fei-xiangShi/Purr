@@ -15,6 +15,7 @@ enum class CallScreenState {
     Reconnecting,
     Ending,
     Ended,
+    Failed,
 }
 
 sealed interface CallIntent {
@@ -42,11 +43,12 @@ data class CallState(
     val recordingState: RecordingState = RecordingState.NotRecording,
     val isForegroundServiceActive: Boolean = false,
     val isLoading: Boolean = false,
+    val failureMessage: String? = null,
 )
 
 sealed interface CallEffect {
     data object RequestMicrophonePermission : CallEffect
     data object OpenAppSettings : CallEffect
-    data class NavigateHome(val callId: String) : CallEffect
+    data object NavigateHome : CallEffect
     data class ShowMessage(val message: String) : CallEffect
 }

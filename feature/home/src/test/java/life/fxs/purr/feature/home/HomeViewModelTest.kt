@@ -19,6 +19,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import life.fxs.purr.core.common.AppResult
+import life.fxs.purr.core.model.CallDirection
 import life.fxs.purr.core.model.PairBond
 import life.fxs.purr.core.model.PairedPartner
 import life.fxs.purr.core.model.SelfProfile
@@ -29,9 +30,10 @@ import life.fxs.purr.domain.account.usecase.ObservePairBondUseCase
 import life.fxs.purr.domain.account.usecase.ObserveRealtimeStateUseCase
 import life.fxs.purr.domain.account.usecase.RefreshPairBondUseCase
 import life.fxs.purr.domain.call.model.CallConnectionState
+import life.fxs.purr.domain.call.model.CallLifecycleState
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.ParticipantIdentity
-import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
+import life.fxs.purr.domain.call.usecase.ObserveCallLifecycleUseCase
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -42,13 +44,13 @@ class HomeViewModelTest {
     private val authState = MutableStateFlow<AuthSession?>(session())
     private val pairState = MutableStateFlow<PairBond?>(pairBond())
     private val realtimeState = MutableStateFlow(RealtimeState())
-    private val callState = MutableStateFlow<CallSession?>(null)
+    private val callLifecycleState = MutableStateFlow(CallLifecycleState())
 
     private val observeAuthSessionUseCase = mockk<ObserveAuthSessionUseCase>()
     private val observePairBondUseCase = mockk<ObservePairBondUseCase>()
     private val refreshPairBondUseCase = mockk<RefreshPairBondUseCase>()
     private val observeRealtimeStateUseCase = mockk<ObserveRealtimeStateUseCase>()
-    private val observeCallStateUseCase = mockk<ObserveCallStateUseCase>()
+    private val observeCallLifecycleUseCase = mockk<ObserveCallLifecycleUseCase>()
 
     @Before
     fun setUp() {
@@ -56,7 +58,7 @@ class HomeViewModelTest {
         every { observeAuthSessionUseCase.invoke() } returns authState
         every { observePairBondUseCase.invoke() } returns pairState
         every { observeRealtimeStateUseCase.invoke() } returns realtimeState
-        every { observeCallStateUseCase.invoke() } returns callState
+        every { observeCallLifecycleUseCase.invoke() } returns callLifecycleState
         coEvery { refreshPairBondUseCase.invoke() } returns AppResult.Success(pairBond())
     }
 
@@ -90,25 +92,45 @@ class HomeViewModelTest {
     @Test
     fun `active call is resumed when partner presence is offline`() = runTest(dispatcher) {
         realtimeState.value = RealtimeState(isConnected = true, partnerOnline = false)
-        callState.value = callSession(CallConnectionState.Connected, pairId = "active-pair")
+        callLifecycleState.value = CallLifecycleState(
+            session = callSession(
+                CallConnectionState.Connected,
+                pairId = "active-pair",
+                direction = CallDirection.Incoming,
+            ),
+        )
         withViewModel { viewModel ->
             runCurrent()
             val effect = async { viewModel.effects.first() }
             runCurrent()
 
             assertThat(viewModel.uiState.value.hasActiveCall).isTrue()
-            assertThat(viewModel.uiState.value.activeCallPairId).isEqualTo("active-pair")
+            assertThat(viewModel.uiState.value.activeCallTarget).isEqualTo(
+                HomeCallTarget(
+                    pairId = "active-pair",
+                    direction = CallDirection.Incoming,
+                    expectedCallId = "call-1",
+                ),
+            )
             assertThat(viewModel.uiState.value.isCallable).isFalse()
 
             viewModel.onIntent(HomeIntent.StartCall)
             runCurrent()
 
-            assertThat(effect.await()).isEqualTo(HomeEffect.NavigateToCall("active-pair"))
+            assertThat(effect.await()).isEqualTo(
+                HomeEffect.NavigateToCall(
+                    HomeCallTarget(
+                        pairId = "active-pair",
+                        direction = CallDirection.Incoming,
+                        expectedCallId = "call-1",
+                    ),
+                ),
+            )
         }
     }
 
     @Test
-    fun `every ongoing call state blocks new call admission`() = runTest(dispatcher) {
+    fun `every resumable call state exposes an exact navigation target`() = runTest(dispatcher) {
         withViewModel { viewModel ->
             runCurrent()
 
@@ -117,18 +139,62 @@ class HomeViewModelTest {
                 CallConnectionState.Connecting,
                 CallConnectionState.Connected,
                 CallConnectionState.Reconnecting,
-                CallConnectionState.Terminating,
             ).forEach { connectionState ->
-                callState.value = callSession(connectionState)
+                callLifecycleState.value = CallLifecycleState(session = callSession(connectionState))
                 runCurrent()
 
                 assertThat(viewModel.uiState.value.hasActiveCall).isTrue()
-                assertThat(viewModel.uiState.value.activeCallPairId).isEqualTo("pair-1")
+                assertThat(viewModel.uiState.value.activeCallTarget?.expectedCallId).isEqualTo("call-1")
                 assertThat(viewModel.uiState.value.isCallable).isFalse()
                 assertThat(viewModel.uiState.value.partner?.isCallable).isFalse()
             }
         }
     }
+
+    @Test
+    fun `terminating call is not resumable and keeps the primary action blocked`() = runTest(dispatcher) {
+        callLifecycleState.value = CallLifecycleState(
+            session = callSession(CallConnectionState.Terminating),
+            disconnectingCallId = "call-1",
+        )
+        withViewModel { viewModel ->
+            runCurrent()
+            val effect = async { viewModel.effects.first() }
+            runCurrent()
+
+            assertThat(viewModel.uiState.value.hasActiveCall).isFalse()
+            assertThat(viewModel.uiState.value.activeCallTarget).isNull()
+            assertThat(viewModel.uiState.value.isEndingCall).isTrue()
+            assertThat(viewModel.uiState.value.isCallable).isFalse()
+
+            viewModel.onIntent(HomeIntent.StartCall)
+            runCurrent()
+
+            assertThat(effect.await()).isEqualTo(HomeEffect.ShowError("上一通电话正在结束，请稍候"))
+        }
+    }
+
+    @Test
+    fun `local terminal state remains blocked while server end synchronization is pending`() =
+        runTest(dispatcher) {
+            callLifecycleState.value = CallLifecycleState(
+                session = callSession(CallConnectionState.Disconnected),
+                disconnectingCallId = "call-1",
+            )
+            withViewModel { viewModel ->
+                runCurrent()
+
+                assertThat(viewModel.uiState.value.hasActiveCall).isFalse()
+                assertThat(viewModel.uiState.value.isEndingCall).isTrue()
+                assertThat(viewModel.uiState.value.isCallable).isFalse()
+
+                callLifecycleState.value = callLifecycleState.value.copy(disconnectingCallId = null)
+                runCurrent()
+
+                assertThat(viewModel.uiState.value.isEndingCall).isFalse()
+                assertThat(viewModel.uiState.value.isCallable).isTrue()
+            }
+        }
 
     @Test
     fun `every terminal call state allows a new call regardless of presence`() = runTest(dispatcher) {
@@ -143,19 +209,23 @@ class HomeViewModelTest {
                     isConnected = true,
                     partnerOnline = partnerOnline,
                 )
-                callState.value = callSession(connectionState, pairId = "ended-pair")
+                callLifecycleState.value = CallLifecycleState(
+                    session = callSession(connectionState, pairId = "ended-pair"),
+                )
                 runCurrent()
                 val effect = async { viewModel.effects.first() }
                 runCurrent()
 
                 assertThat(viewModel.uiState.value.hasActiveCall).isFalse()
-                assertThat(viewModel.uiState.value.activeCallPairId).isNull()
+                assertThat(viewModel.uiState.value.activeCallTarget).isNull()
                 assertThat(viewModel.uiState.value.isCallable).isTrue()
 
                 viewModel.onIntent(HomeIntent.StartCall)
                 runCurrent()
 
-                assertThat(effect.await()).isEqualTo(HomeEffect.NavigateToCall("pair-1"))
+                assertThat(effect.await()).isEqualTo(
+                    HomeEffect.NavigateToCall(HomeCallTarget(pairId = "pair-1")),
+                )
             }
         }
     }
@@ -187,11 +257,17 @@ class HomeViewModelTest {
             val effect = async { viewModel.effects.first() }
 
             pairState.value = null
-            callState.value = callSession(CallConnectionState.Connected, pairId = "active-pair")
+            callLifecycleState.value = CallLifecycleState(
+                session = callSession(CallConnectionState.Connected, pairId = "active-pair"),
+            )
             viewModel.onIntent(HomeIntent.StartCall)
             runCurrent()
 
-            assertThat(effect.await()).isEqualTo(HomeEffect.NavigateToCall("active-pair"))
+            assertThat(effect.await()).isEqualTo(
+                HomeEffect.NavigateToCall(
+                    HomeCallTarget(pairId = "active-pair", expectedCallId = "call-1"),
+                ),
+            )
         }
     }
     @Test
@@ -238,7 +314,9 @@ class HomeViewModelTest {
             viewModel.onIntent(HomeIntent.StartCall)
             runCurrent()
 
-            assertThat(effect.await()).isEqualTo(HomeEffect.NavigateToCall("pair-1"))
+            assertThat(effect.await()).isEqualTo(
+                HomeEffect.NavigateToCall(HomeCallTarget(pairId = "pair-1")),
+            )
             refreshGate.complete(Unit)
             runCurrent()
         }
@@ -258,7 +336,7 @@ class HomeViewModelTest {
         observePairBondUseCase = observePairBondUseCase,
         refreshPairBondUseCase = refreshPairBondUseCase,
         observeRealtimeStateUseCase = observeRealtimeStateUseCase,
-        observeCallStateUseCase = observeCallStateUseCase,
+        observeCallLifecycleUseCase = observeCallLifecycleUseCase,
     )
 
     private companion object {
@@ -285,11 +363,13 @@ class HomeViewModelTest {
         fun callSession(
             connectionState: CallConnectionState,
             pairId: String = "pair-1",
+            direction: CallDirection = CallDirection.Outgoing,
         ) = CallSession(
             callId = "call-1",
             pairId = pairId,
             participantIdentity = ParticipantIdentity(local = "user-a", remote = "user-b"),
             roomName = "room-1",
+            direction = direction,
             connectionState = connectionState,
         )
     }

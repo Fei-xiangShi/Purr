@@ -22,6 +22,7 @@ import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.media.service.ForegroundCallServiceState
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.domain.call.model.CallSession
+import life.fxs.purr.domain.call.model.CallLifecycleState
 import life.fxs.purr.domain.call.model.PrepareCallParams
 import life.fxs.purr.domain.call.repository.CallRepository
 import life.fxs.purr.domain.call.usecase.DisconnectCallUseCase
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import life.fxs.purr.platform.incomingcall.CallNotificationAvatarLoader
 import org.junit.After
 import org.junit.Before
@@ -368,6 +370,9 @@ class CallForegroundServiceLifecycleRobolectricTest {
         val disconnectedCallIds = mutableListOf<String?>()
 
         override fun observeCallSession(): Flow<CallSession?> = session.asStateFlow()
+
+        override fun observeCallLifecycle(): Flow<CallLifecycleState> =
+            session.map { CallLifecycleState(session = it) }
 
         override suspend fun prepareCall(params: PrepareCallParams): AppResult<CallSession> =
             error("Not used by this lifecycle test")

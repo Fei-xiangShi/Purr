@@ -28,7 +28,7 @@ import life.fxs.purr.core.model.CallSessionSummary
 
 @Composable
 fun HomeScreenRoute(
-    onOpenCall: (String) -> Unit,
+    onOpenCall: (HomeCallTarget) -> Unit,
     onOpenCallHistory: () -> Unit,
     onOpenSettings: () -> Unit,
     partnerAvatarModifier: Modifier = Modifier,
@@ -40,7 +40,7 @@ fun HomeScreenRoute(
     LaunchedEffect(viewModel, context) {
         viewModel.effects.collect { effect ->
             when (effect) {
-                is HomeEffect.NavigateToCall -> onOpenCall(effect.pairId)
+                is HomeEffect.NavigateToCall -> onOpenCall(effect.target)
                 is HomeEffect.ShowError -> Toast.makeText(context, effect.message, Toast.LENGTH_SHORT).show()
             }
         }
@@ -105,7 +105,11 @@ fun HomeScreen(
                     false -> "对方离线"
                     null -> "对方状态未知"
                 },
-                detail = if (state.isCallable) "可发起通话" else "暂不可通话",
+                detail = when {
+                    state.isEndingCall -> "正在结束通话"
+                    state.isCallable -> "可发起通话"
+                    else -> "暂不可通话"
+                },
                 accentColor = when (state.partnerPresenceOnline) {
                     true -> MaterialTheme.colorScheme.tertiary
                     false, null -> MaterialTheme.colorScheme.secondary
@@ -124,11 +128,12 @@ fun HomeScreen(
             PurrPrimaryButton(
                 text = when {
                     state.hasActiveCall -> "回到通话"
+                    state.isEndingCall -> "正在结束通话"
                     state.isCallable -> "发起通话"
                     else -> "暂不可通话"
                 },
                 onClick = onStartCall,
-                enabled = state.hasActiveCall || state.isCallable,
+                enabled = !state.isEndingCall && (state.hasActiveCall || state.isCallable),
             )
             PurrSecondaryButton(
                 text = if (state.isLoading) "刷新中..." else "刷新状态",

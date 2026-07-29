@@ -25,6 +25,21 @@ sealed interface CallConnectionState {
             -> false
         }
 
+    /** A screen can attach to this session and continue presenting the same call. */
+    val isResumable: Boolean
+        get() = when (this) {
+            Preparing,
+            Connecting,
+            Connected,
+            Reconnecting,
+            -> true
+            Idle,
+            Terminating,
+            Disconnected,
+            is Failed,
+            -> false
+        }
+
     val isTerminal: Boolean
         get() = this == Disconnected || this is Failed
 }

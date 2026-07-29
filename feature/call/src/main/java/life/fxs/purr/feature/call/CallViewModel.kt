@@ -56,7 +56,7 @@ class CallViewModel @Inject constructor(
     private var connectJob: Job? = null
     private var endRequested: Boolean = false
     private var currentCallId: String? = null
-    private var navigatedCallId: String? = null
+    private var hasNavigatedHome: Boolean = false
     private val locallyEndedCallIds = mutableSetOf<String>()
 
     init {
@@ -107,13 +107,14 @@ class CallViewModel @Inject constructor(
         prepareJob?.cancel()
         connectJob?.cancel()
         endRequested = false
-        navigatedCallId = null
+        currentCallId = expectedCallId
+        hasNavigatedHome = false
         prepareJob = viewModelScope.launch {
             val existingSession = observeCallStateUseCase().first()
             if (
                 expectedCallId != null &&
                 existingSession?.callId == expectedCallId &&
-                existingSession.connectionState.isOngoing
+                existingSession.connectionState.isResumable
             ) {
                 currentCallId = existingSession.callId
                 updateState(existingSession)
@@ -124,7 +125,9 @@ class CallViewModel @Inject constructor(
             }
             _state.value = _state.value.copy(
                 screenState = CallScreenState.Dialing,
+                session = null,
                 isLoading = true,
+                failureMessage = null,
             )
             val params = PrepareCallParams(
                 pairId = pairId,
@@ -146,11 +149,13 @@ class CallViewModel @Inject constructor(
                     _effects.emit(CallEffect.RequestMicrophonePermission)
                 }
                 is AppResult.Failure -> {
+                    val message = result.error.toCallUserMessage(CALL_PREPARATION_FAILED_MESSAGE)
                     _state.value = _state.value.copy(
-                        screenState = CallScreenState.Idle,
+                        screenState = CallScreenState.Failed,
                         isLoading = false,
+                        failureMessage = message,
                     )
-                    emitError(result.error)
+                    _effects.emit(CallEffect.ShowMessage(message))
                 }
             }
         }
@@ -166,10 +171,12 @@ class CallViewModel @Inject constructor(
             )
             handleActionResult(
                 result = connectCallUseCase(),
-                onFailure = {
+                fallbackMessage = CALL_CONNECTION_FAILED_MESSAGE,
+                onFailure = { message ->
                     _state.value = _state.value.copy(
-                        screenState = CallScreenState.Ended,
+                        screenState = CallScreenState.Failed,
                         isLoading = false,
+                        failureMessage = message,
                     )
                 },
             )
@@ -201,31 +208,40 @@ class CallViewModel @Inject constructor(
         _state.value = _state.value.copy(
             screenState = CallScreenState.Ended,
             isLoading = false,
+            failureMessage = null,
         )
         viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
-            navigateHomeOnce(endedCallId)
-            when (val result = disconnectCallUseCase()) {
+            navigateHomeOnce()
+            when (val result = disconnectCallUseCase(endedCallId)) {
                 is AppResult.Success -> Unit
-                is AppResult.Failure -> emitError(result.error)
+                is AppResult.Failure -> emitError(
+                    result.error,
+                    fallbackMessage = CALL_END_FAILED_MESSAGE,
+                )
             }
         }
     }
 
     private suspend fun handleActionResult(
         result: AppResult<Unit>,
-        onFailure: (AppError) -> Unit = {},
+        fallbackMessage: String = CALL_ACTION_FAILED_MESSAGE,
+        onFailure: (String) -> Unit = {},
     ) {
         when (result) {
             is AppResult.Success -> Unit
             is AppResult.Failure -> {
-                onFailure(result.error)
-                emitError(result.error)
+                val message = result.error.toCallUserMessage(fallbackMessage)
+                onFailure(message)
+                _effects.emit(CallEffect.ShowMessage(message))
             }
         }
     }
 
-    private suspend fun emitError(error: AppError) {
-        _effects.emit(CallEffect.ShowMessage(error.toUserMessage()))
+    private suspend fun emitError(
+        error: AppError,
+        fallbackMessage: String = CALL_ACTION_FAILED_MESSAGE,
+    ) {
+        _effects.emit(CallEffect.ShowMessage(error.toCallUserMessage(fallbackMessage)))
     }
 
     private suspend fun onSessionChanged(session: CallSession) {
@@ -243,14 +259,15 @@ class CallViewModel @Inject constructor(
         // A newly-created screen must not navigate away because of that stale snapshot.
         if (session.callId != currentCallId) return
         updateState(session)
-        if (!endRequested) navigateHomeOnce(session.callId)
+        if (!endRequested && session.connectionState == CallConnectionState.Disconnected) {
+            navigateHomeOnce()
+        }
     }
 
-    private suspend fun navigateHomeOnce(callId: String?) {
-        callId ?: return
-        if (navigatedCallId == callId) return
-        navigatedCallId = callId
-        _effects.emit(CallEffect.NavigateHome(callId))
+    private suspend fun navigateHomeOnce() {
+        if (hasNavigatedHome) return
+        hasNavigatedHome = true
+        _effects.emit(CallEffect.NavigateHome)
     }
 
     private fun updateState(session: CallSession) {
@@ -268,8 +285,26 @@ class CallViewModel @Inject constructor(
             recordingState = session.recordingState,
             isForegroundServiceActive = session.uiSnapshot.isForegroundServiceActive,
             isLoading = screenState == CallScreenState.Ending,
+            failureMessage = if (screenState == CallScreenState.Failed) {
+                _state.value.failureMessage ?: CALL_CONNECTION_FAILED_MESSAGE
+            } else {
+                null
+            },
         )
     }
+
+    private companion object {
+        const val CALL_PREPARATION_FAILED_MESSAGE = "通话准备失败，请稍后重试"
+        const val CALL_CONNECTION_FAILED_MESSAGE = "通话连接失败，请稍后重试"
+        const val CALL_END_FAILED_MESSAGE = "通话已结束，但状态同步失败"
+        const val CALL_ACTION_FAILED_MESSAGE = "通话操作失败，请稍后重试"
+    }
+}
+
+private fun AppError.toCallUserMessage(fallbackMessage: String): String = when (this) {
+    is AppError.Network -> "网络连接失败，请检查网络后重试"
+    is AppError.Unexpected -> fallbackMessage
+    else -> toUserMessage().takeIf(String::isNotBlank) ?: fallbackMessage
 }
 
 private fun CallSession.toScreenState(): CallScreenState = when (connectionState) {
@@ -284,5 +319,5 @@ private fun CallSession.toScreenState(): CallScreenState = when (connectionState
     CallConnectionState.Reconnecting -> CallScreenState.Reconnecting
     CallConnectionState.Terminating -> CallScreenState.Ending
     CallConnectionState.Disconnected -> CallScreenState.Ended
-    is CallConnectionState.Failed -> CallScreenState.Ended
+    is CallConnectionState.Failed -> CallScreenState.Failed
 }

@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.core.model.CallDirection
@@ -61,7 +62,7 @@ class CallViewModelTest {
         coEvery { connectCallUseCase.invoke() } returns AppResult.Success(Unit)
         coEvery { toggleMuteUseCase.invoke(any()) } returns AppResult.Success(Unit)
         coEvery { selectAudioRouteUseCase.invoke(any()) } returns AppResult.Success(Unit)
-        coEvery { disconnectCallUseCase.invoke() } returns AppResult.Success(Unit)
+        coEvery { disconnectCallUseCase.invoke(any()) } returns AppResult.Success(Unit)
     }
 
     @After
@@ -223,7 +224,7 @@ class CallViewModelTest {
 
         coVerify(exactly = 1) { prepareCallSessionUseCase.invoke(any()) }
         coVerify(exactly = 0) { connectCallUseCase.invoke() }
-        coVerify(exactly = 1) { disconnectCallUseCase.invoke() }
+        coVerify(exactly = 1) { disconnectCallUseCase.invoke("call-1") }
         assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
     }
 
@@ -249,7 +250,7 @@ class CallViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 0) { connectCallUseCase.invoke() }
-        coVerify(exactly = 1) { disconnectCallUseCase.invoke() }
+        coVerify(exactly = 1) { disconnectCallUseCase.invoke(null) }
         assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
         assertThat(viewModel.state.value.isLoading).isFalse()
     }
@@ -272,7 +273,7 @@ class CallViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) { connectCallUseCase.invoke() }
-        coVerify(exactly = 1) { disconnectCallUseCase.invoke() }
+        coVerify(exactly = 1) { disconnectCallUseCase.invoke("call-1") }
         assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
         assertThat(viewModel.state.value.isLoading).isFalse()
     }
@@ -296,7 +297,7 @@ class CallViewModelTest {
         viewModel.effects.test {
             viewModel.onIntent(CallIntent.EndCall)
 
-            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome("call-1"))
+            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome)
             assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
             assertThat(viewModel.state.value.isLoading).isFalse()
 
@@ -330,8 +331,8 @@ class CallViewModelTest {
             localAudioState = LocalAudioState.Enabled,
             recordingState = RecordingState.Recording,
         )
-        coEvery { disconnectCallUseCase.invoke() } returns
-            AppResult.Failure(life.fxs.purr.core.common.AppError.Network("disconnect failed"))
+        coEvery { disconnectCallUseCase.invoke("call-1") } returns
+            AppResult.Failure(AppError.Network("disconnect failed"))
         val viewModel = createViewModel()
         viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-1"))
         runCurrent()
@@ -339,7 +340,7 @@ class CallViewModelTest {
         viewModel.effects.test {
             viewModel.onIntent(CallIntent.EndCall)
 
-            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome("call-1"))
+            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome)
             assertThat(awaitItem()).isInstanceOf(CallEffect.ShowMessage::class.java)
             assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
 
@@ -378,7 +379,7 @@ class CallViewModelTest {
 
         viewModel.effects.test {
             viewModel.onIntent(CallIntent.EndCall)
-            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome("call-old"))
+            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome)
 
             viewModel.onIntent(
                 CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-new"),
@@ -420,8 +421,104 @@ class CallViewModelTest {
             )
             runCurrent()
 
-            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome("call-1"))
+            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome)
             assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `incoming preparation failure uses deterministic message and exits explicitly`() =
+        runTest(dispatcher) {
+            coEvery { prepareIncomingCallUseCase.invoke(any()) } returns
+                AppResult.Failure(AppError.Unexpected(IllegalStateException()))
+            val viewModel = createViewModel()
+
+            viewModel.effects.test {
+                viewModel.onIntent(
+                    CallIntent.ConnectCall(
+                        pairId = "pair-1",
+                        direction = CallDirection.Incoming,
+                        expectedCallId = "call-1",
+                    ),
+                )
+                runCurrent()
+
+                assertThat(awaitItem()).isEqualTo(
+                    CallEffect.ShowMessage("通话准备失败，请稍后重试"),
+                )
+                assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Failed)
+                assertThat(viewModel.state.value.failureMessage)
+                    .isEqualTo("通话准备失败，请稍后重试")
+                expectNoEvents()
+
+                viewModel.onIntent(CallIntent.EndCall)
+                assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome)
+                coVerify(exactly = 1) { disconnectCallUseCase.invoke("call-1") }
+                cancelAndIgnoreRemainingEvents()
+            }
+        }
+
+    @Test
+    fun `connection failure stays visible instead of navigating home`() = runTest(dispatcher) {
+        coEvery { prepareIncomingCallUseCase.invoke(any()) } returns AppResult.Success(
+            sampleSession(
+                connectionState = CallConnectionState.Preparing,
+                localAudioState = LocalAudioState.Disabled,
+                recordingState = RecordingState.NotRecording,
+            ),
+        )
+        coEvery { connectCallUseCase.invoke() } returns
+            AppResult.Failure(AppError.Network("Unable to parse TLS packet header"))
+        val viewModel = createViewModel()
+
+        viewModel.effects.test {
+            viewModel.onIntent(
+                CallIntent.ConnectCall(
+                    pairId = "pair-1",
+                    direction = CallDirection.Incoming,
+                    expectedCallId = "call-1",
+                ),
+            )
+            assertThat(awaitItem()).isEqualTo(CallEffect.RequestMicrophonePermission)
+
+            viewModel.onIntent(CallIntent.MicrophonePermissionResult(granted = true))
+            runCurrent()
+
+            assertThat(awaitItem()).isEqualTo(
+                CallEffect.ShowMessage("网络连接失败，请检查网络后重试"),
+            )
+            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Failed)
+            assertThat(viewModel.state.value.failureMessage)
+                .isEqualTo("网络连接失败，请检查网络后重试")
+            expectNoEvents()
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `repository failed state does not auto navigate`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.Recording,
+        )
+        val viewModel = createViewModel()
+        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-1"))
+        runCurrent()
+
+        viewModel.effects.test {
+            sessionFlow.value = sampleSession(
+                connectionState = CallConnectionState.Failed(),
+                localAudioState = LocalAudioState.Disabled,
+                recordingState = RecordingState.NotRecording,
+            )
+            runCurrent()
+
+            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Failed)
+            assertThat(viewModel.state.value.failureMessage)
+                .isEqualTo("通话连接失败，请稍后重试")
+            expectNoEvents()
             cancelAndIgnoreRemainingEvents()
         }
     }
