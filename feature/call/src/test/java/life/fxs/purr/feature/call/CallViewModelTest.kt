@@ -141,7 +141,7 @@ class CallViewModelTest {
     }
 
     @Test
-    fun `reentering an active call attaches without preparing or connecting again`() = runTest(dispatcher) {
+    fun `reentering an identified active call attaches without preparing or connecting again`() = runTest(dispatcher) {
         sessionFlow.value = sampleSession(
             connectionState = CallConnectionState.Connected,
             localAudioState = LocalAudioState.Enabled,
@@ -149,10 +149,11 @@ class CallViewModelTest {
         )
         val viewModel = createViewModel()
 
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-1"))
         advanceUntilIdle()
 
         coVerify(exactly = 0) { prepareCallSessionUseCase.invoke(any()) }
+        coVerify(exactly = 0) { prepareIncomingCallUseCase.invoke(any()) }
         coVerify(exactly = 0) { connectCallUseCase.invoke() }
         assertThat(viewModel.state.value.session?.callId).isEqualTo("call-1")
         assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Active)
@@ -167,12 +168,13 @@ class CallViewModelTest {
         )
         val viewModel = createViewModel()
 
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-1"))
         runCurrent()
         viewModel.onIntent(CallIntent.MicrophonePermissionResult(granted = true))
         advanceUntilIdle()
 
         coVerify(exactly = 0) { prepareCallSessionUseCase.invoke(any()) }
+        coVerify(exactly = 0) { prepareIncomingCallUseCase.invoke(any()) }
         coVerify(exactly = 1) { connectCallUseCase.invoke() }
     }
 
@@ -226,7 +228,7 @@ class CallViewModelTest {
     }
 
     @Test
-    fun `ending during preparation waits for session then disconnects without connecting`() = runTest(dispatcher) {
+    fun `ending during preparation ends immediately and disconnects without connecting`() = runTest(dispatcher) {
         val preparedSession = CompletableDeferred<AppResult<CallSession>>()
         coEvery { prepareCallSessionUseCase.invoke(any()) } coAnswers { preparedSession.await() }
         val viewModel = createViewModel()
@@ -237,7 +239,7 @@ class CallViewModelTest {
 
         viewModel.onIntent(CallIntent.EndCall)
         runCurrent()
-        assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ending)
+        assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
 
         preparedSession.complete(AppResult.Success(sampleSession(
             connectionState = CallConnectionState.Preparing,
@@ -276,7 +278,7 @@ class CallViewModelTest {
     }
 
     @Test
-    fun `explicit termination does not navigate until the termination operation completes`() = runTest(dispatcher) {
+    fun `explicit termination navigates immediately and ignores old room updates`() = runTest(dispatcher) {
         val finishTermination = CompletableDeferred<Unit>()
         sessionFlow.value = sampleSession(
             connectionState = CallConnectionState.Connected,
@@ -288,15 +290,19 @@ class CallViewModelTest {
             AppResult.Success(Unit)
         }
         val viewModel = createViewModel()
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-1"))
         runCurrent()
 
         viewModel.effects.test {
             viewModel.onIntent(CallIntent.EndCall)
-            runCurrent()
+
+            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome("call-1"))
+            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
+            assertThat(viewModel.state.value.isLoading).isFalse()
+
             sessionFlow.value = sampleSession(
-                connectionState = CallConnectionState.Terminating,
-                localAudioState = LocalAudioState.Disabled,
+                connectionState = CallConnectionState.Reconnecting,
+                localAudioState = LocalAudioState.Enabled,
                 recordingState = RecordingState.Recording,
             )
             runCurrent()
@@ -307,14 +313,90 @@ class CallViewModelTest {
             )
             runCurrent()
 
-            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ending)
+            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
             expectNoEvents()
 
             finishTermination.complete(Unit)
             advanceUntilIdle()
+            expectNoEvents()
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `disconnect failure cannot revive a locally ended call`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.Recording,
+        )
+        coEvery { disconnectCallUseCase.invoke() } returns
+            AppResult.Failure(life.fxs.purr.core.common.AppError.Network("disconnect failed"))
+        val viewModel = createViewModel()
+        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-1"))
+        runCurrent()
+
+        viewModel.effects.test {
+            viewModel.onIntent(CallIntent.EndCall)
 
             assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome("call-1"))
+            assertThat(awaitItem()).isInstanceOf(CallEffect.ShowMessage::class.java)
             assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
+
+            sessionFlow.value = sampleSession(
+                connectionState = CallConnectionState.Connected,
+                localAudioState = LocalAudioState.Enabled,
+                recordingState = RecordingState.Recording,
+            )
+            runCurrent()
+
+            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
+            expectNoEvents()
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `new call id starts after local end while old room updates stay ignored`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            callId = "call-old",
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.Recording,
+        )
+        coEvery { prepareIncomingCallUseCase.invoke(any()) } returns AppResult.Success(
+            sampleSession(
+                callId = "call-new",
+                connectionState = CallConnectionState.Preparing,
+                localAudioState = LocalAudioState.Disabled,
+                recordingState = RecordingState.NotRecording,
+            ),
+        )
+        val viewModel = createViewModel()
+        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-old"))
+        runCurrent()
+
+        viewModel.effects.test {
+            viewModel.onIntent(CallIntent.EndCall)
+            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome("call-old"))
+
+            viewModel.onIntent(
+                CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-new"),
+            )
+            advanceUntilIdle()
+            assertThat(awaitItem()).isEqualTo(CallEffect.RequestMicrophonePermission)
+            assertThat(viewModel.state.value.session?.callId).isEqualTo("call-new")
+
+            sessionFlow.value = sampleSession(
+                callId = "call-old",
+                connectionState = CallConnectionState.Reconnecting,
+                localAudioState = LocalAudioState.Enabled,
+                recordingState = RecordingState.Recording,
+            )
+            runCurrent()
+
+            assertThat(viewModel.state.value.session?.callId).isEqualTo("call-new")
+            expectNoEvents()
             cancelAndIgnoreRemainingEvents()
         }
     }
@@ -327,7 +409,7 @@ class CallViewModelTest {
             recordingState = RecordingState.Recording,
         )
         val viewModel = createViewModel()
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-1"))
         runCurrent()
 
         viewModel.effects.test {
@@ -373,6 +455,25 @@ class CallViewModelTest {
         advanceUntilIdle()
 
         assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Waiting)
+    }
+
+    @Test
+    fun `route selection remains available while microphone is muted`() = runTest(dispatcher) {
+        val viewModel = createViewModel()
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Muted,
+            recordingState = RecordingState.Recording,
+        )
+        advanceUntilIdle()
+
+        viewModel.onIntent(CallIntent.RouteSelect(AudioRoute.Earpiece))
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { selectAudioRouteUseCase.invoke(AudioRoute.Earpiece) }
+        coVerify(exactly = 0) { toggleMuteUseCase.invoke(any()) }
+        assertThat(viewModel.state.value.availableRoutes)
+            .containsExactly(AudioRoute.Earpiece, AudioRoute.Speaker)
     }
 
     @Test

@@ -4,8 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -57,6 +57,7 @@ class CallViewModel @Inject constructor(
     private var endRequested: Boolean = false
     private var currentCallId: String? = null
     private var navigatedCallId: String? = null
+    private val locallyEndedCallIds = mutableSetOf<String>()
 
     init {
         viewModelScope.launch {
@@ -102,14 +103,18 @@ class CallViewModel @Inject constructor(
         direction: CallDirection,
         expectedCallId: String?,
     ) {
+        if (expectedCallId != null && expectedCallId in locallyEndedCallIds) return
         prepareJob?.cancel()
         connectJob?.cancel()
         endRequested = false
-        currentCallId = null
         navigatedCallId = null
         prepareJob = viewModelScope.launch {
             val existingSession = observeCallStateUseCase().first()
-            if (existingSession?.connectionState?.isOngoing == true) {
+            if (
+                expectedCallId != null &&
+                existingSession?.callId == expectedCallId &&
+                existingSession.connectionState.isOngoing
+            ) {
                 currentCallId = existingSession.callId
                 updateState(existingSession)
                 if (existingSession.connectionState == CallConnectionState.Preparing) {
@@ -185,37 +190,23 @@ class CallViewModel @Inject constructor(
     }
 
     private fun endCall() {
-        if (_state.value.screenState == CallScreenState.Ending) return
+        if (endRequested) return
         endRequested = true
-        val inFlightPrepare = prepareJob
+        val endedCallId = currentCallId ?: _state.value.session?.callId
+        endedCallId?.let(locallyEndedCallIds::add)
+        prepareJob?.cancel()
         prepareJob = null
-        val inFlightConnect = connectJob
+        connectJob?.cancel()
         connectJob = null
         _state.value = _state.value.copy(
-            screenState = CallScreenState.Ending,
-            isLoading = true,
+            screenState = CallScreenState.Ended,
+            isLoading = false,
         )
-        viewModelScope.launch {
-            inFlightPrepare?.join()
-            inFlightConnect?.cancelAndJoin()
+        viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            navigateHomeOnce(endedCallId)
             when (val result = disconnectCallUseCase()) {
-                is AppResult.Success -> {
-                    endRequested = false
-                    _state.value = _state.value.copy(
-                        screenState = CallScreenState.Ended,
-                        isLoading = false,
-                    )
-                    navigateHomeOnce(currentCallId)
-                }
-                is AppResult.Failure -> {
-                    endRequested = false
-                    _state.value = _state.value.copy(
-                        screenState = CallScreenState.Ended,
-                        isLoading = false,
-                    )
-                    emitError(result.error)
-                    navigateHomeOnce(currentCallId)
-                }
+                is AppResult.Success -> Unit
+                is AppResult.Failure -> emitError(result.error)
             }
         }
     }
@@ -238,6 +229,9 @@ class CallViewModel @Inject constructor(
     }
 
     private suspend fun onSessionChanged(session: CallSession) {
+        if (session.callId in locallyEndedCallIds) return
+        if (currentCallId != null && session.callId != currentCallId) return
+
         val isTerminal = session.connectionState.isTerminal
         if (!isTerminal) {
             currentCallId = session.callId

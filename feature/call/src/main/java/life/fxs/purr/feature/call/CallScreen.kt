@@ -40,7 +40,6 @@ import life.fxs.purr.core.designsystem.component.VoiceCallScaffold
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.core.model.CallDirection
 import life.fxs.purr.domain.call.model.CallTiming
-import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.canToggleMute
 import life.fxs.purr.domain.call.model.isEffectivelyMuted
 
@@ -196,7 +195,7 @@ fun CallScreen(
             AudioRoutePicker(
                 routes = state.availableRoutes,
                 activeRoute = state.activeRoute,
-                enabled = canManageActiveCall && state.localAudioState == LocalAudioState.Enabled,
+                enabled = canManageActiveCall && state.availableRoutes.isNotEmpty(),
                 onRouteSelect = onRouteSelect,
             )
             DiagnosticsButton(
