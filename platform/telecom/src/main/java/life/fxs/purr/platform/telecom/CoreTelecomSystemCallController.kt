@@ -53,11 +53,9 @@ class CoreTelecomSystemCallController @Inject internal constructor(
     override suspend fun startCall(descriptor: SystemCallDescriptor) {
         val pending = synchronized(lock) {
             activeSession?.let { current ->
-                check(current.descriptor.callId == descriptor.callId) { "A system call is already active" }
                 return
             }
             pendingSession?.let { current ->
-                check(current.descriptor.callId == descriptor.callId) { "A system call is already starting" }
                 return@synchronized current
             }
 

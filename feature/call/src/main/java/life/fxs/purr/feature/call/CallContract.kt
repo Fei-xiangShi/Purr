@@ -19,11 +19,15 @@ enum class CallScreenState {
 }
 
 sealed interface CallIntent {
-    data class ConnectCall(
+    data class StartNewOutgoingCall(
         val pairId: String,
         val remoteDisplayName: String = "Purr",
-        val direction: CallDirection = CallDirection.Outgoing,
-        val expectedCallId: String? = null,
+    ) : CallIntent
+    data class OpenExistingCall(
+        val pairId: String,
+        val callId: String,
+        val remoteDisplayName: String = "Purr",
+        val direction: CallDirection,
     ) : CallIntent
     data class MicrophonePermissionResult(
         val granted: Boolean,

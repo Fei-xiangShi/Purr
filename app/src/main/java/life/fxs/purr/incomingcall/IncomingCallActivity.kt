@@ -42,7 +42,7 @@ internal class IncomingCallActivity : ComponentActivity() {
                         partnerName = currentRequest.callerName
                             ?: getString(R.string.incoming_call_unknown_caller),
                         partnerAvatarUrl = currentRequest.callerAvatarUrl,
-                        expectedCallId = currentRequest.callId,
+                        callId = currentRequest.callId,
                         acceptImmediately = currentRequest.acceptImmediately,
                         onOpenCall = ::openActiveCall,
                         onDismiss = ::finishSafely,
@@ -76,7 +76,7 @@ internal class IncomingCallActivity : ComponentActivity() {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 putExtra(IncomingCallNavigationContract.EXTRA_CALL_PAIR_ID, pairId)
                 putExtra(IncomingCallNavigationContract.EXTRA_CALL_DIRECTION, CallDirection.Incoming.name)
-                putExtra(IncomingCallNavigationContract.EXTRA_EXPECTED_CALL_ID, callId)
+                putExtra(IncomingCallNavigationContract.EXTRA_CALL_ID, callId)
             },
         )
         finishSafely()

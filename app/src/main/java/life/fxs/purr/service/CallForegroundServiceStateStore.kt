@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import life.fxs.purr.core.media.service.ForegroundCallServiceState
+import life.fxs.purr.core.model.CallDirection
 
 /** Bridges the asynchronous Android Service lifecycle to the process-local call runtime. */
 @Singleton
@@ -22,11 +23,11 @@ class CallForegroundServiceStateStore @Inject constructor() {
      * transition serialized also makes duplicate start intents idempotent.
      */
     @Synchronized
-    fun markStarted(callId: String): Boolean {
+    fun markStarted(callId: String, direction: CallDirection): Boolean {
         require(callId.isNotBlank()) { "Call id must not be blank" }
         val existingCallId = mutableState.value.activeCallId
         if (existingCallId != null && existingCallId != callId) return false
-        mutableState.value = ForegroundCallServiceState(activeCallId = callId)
+        mutableState.value = ForegroundCallServiceState(activeCallId = callId, direction = direction)
         return true
     }
 

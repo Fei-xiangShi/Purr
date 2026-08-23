@@ -12,13 +12,19 @@ data class CallLifecycleState(
 ) {
     val resumableSession: CallSession?
         get() = session?.takeIf {
-            disconnectingCallId == null && it.connectionState.isResumable
+            (disconnectingCallId == null || disconnectingCallId != it.callId) &&
+                it.connectionState.isResumable
         }
 
     val isTerminationInProgress: Boolean
-        get() = disconnectingCallId != null ||
-            session?.connectionState == CallConnectionState.Terminating
+        get() = session?.let { current ->
+            current.callId == disconnectingCallId &&
+                (current.connectionState == CallConnectionState.Terminating ||
+                    current.connectionState.isOngoing)
+        } == true
 
     val isNewCallBlocked: Boolean
-        get() = disconnectingCallId != null || session?.connectionState?.isOngoing == true
+        get() = session?.let { current ->
+            current.callId == disconnectingCallId && current.connectionState.isOngoing
+        } == true
 }

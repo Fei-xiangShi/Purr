@@ -19,6 +19,7 @@ import kotlin.math.hypot
 import kotlin.math.roundToInt
 import life.fxs.purr.MainActivity
 import life.fxs.purr.domain.call.model.CallOverlayStyle
+import life.fxs.purr.core.model.CallDirection
 
 /** Owns only the system overlay window lifecycle and navigation interaction. */
 @Singleton
@@ -30,6 +31,8 @@ class CallOverlayPresenter @Inject constructor(
     private val windowManager = appContext.getSystemService(WindowManager::class.java)
     private var binding: CallOverlayViewBinding? = null
     private var latestPairId: String? = null
+    private var latestCallId: String? = null
+    private var latestDirection: CallDirection? = null
     private var canDrawOverlays = false
     private var lastPermissionCheckMillis = Long.MIN_VALUE
     private var compactPosition: OverlayPosition? = null
@@ -40,6 +43,8 @@ class CallOverlayPresenter @Inject constructor(
             return
         }
         latestPairId = model.pairId
+        latestCallId = model.callId
+        latestDirection = model.direction
         if (binding?.style != model.style) rebuild(model.style)
         binding?.render(model)
     }
@@ -131,8 +136,11 @@ class CallOverlayPresenter @Inject constructor(
     }
 
     private fun openCall() {
+        val pairId = latestPairId ?: return
+        val callId = latestCallId ?: return
+        val direction = latestDirection ?: return
         appContext.startActivity(
-            MainActivity.intent(appContext, latestPairId)
+            MainActivity.intent(appContext, pairId, callId, direction)
                 .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
         )
     }

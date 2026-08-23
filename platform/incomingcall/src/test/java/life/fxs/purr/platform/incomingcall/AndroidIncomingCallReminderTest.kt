@@ -136,16 +136,6 @@ class AndroidIncomingCallReminderTest {
     }
 
     @Test
-    fun `replacement removes the untagged legacy notification slot`() {
-        notificationManager.notify(1002, Notification())
-
-        reminder().replace(incomingCall("call-1"))
-
-        assertThat(notificationManager.activeNotifications).hasLength(1)
-        assertThat(notificationManager.activeNotifications.single().tag).isEqualTo("incoming-call")
-    }
-
-    @Test
     fun `dismiss removes the single reminder slot`() {
         val reminder = reminder()
         reminder.replace(incomingCall("call-1"))

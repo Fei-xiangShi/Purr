@@ -1,6 +1,7 @@
 package life.fxs.purr.service
 
 import com.google.common.truth.Truth.assertThat
+import life.fxs.purr.core.model.CallDirection
 import org.junit.Test
 
 class CallForegroundServiceStateStoreTest {
@@ -8,8 +9,8 @@ class CallForegroundServiceStateStoreTest {
     fun `same call can be started idempotently`() {
         val store = CallForegroundServiceStateStore()
 
-        assertThat(store.markStarted("call-1")).isTrue()
-        assertThat(store.markStarted("call-1")).isTrue()
+        assertThat(store.markStarted("call-1", CallDirection.Outgoing)).isTrue()
+        assertThat(store.markStarted("call-1", CallDirection.Outgoing)).isTrue()
         assertThat(store.state.value.activeCallId).isEqualTo("call-1")
     }
 
@@ -17,9 +18,9 @@ class CallForegroundServiceStateStoreTest {
     fun `different call cannot replace active service owner`() {
         val store = CallForegroundServiceStateStore()
 
-        store.markStarted("call-1")
+        store.markStarted("call-1", CallDirection.Outgoing)
 
-        assertThat(store.markStarted("call-2")).isFalse()
+        assertThat(store.markStarted("call-2", CallDirection.Incoming)).isFalse()
         assertThat(store.state.value.activeCallId).isEqualTo("call-1")
     }
 
@@ -27,7 +28,7 @@ class CallForegroundServiceStateStoreTest {
     fun `stopping a different call does not clear active owner`() {
         val store = CallForegroundServiceStateStore()
 
-        store.markStarted("call-1")
+        store.markStarted("call-1", CallDirection.Outgoing)
         store.markStopped("call-2")
 
         assertThat(store.state.value.activeCallId).isEqualTo("call-1")
@@ -38,7 +39,7 @@ class CallForegroundServiceStateStoreTest {
     fun `null stop clears state when service is destroyed`() {
         val store = CallForegroundServiceStateStore()
 
-        store.markStarted("call-1")
+        store.markStarted("call-1", CallDirection.Outgoing)
         store.markStopped(null)
 
         assertThat(store.state.value.isActive).isFalse()

@@ -7,6 +7,7 @@ import android.view.WindowManager
 import android.widget.LinearLayout
 import com.google.common.truth.Truth.assertThat
 import life.fxs.purr.domain.call.model.CallOverlayStyle
+import life.fxs.purr.core.model.CallDirection
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -105,6 +106,7 @@ class CallOverlayViewFactoryTest {
         binding.render(
             CallOverlayRenderModel(
                 pairId = "pair-1",
+                direction = CallDirection.Outgoing,
                 style = CallOverlayStyle.SpeakerNames,
                 localName = "本地",
                 localAvatarUrl = null,

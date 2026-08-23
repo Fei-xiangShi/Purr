@@ -38,7 +38,7 @@ fun IncomingCallPromptRoute(
     partnerName: String,
     partnerAvatarUrl: String?,
     avatarModifier: Modifier = Modifier,
-    expectedCallId: String? = null,
+    callId: String,
     acceptImmediately: Boolean = false,
     onOpenCall: (pairId: String, callId: String) -> Unit,
     onDismiss: () -> Unit,
@@ -47,7 +47,7 @@ fun IncomingCallPromptRoute(
         partnerName = partnerName,
         partnerAvatarUrl = partnerAvatarUrl,
         avatarModifier = avatarModifier,
-        expectedCallId = expectedCallId,
+        callId = callId,
         acceptImmediately = acceptImmediately,
         onOpenCall = onOpenCall,
         onDismiss = onDismiss,
@@ -61,7 +61,7 @@ internal fun IncomingCallPromptRoute(
     partnerName: String,
     partnerAvatarUrl: String?,
     avatarModifier: Modifier,
-    expectedCallId: String?,
+    callId: String,
     acceptImmediately: Boolean,
     onOpenCall: (pairId: String, callId: String) -> Unit,
     onDismiss: () -> Unit,
@@ -69,8 +69,8 @@ internal fun IncomingCallPromptRoute(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val matchesExpectedCall = expectedCallId == null || state.call?.callId == expectedCallId
-    var immediateAcceptConsumed by rememberSaveable(expectedCallId, acceptImmediately) {
+    val matchesExpectedCall = state.call?.callId == callId
+    var immediateAcceptConsumed by rememberSaveable(callId, acceptImmediately) {
         mutableStateOf(false)
     }
 
@@ -102,11 +102,10 @@ internal fun IncomingCallPromptRoute(
             viewModel.onIntent(IncomingCallPromptIntent.Accept)
         }
     }
-    LaunchedEffect(state.isReady, state.call?.callId, expectedCallId, state.isResponding) {
+    LaunchedEffect(state.isReady, state.call?.callId, callId, state.isResponding) {
         if (!state.isReady || state.isResponding) return@LaunchedEffect
         when {
             state.call != null && !matchesExpectedCall -> onDismiss()
-            state.call == null && expectedCallId == null -> onDismiss()
             state.call == null -> {
                 delay(EXPECTED_CALL_RECOVERY_GRACE_MILLIS)
                 onDismiss()

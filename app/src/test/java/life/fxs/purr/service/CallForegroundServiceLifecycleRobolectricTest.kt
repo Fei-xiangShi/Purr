@@ -21,9 +21,10 @@ import kotlinx.coroutines.runBlocking
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.media.service.ForegroundCallServiceState
 import life.fxs.purr.core.model.AudioRoute
+import life.fxs.purr.core.model.CallDirection
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.CallLifecycleState
-import life.fxs.purr.domain.call.model.PrepareCallParams
+import life.fxs.purr.domain.call.model.CallPreparationRequest
 import life.fxs.purr.domain.call.repository.CallRepository
 import life.fxs.purr.domain.call.usecase.DisconnectCallUseCase
 import kotlinx.coroutines.flow.Flow
@@ -69,13 +70,14 @@ class CallForegroundServiceLifecycleRobolectricTest {
         val service = attachService<CallForegroundService>(stateStore)
 
         val result = service.onStartCommand(
-            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1"),
+            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1", direction = CallDirection.Outgoing),
             0,
             1,
         )
 
         assertThat(result).isEqualTo(android.app.Service.START_NOT_STICKY)
-        assertThat(stateStore.state.value).isEqualTo(ForegroundCallServiceState("call-1"))
+        assertThat(stateStore.state.value)
+            .isEqualTo(ForegroundCallServiceState("call-1", CallDirection.Outgoing))
     }
 
     @Test
@@ -84,12 +86,12 @@ class CallForegroundServiceLifecycleRobolectricTest {
         val service = attachService<CallForegroundService>(stateStore)
 
         service.onStartCommand(
-            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1"),
+            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1", direction = CallDirection.Outgoing),
             0,
             1,
         )
         service.onStartCommand(
-            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1"),
+            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1", direction = CallDirection.Outgoing),
             0,
             2,
         )
@@ -103,13 +105,13 @@ class CallForegroundServiceLifecycleRobolectricTest {
         val stateStore = CallForegroundServiceStateStore()
         val service = attachService<CallForegroundService>(stateStore)
         service.onStartCommand(
-            CallForegroundService.intent(service, callId = "call-new", pairId = "pair-1"),
+            CallForegroundService.intent(service, callId = "call-new", pairId = "pair-1", direction = CallDirection.Outgoing),
             0,
             1,
         )
 
         service.onStartCommand(
-            CallForegroundService.intent(service, callId = "call-old", pairId = "pair-1"),
+            CallForegroundService.intent(service, callId = "call-old", pairId = "pair-1", direction = CallDirection.Outgoing),
             0,
             2,
         )
@@ -123,12 +125,12 @@ class CallForegroundServiceLifecycleRobolectricTest {
         val stateStore = CallForegroundServiceStateStore()
         val service = attachService<CallForegroundService>(stateStore)
         service.onStartCommand(
-            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1"),
+            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1", direction = CallDirection.Outgoing),
             0,
             1,
         )
 
-        service.onTaskRemoved(CallForegroundService.intent(service, callId = "call-1"))
+        service.onTaskRemoved(CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1", direction = CallDirection.Outgoing))
 
         assertThat(stateStore.state.value.activeCallId).isEqualTo("call-1")
         assertThat(repository.disconnectedCallIds).isEmpty()
@@ -152,12 +154,12 @@ class CallForegroundServiceLifecycleRobolectricTest {
         val stateStore = CallForegroundServiceStateStore()
         val service = attachService<CallForegroundService>(stateStore)
         service.onStartCommand(
-            CallForegroundService.intent(service, callId = "call-new", pairId = "pair-1"),
+            CallForegroundService.intent(service, callId = "call-new", pairId = "pair-1", direction = CallDirection.Outgoing),
             0,
             1,
         )
 
-        val staleHangUp = CallForegroundService.intent(service, callId = "call-old", pairId = "pair-1")
+        val staleHangUp = CallForegroundService.intent(service, callId = "call-old", pairId = "pair-1", direction = CallDirection.Outgoing)
             .setAction(CallForegroundService.ACTION_HANG_UP)
         service.onStartCommand(staleHangUp, 0, 2)
 
@@ -175,7 +177,7 @@ class CallForegroundServiceLifecycleRobolectricTest {
         val stateStore = CallForegroundServiceStateStore()
         val service = attachService<CallForegroundService>(stateStore)
         service.onStartCommand(
-            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1"),
+            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1", direction = CallDirection.Outgoing),
             0,
             1,
         )
@@ -189,7 +191,7 @@ class CallForegroundServiceLifecycleRobolectricTest {
     @Test
     fun `destroy uses the shared state when the Service instance lost its local call id`() {
         val stateStore = CallForegroundServiceStateStore()
-        stateStore.markStarted("call-rehydrated")
+        stateStore.markStarted("call-rehydrated", CallDirection.Outgoing)
         val service = attachService<CallForegroundService>(stateStore)
 
         service.onDestroy()
@@ -204,7 +206,7 @@ class CallForegroundServiceLifecycleRobolectricTest {
         val service = attachService<SecurityExceptionService>(stateStore)
 
         val result = service.onStartCommand(
-            CallForegroundService.intent(service, callId = "call-denied", pairId = "pair-1"),
+            CallForegroundService.intent(service, callId = "call-denied", pairId = "pair-1", direction = CallDirection.Outgoing),
             0,
             1,
         )
@@ -231,7 +233,7 @@ class CallForegroundServiceLifecycleRobolectricTest {
         )
 
         service.onStartCommand(
-            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1"),
+            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1", direction = CallDirection.Outgoing),
             0,
             1,
         )
@@ -257,7 +259,7 @@ class CallForegroundServiceLifecycleRobolectricTest {
         )
 
         service.onStartCommand(
-            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1"),
+            CallForegroundService.intent(service, callId = "call-1", pairId = "pair-1", direction = CallDirection.Outgoing),
             0,
             1,
         )
@@ -274,7 +276,7 @@ class CallForegroundServiceLifecycleRobolectricTest {
         val controller = AndroidCallServiceController(context, stateStore)
 
         val start = launch(start = CoroutineStart.UNDISPATCHED) {
-            controller.startForegroundCall(callId = "call-1", pairId = "pair-1")
+            controller.startForegroundCall(callId = "call-1", pairId = "pair-1", direction = CallDirection.Outgoing)
         }
 
         val startedIntent = context.startedForegroundService
@@ -285,7 +287,7 @@ class CallForegroundServiceLifecycleRobolectricTest {
             .isEqualTo("pair-1")
         assertThat(start.isCompleted).isFalse()
 
-        stateStore.markStarted("call-1")
+        stateStore.markStarted("call-1", CallDirection.Outgoing)
         start.join()
     }
 
@@ -293,10 +295,10 @@ class CallForegroundServiceLifecycleRobolectricTest {
     fun `controller does not stop a service owned by another call`() = runBlocking {
         val context = RecordingContext(RuntimeEnvironment.getApplication())
         val stateStore = CallForegroundServiceStateStore()
-        stateStore.markStarted("call-new")
+        stateStore.markStarted("call-new", CallDirection.Outgoing)
         val controller = AndroidCallServiceController(context, stateStore)
 
-        controller.stopForegroundCall(expectedCallId = "call-old")
+        controller.stopForegroundCall(callId = "call-old")
 
         assertThat(context.stoppedService).isNull()
         assertThat(stateStore.state.value.activeCallId).isEqualTo("call-new")
@@ -367,21 +369,23 @@ class CallForegroundServiceLifecycleRobolectricTest {
 
     private class RecordingCallRepository : CallRepository {
         private val session = MutableStateFlow<CallSession?>(null)
-        val disconnectedCallIds = mutableListOf<String?>()
+        val disconnectedCallIds = mutableListOf<String>()
 
         override fun observeCallSession(): Flow<CallSession?> = session.asStateFlow()
 
         override fun observeCallLifecycle(): Flow<CallLifecycleState> =
             session.map { CallLifecycleState(session = it) }
 
-        override suspend fun prepareCall(params: PrepareCallParams): AppResult<CallSession> =
+        override suspend fun prepareCall(request: CallPreparationRequest): AppResult<CallSession> =
             error("Not used by this lifecycle test")
+
+        override suspend fun cancelCallPreparation() = Unit
 
         override suspend fun connectCall(): AppResult<Unit> =
             error("Not used by this lifecycle test")
 
-        override suspend fun disconnectCall(expectedCallId: String?): AppResult<Unit> {
-            disconnectedCallIds += expectedCallId
+        override suspend fun disconnectCall(callId: String): AppResult<Unit> {
+            disconnectedCallIds += callId
             return AppResult.Success(Unit)
         }
 

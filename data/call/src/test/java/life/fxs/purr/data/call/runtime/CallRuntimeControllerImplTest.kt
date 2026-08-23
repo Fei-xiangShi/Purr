@@ -32,14 +32,14 @@ class CallRuntimeControllerImplTest {
     @Test
     fun `connect establishes Android call session before media`() = runTest {
         val runtime = runtime()
-        coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } returns Unit
+        coEvery { callServiceController.startForegroundCall("call-1", "pair-1", CallDirection.Outgoing) } returns Unit
         coEvery { callAudioSessionController.activate() } returns Unit
         coEvery { mediaCallPort.execute(any()) } returns Unit
 
         runtime.execute(connectCommand())
 
         coVerifyOrder {
-            callServiceController.startForegroundCall("call-1", "pair-1")
+            callServiceController.startForegroundCall("call-1", "pair-1", CallDirection.Outgoing)
             systemCallController.startCall(any())
             systemCallController.activateCall("call-1")
             callAudioSessionController.activate()
@@ -54,7 +54,7 @@ class CallRuntimeControllerImplTest {
             direction = CallDirection.Incoming,
             remoteDisplayName = "Partner",
         )
-        coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } returns Unit
+        coEvery { callServiceController.startForegroundCall("call-1", "pair-1", CallDirection.Incoming) } returns Unit
         coEvery { callAudioSessionController.activate() } returns Unit
         coEvery { mediaCallPort.execute(command) } returns Unit
 
@@ -76,14 +76,14 @@ class CallRuntimeControllerImplTest {
     @Test
     fun `duplicate connect for the active call is idempotent`() = runTest {
         val runtime = runtime()
-        coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } returns Unit
+        coEvery { callServiceController.startForegroundCall("call-1", "pair-1", CallDirection.Outgoing) } returns Unit
         coEvery { callAudioSessionController.activate() } returns Unit
         coEvery { mediaCallPort.execute(any()) } returns Unit
 
         runtime.execute(connectCommand())
         runtime.execute(connectCommand())
 
-        coVerify(exactly = 1) { callServiceController.startForegroundCall("call-1", "pair-1") }
+        coVerify(exactly = 1) { callServiceController.startForegroundCall("call-1", "pair-1", CallDirection.Outgoing) }
         coVerify(exactly = 1) { systemCallController.startCall(any()) }
         coVerify(exactly = 1) { systemCallController.activateCall("call-1") }
         coVerify(exactly = 1) { callAudioSessionController.activate() }
@@ -96,7 +96,7 @@ class CallRuntimeControllerImplTest {
         val signal = CallTerminationSignal()
         val serviceStarted = CompletableDeferred<Unit>()
         val releaseServiceStart = CompletableDeferred<Unit>()
-        coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } coAnswers {
+        coEvery { callServiceController.startForegroundCall("call-1", "pair-1", CallDirection.Outgoing) } coAnswers {
             serviceStarted.complete(Unit)
             withContext(NonCancellable) { releaseServiceStart.await() }
         }
@@ -120,7 +120,7 @@ class CallRuntimeControllerImplTest {
     @Test
     fun `media connection failure releases foreground service and audio session`() = runTest {
         val runtime = runtime()
-        coEvery { callServiceController.startForegroundCall(any(), any()) } returns Unit
+        coEvery { callServiceController.startForegroundCall(any(), any(), any()) } returns Unit
         coEvery { callAudioSessionController.activate() } returns Unit
         coEvery { mediaCallPort.execute(any<MediaCallCommand.Connect>()) } throws
             IllegalStateException("connect failed")
@@ -139,7 +139,7 @@ class CallRuntimeControllerImplTest {
     @Test
     fun `connect keeps original failure and attaches cleanup failure`() = runTest {
         val runtime = runtime()
-        coEvery { callServiceController.startForegroundCall(any(), any()) } returns Unit
+        coEvery { callServiceController.startForegroundCall(any(), any(), any()) } returns Unit
         coEvery { callAudioSessionController.activate() } returns Unit
         val connectFailure = IllegalStateException("connect failed")
         val cleanupFailure = IllegalStateException("cleanup failed")
@@ -171,7 +171,7 @@ class CallRuntimeControllerImplTest {
     @Test
     fun `disconnect releases media session and foreground service`() = runTest {
         val runtime = runtime()
-        coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } returns Unit
+        coEvery { callServiceController.startForegroundCall("call-1", "pair-1", CallDirection.Outgoing) } returns Unit
         coEvery { callAudioSessionController.activate() } returns Unit
         coEvery { mediaCallPort.execute(any()) } returns Unit
         coEvery { callAudioSessionController.release() } returns Unit
@@ -234,7 +234,7 @@ class CallRuntimeControllerImplTest {
 
     private suspend fun connectedRuntime(): CallRuntimeControllerImpl {
         val runtime = runtime()
-        coEvery { callServiceController.startForegroundCall("call-1", "pair-1") } returns Unit
+        coEvery { callServiceController.startForegroundCall("call-1", "pair-1", CallDirection.Outgoing) } returns Unit
         coEvery { callAudioSessionController.activate() } returns Unit
         coEvery { mediaCallPort.execute(any<MediaCallCommand.Connect>()) } returns Unit
         runtime.execute(connectCommand())

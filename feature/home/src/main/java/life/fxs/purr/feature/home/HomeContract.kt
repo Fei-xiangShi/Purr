@@ -10,11 +10,19 @@ sealed interface HomeIntent {
     data object RefreshStatus : HomeIntent
 }
 
-data class HomeCallTarget(
-    val pairId: String,
-    val direction: CallDirection = CallDirection.Outgoing,
-    val expectedCallId: String? = null,
-)
+sealed interface HomeCallTarget {
+    val pairId: String
+
+    data class NewOutgoing(
+        override val pairId: String,
+    ) : HomeCallTarget
+
+    data class Existing(
+        override val pairId: String,
+        val callId: String,
+        val direction: CallDirection,
+    ) : HomeCallTarget
+}
 
 data class HomeState(
     val pairId: String? = null,

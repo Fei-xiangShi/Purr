@@ -37,7 +37,7 @@ class CallOverlayCoordinator @Inject constructor(
     private var renderingJob: Job? = null
 
     @Synchronized
-    fun start(fallbackPairId: String) {
+    fun start() {
         renderingJob?.cancel()
         val base = combine(
             observeCallState(),
@@ -48,7 +48,7 @@ class CallOverlayCoordinator @Inject constructor(
         ) { session, auth, bond, style, visibility ->
             OverlayBase(
                 session = session,
-                pairId = session?.pairId ?: fallbackPairId,
+                pairId = session?.pairId,
                 localName = auth?.self?.displayName ?: "我",
                 localAvatarUrl = auth?.self?.avatarUrl,
                 remoteName = bond?.partner?.displayName ?: "对方",
@@ -65,8 +65,11 @@ class CallOverlayCoordinator @Inject constructor(
                 durationTicker(),
             ) { overlay, localLevel, remoteLevel, nowMillis ->
                 if (!overlay.shouldShow || overlay.session == null) return@combine null
+                val pairId = overlay.pairId?.takeIf(String::isNotBlank) ?: return@combine null
                 CallOverlayRenderModel(
-                    pairId = overlay.pairId,
+                    callId = overlay.session.callId,
+                    direction = overlay.session.direction,
+                    pairId = pairId,
                     style = overlay.style,
                     localName = overlay.localName,
                     localAvatarUrl = overlay.localAvatarUrl,
@@ -110,7 +113,7 @@ class CallOverlayCoordinator @Inject constructor(
 
 private data class OverlayBase(
     val session: CallSession?,
-    val pairId: String,
+    val pairId: String?,
     val localName: String,
     val localAvatarUrl: String?,
     val remoteName: String,

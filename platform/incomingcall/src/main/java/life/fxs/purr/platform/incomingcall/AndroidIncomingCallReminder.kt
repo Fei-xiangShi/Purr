@@ -91,7 +91,6 @@ internal class AndroidIncomingCallReminder @Inject constructor(
         }
 
         try {
-            notificationManager.cancel(LEGACY_NOTIFICATION_ID)
             notificationManager.notify(NOTIFICATION_TAG, NOTIFICATION_ID, notificationBuilder.build())
         } catch (_: SecurityException) {
             // Permission may be revoked between the explicit check and the binder call.
@@ -127,7 +126,6 @@ internal class AndroidIncomingCallReminder @Inject constructor(
         avatarLoadJob?.cancel()
         avatarLoadJob = null
         notificationManager.cancel(NOTIFICATION_TAG, NOTIFICATION_ID)
-        notificationManager.cancel(LEGACY_NOTIFICATION_ID)
     }
 
     private fun canPostNotifications(): Boolean =
@@ -160,6 +158,5 @@ internal class AndroidIncomingCallReminder @Inject constructor(
         const val CHANNEL_ID = "purr_incoming_call_channel_v2"
         const val NOTIFICATION_TAG = "incoming-call"
         const val NOTIFICATION_ID = 1002
-        const val LEGACY_NOTIFICATION_ID = 1002
     }
 }

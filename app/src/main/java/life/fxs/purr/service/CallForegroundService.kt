@@ -27,6 +27,7 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
 import life.fxs.purr.overlay.CallOverlayCoordinator
 import life.fxs.purr.platform.incomingcall.CallNotificationAvatarLoader
+import life.fxs.purr.core.model.CallDirection
 
 @AndroidEntryPoint
 open class CallForegroundService : Service() {
@@ -49,7 +50,6 @@ open class CallForegroundService : Service() {
     @Inject
     internal lateinit var notificationAvatarLoader: CallNotificationAvatarLoader
 
-    private var activeCallId: String? = null
     private var notificationIdentityJob: Job? = null
     private val hangUpInProgress = AtomicBoolean(false)
 
@@ -58,7 +58,7 @@ open class CallForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_HANG_UP) {
             val requestedCallId = intent.getStringExtra(EXTRA_CALL_ID)
-            val currentCallId = stateStore.state.value.activeCallId ?: activeCallId
+            val currentCallId = stateStore.state.value.activeCallId
             if (!CallForegroundServiceCommandPolicy.acceptsHangUp(requestedCallId, currentCallId)) {
                 // A stale notification must not stop a different active call.
                 if (currentCallId == null) stopSelfResult(startId)
@@ -67,7 +67,7 @@ open class CallForegroundService : Service() {
             if (!hangUpInProgress.compareAndSet(false, true)) return START_NOT_STICKY
             applicationScope.launch {
                 try {
-                    disconnectCallUseCase(requestedCallId)
+                    disconnectCallUseCase(requireNotNull(requestedCallId))
                 } finally {
                     hangUpInProgress.set(false)
                     stopSelfResult(startId)
@@ -87,7 +87,17 @@ open class CallForegroundService : Service() {
             return START_NOT_STICKY
         }
         val pairId = intent.getStringExtra(EXTRA_PAIR_ID)
-        val notification = buildNotification(callId, pairId, identity = null, callerIcon = null)
+        if (pairId.isNullOrBlank()) {
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
+        val direction = intent.getStringExtra(EXTRA_CALL_DIRECTION)
+            ?.let { runCatching { CallDirection.valueOf(it) }.getOrNull() }
+        if (direction == null) {
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
+        val notification = buildNotification(callId, pairId, direction, identity = null, callerIcon = null)
         try {
             enterForeground(notification)
         } catch (_: SecurityException) {
@@ -97,12 +107,10 @@ open class CallForegroundService : Service() {
             handleForegroundStartFailure(callId, startId)
             return START_NOT_STICKY
         }
-        if (stateStore.markStarted(callId)) {
-            activeCallId = callId
-        }
+        stateStore.markStarted(callId, direction)
         observeNotificationIdentity(callId, pairId)
         if (::callOverlayCoordinator.isInitialized) {
-            callOverlayCoordinator.start(pairId.orEmpty())
+            callOverlayCoordinator.start()
         }
         return START_NOT_STICKY
     }
@@ -127,13 +135,10 @@ open class CallForegroundService : Service() {
     }
 
     override fun onDestroy() {
-        // The process-local store is the source of truth when Android recreates the
-        // Service object before the previous instance has published its field state.
-        val destroyedCallId = stateStore.state.value.activeCallId ?: activeCallId
+        val destroyedCallId = stateStore.state.value.activeCallId
         notificationIdentityJob?.cancel()
         notificationIdentityJob = null
         stateStore.markStopped(destroyedCallId)
-        activeCallId = null
         if (::callOverlayCoordinator.isInitialized) callOverlayCoordinator.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
         if (destroyedCallId != null && !hangUpInProgress.get()) {
@@ -144,18 +149,19 @@ open class CallForegroundService : Service() {
         super.onDestroy()
     }
 
-    private fun observeNotificationIdentity(callId: String, pairId: String?) {
+    private fun observeNotificationIdentity(callId: String, pairId: String) {
         notificationIdentityJob?.cancel()
         notificationIdentityJob = null
-        val expectedPairId = pairId?.takeIf(String::isNotBlank) ?: return
+        val expectedPairId = pairId
         notificationIdentityJob = applicationScope.launch {
             notificationIdentitySource.observe(expectedPairId).collectLatest { identity ->
                 val callerIcon = identity?.avatarUrl
                     ?.takeIf(String::isNotBlank)
                     ?.let { notificationAvatarLoader.load(it) }
                 if (stateStore.state.value.activeCallId != callId) return@collectLatest
+                val direction = stateStore.state.value.direction ?: return@collectLatest
                 updateForegroundNotification(
-                    buildNotification(callId, expectedPairId, identity, callerIcon),
+                    buildNotification(callId, expectedPairId, direction, identity, callerIcon),
                 )
             }
         }
@@ -171,14 +177,15 @@ open class CallForegroundService : Service() {
 
     private fun buildNotification(
         callId: String,
-        pairId: String?,
+        pairId: String,
+        direction: CallDirection,
         identity: CallNotificationIdentity?,
         callerIcon: IconCompat?,
     ): Notification {
         val openCallIntent = PendingIntent.getActivity(
             this,
             REQUEST_CODE,
-            MainActivity.intent(this, pairId).setIdentifier(
+            MainActivity.intent(this, pairId, callId, direction).setIdentifier(
                 CallForegroundServiceCommandPolicy.pendingIntentIdentifier(OPEN_CALL_COMMAND, callId),
             ),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
@@ -186,7 +193,7 @@ open class CallForegroundService : Service() {
         val hangUpIntent = PendingIntent.getService(
             this,
             HANG_UP_REQUEST_CODE,
-            intent(this, callId, pairId)
+            intent(this, callId, pairId, direction)
                 .setAction(ACTION_HANG_UP)
                 .setIdentifier(
                     CallForegroundServiceCommandPolicy.pendingIntentIdentifier(ACTION_HANG_UP, callId),
@@ -234,11 +241,13 @@ open class CallForegroundService : Service() {
         const val EXTRA_PAIR_ID = "life.fxs.purr.extra.PAIR_ID"
 
         const val EXTRA_CALL_ID = "life.fxs.purr.extra.CALL_ID"
+        const val EXTRA_CALL_DIRECTION = "life.fxs.purr.extra.CALL_DIRECTION"
 
-        fun intent(context: Context, callId: String? = null, pairId: String? = null): Intent =
+        fun intent(context: Context, callId: String, pairId: String, direction: CallDirection): Intent =
             Intent(context, CallForegroundService::class.java).apply {
-                if (!callId.isNullOrBlank()) putExtra(EXTRA_CALL_ID, callId)
-                if (!pairId.isNullOrBlank()) putExtra(EXTRA_PAIR_ID, pairId)
+                putExtra(EXTRA_CALL_ID, callId)
+                putExtra(EXTRA_PAIR_ID, pairId)
+                putExtra(EXTRA_CALL_DIRECTION, direction.name)
             }
     }
 }

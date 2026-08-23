@@ -43,15 +43,17 @@ class CallRuntimeControllerImpl @Inject constructor(
             // The same call command may be delivered more than once by a resumed
             // screen or notification. It is already owned by this runtime, so the
             // duplicate is a no-op; a different call must never replace it.
-            check(existingCallId == command.callId) { "A call runtime is already active" }
-            return
+            if (existingCallId == command.callId) return
+            throw IllegalStateException(
+                "A different call runtime is already active: $existingCallId",
+            )
         }
         activeCallId = command.callId
         try {
             // Start the foreground service while the user-initiated call is still eligible
             // under Android's while-in-use/background-start rules.
             runStage(command, "service.start") {
-                callServiceController.startForegroundCall(command.callId, command.pairId)
+                callServiceController.startForegroundCall(command.callId, command.pairId, command.direction)
             }
             runStage(command, "telecom.start") {
                 systemCallController.startCall(
@@ -84,7 +86,7 @@ class CallRuntimeControllerImpl @Inject constructor(
             releaseResourcesLocked(callIdOverride = command.callId)?.let { throw it }
             return
         }
-        check(currentCallId == command.callId) { "The requested call is not active" }
+        if (currentCallId != command.callId) return
         var failure: Throwable? = null
         try {
             mediaCallPort.execute(command)
@@ -99,7 +101,7 @@ class CallRuntimeControllerImpl @Inject constructor(
     }
 
     private suspend fun setMutedLocked(command: MediaCallCommand.SetMuted) {
-        check(activeCallId == command.callId) { "No active call runtime" }
+        if (activeCallId != command.callId) return
         mediaCallPort.execute(command)
     }
 
@@ -167,10 +169,7 @@ class CallRuntimeControllerImpl @Inject constructor(
     }
 
     override suspend fun selectAudioRoute(route: AudioRoute) = lifecycleMutex.withLock {
-        check(activeCallId != null) { "No active call runtime" }
-        check(callAudioSessionController.state.value.isReady) {
-            "Audio routes can only be selected while the audio session is active"
-        }
+        if (activeCallId == null || !callAudioSessionController.state.value.isReady) return@withLock
         audioRouteController.selectRoute(route)
     }
 }

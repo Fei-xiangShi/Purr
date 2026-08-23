@@ -63,12 +63,22 @@ class RealLiveKitCallDataSource @Inject constructor(
     }
 
     private suspend fun connect(command: MediaCallCommand.Connect) = lifecycleMutex.withLock {
-        check(command.callId !in terminatedCallIds) {
-            "A completed call session cannot be connected again"
+        if (command.callId in terminatedCallIds) {
+            throw IllegalStateException("A completed call session cannot be connected again")
         }
         val existing = activeCall.get()
-        check(existing == null) { "A different call session is already active" }
-        check(room == null) { "LiveKit room is already connected" }
+        if (existing != null) {
+            if (existing.callId == command.callId) return@withLock
+            throw IllegalStateException(
+                "A different LiveKit call is already active: ${existing.callId}",
+            )
+        }
+        if (room != null) {
+            releaseRoomLocked()?.let { throw it }
+            if (room != null) {
+                throw IllegalStateException("LiveKit room cleanup did not complete")
+            }
+        }
 
         val generation = generationCounter.incrementAndGet()
         // Defensive cleanup handles a provider that left a released room reference behind.
@@ -95,18 +105,16 @@ class RealLiveKitCallDataSource @Inject constructor(
             )
             command.terminationSignal.throwIfRequested()
 
-            check(isCurrent(createdRoom, generation)) {
-                "LiveKit call session was superseded while connecting"
-            }
+            if (!isCurrent(createdRoom, generation)) return@withLock
 
             val microphoneEnabled = createdRoom.localParticipant.setMicrophoneEnabled(true)
-            check(microphoneEnabled) { "Unable to publish microphone track" }
+            if (!microphoneEnabled) throw IllegalStateException("Unable to publish microphone track")
             command.terminationSignal.throwIfRequested()
             attachLocalAudioLevel(createdRoom)
             attachRemoteAudioLevel(createdRoom)
 
             val localIdentity = createdRoom.localParticipant.identity?.value
-                ?: command.localIdentity
+                ?: throw IllegalStateException("LiveKit local identity is unavailable")
             eventBus.emit(
                 MediaCallEvent.Connected(
                     callId = command.callId,
@@ -138,9 +146,7 @@ class RealLiveKitCallDataSource @Inject constructor(
 
     private suspend fun disconnect(command: MediaCallCommand.Disconnect) = lifecycleMutex.withLock {
         val current = activeCall.get() ?: return@withLock
-        check(current.callId == command.callId) {
-            "The requested call is not the active media call"
-        }
+        if (current.callId != command.callId) return@withLock
         activeCall.set(null)
         rememberTerminatedCall(current.callId)
         generationCounter.incrementAndGet()
@@ -148,14 +154,11 @@ class RealLiveKitCallDataSource @Inject constructor(
     }
 
     private suspend fun setMuted(command: MediaCallCommand.SetMuted) = lifecycleMutex.withLock {
-        val current = activeCall.get()
-            ?: error("LiveKit room is not connected")
-        check(current.callId == command.callId) {
-            "The requested call is not the active media call"
-        }
-        val activeRoom = room ?: error("LiveKit room is not connected")
+        val current = activeCall.get() ?: return@withLock
+        if (current.callId != command.callId) return@withLock
+        val activeRoom = room ?: return@withLock
         val changed = activeRoom.localParticipant.setMicrophoneEnabled(!command.muted)
-        check(changed) { "Unable to update microphone state" }
+        if (!changed) return@withLock
         if (command.muted) {
             detachLocalAudioLevel()
         } else {

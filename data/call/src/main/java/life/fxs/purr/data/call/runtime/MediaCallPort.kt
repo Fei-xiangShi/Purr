@@ -60,8 +60,8 @@ sealed interface MediaCallCommand {
         val pairId: String,
         val localIdentity: String,
         val connection: CallMediaConnection,
-        val remoteDisplayName: String = "Purr",
-        val direction: CallDirection = CallDirection.Outgoing,
+        val remoteDisplayName: String,
+        val direction: CallDirection,
         internal val terminationSignal: CallTerminationSignal = CallTerminationSignal(),
     ) : MediaCallCommand
 

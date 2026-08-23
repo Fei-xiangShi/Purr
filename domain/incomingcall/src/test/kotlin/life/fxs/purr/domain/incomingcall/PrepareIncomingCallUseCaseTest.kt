@@ -12,7 +12,7 @@ import life.fxs.purr.domain.account.repository.RealtimeRepository
 import life.fxs.purr.domain.account.usecase.ConsumeIncomingCallUseCase
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.ParticipantIdentity
-import life.fxs.purr.domain.call.model.PrepareCallParams
+import life.fxs.purr.domain.call.model.CallPreparationRequest
 import life.fxs.purr.domain.call.repository.CallRepository
 import life.fxs.purr.domain.call.usecase.PrepareCallSessionUseCase
 import org.junit.Test
@@ -50,7 +50,7 @@ class PrepareIncomingCallUseCaseTest {
 
     @Test
     fun `missing expected identity fails before repository access`() = runTest {
-        val result = useCase(params().copy(expectedCallId = null))
+        val result = useCase(params().copy(callId = ""))
 
         assertThat(result).isInstanceOf(AppResult.Failure::class.java)
         io.mockk.coVerify(exactly = 0) { callRepository.prepareCall(any()) }
@@ -68,12 +68,12 @@ class PrepareIncomingCallUseCaseTest {
         verify(exactly = 0) { realtimeRepository.consumeIncomingCall(any()) }
     }
 
-    private fun params() = PrepareCallParams(
+    private fun params() = CallPreparationRequest.Existing(
         pairId = "pair-1",
+        callId = "call-1",
         recordingConsent = true,
         remoteDisplayName = "Partner",
         direction = CallDirection.Incoming,
-        expectedCallId = "call-1",
     )
 
     private fun session() = CallSession(

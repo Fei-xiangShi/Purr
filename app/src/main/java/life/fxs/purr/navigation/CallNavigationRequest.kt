@@ -6,8 +6,8 @@ import life.fxs.purr.core.model.CallDirection
 internal data class CallNavigationRequest(
     val pairId: String,
     val requestId: Long,
-    val direction: CallDirection = CallDirection.Outgoing,
-    val expectedCallId: String? = null,
+    val direction: CallDirection,
+    val callId: String,
 )
 
 /**
@@ -25,19 +25,21 @@ internal class CallNavigationRequestStore {
 
     fun submit(
         pairId: String?,
-        direction: CallDirection = CallDirection.Outgoing,
-        expectedCallId: String? = null,
+        direction: CallDirection?,
+        callId: String?,
     ): CallNavigationRequest? {
         val requestId = nextRequestId
         nextRequestId = if (nextRequestId == Long.MAX_VALUE) 1L else nextRequestId + 1L
-        pending = pairId?.takeIf(String::isNotBlank)?.let {
-            CallNavigationRequest(
-                pairId = it,
-                requestId = requestId,
-                direction = direction,
-                expectedCallId = expectedCallId?.takeIf(String::isNotBlank),
-            )
-        }
+        pending = direction?.let { validDirection -> pairId?.takeIf(String::isNotBlank)
+            ?.let { validPairId -> callId?.takeIf(String::isNotBlank)?.let { validCallId -> validPairId to validCallId } }
+            ?.let {
+                CallNavigationRequest(
+                    pairId = it.first,
+                    requestId = requestId,
+                    direction = validDirection,
+                    callId = it.second,
+                )
+            } }
         return pending
     }
 

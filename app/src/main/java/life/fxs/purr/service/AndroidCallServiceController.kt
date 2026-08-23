@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
 import life.fxs.purr.core.media.service.CallServiceController
 import life.fxs.purr.core.media.service.ForegroundCallServiceState
+import life.fxs.purr.core.model.CallDirection
 
 @Singleton
 class AndroidCallServiceController @Inject constructor(
@@ -19,8 +20,8 @@ class AndroidCallServiceController @Inject constructor(
 ) : CallServiceController {
     override val foregroundState: StateFlow<ForegroundCallServiceState> = stateStore.state
 
-    override suspend fun startForegroundCall(callId: String, pairId: String) {
-        ContextCompat.startForegroundService(context, CallForegroundService.intent(context, callId, pairId))
+    override suspend fun startForegroundCall(callId: String, pairId: String, direction: CallDirection) {
+        ContextCompat.startForegroundService(context, CallForegroundService.intent(context, callId, pairId, direction))
         withTimeout(SERVICE_LIFECYCLE_TIMEOUT_MILLIS) {
             stateStore.state
                 .filter { it.activeCallId == callId }
@@ -28,11 +29,14 @@ class AndroidCallServiceController @Inject constructor(
         }
     }
 
-    override suspend fun stopForegroundCall(expectedCallId: String) {
-        if (!stateStore.isActiveFor(expectedCallId)) return
-        context.stopService(CallForegroundService.intent(context, expectedCallId))
+    override suspend fun stopForegroundCall(callId: String) {
+        if (!stateStore.isActiveFor(callId)) return
+        context.stopService(
+            android.content.Intent(context, CallForegroundService::class.java)
+                .putExtra(CallForegroundService.EXTRA_CALL_ID, callId),
+        )
         withTimeout(SERVICE_LIFECYCLE_TIMEOUT_MILLIS) {
-            stateStore.state.filter { it.activeCallId != expectedCallId }.first()
+            stateStore.state.filter { it.activeCallId != callId }.first()
         }
     }
 

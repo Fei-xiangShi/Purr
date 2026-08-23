@@ -18,7 +18,7 @@ import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.CallUiSnapshot
 import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.ParticipantIdentity
-import life.fxs.purr.domain.call.model.PrepareCallParams
+import life.fxs.purr.domain.call.model.CallPreparationRequest
 
 /** Creates a remote session, maps it, and owns compensation until the repository commits it. */
 internal class CallSessionPreparationCoordinator @Inject constructor(
@@ -28,19 +28,19 @@ internal class CallSessionPreparationCoordinator @Inject constructor(
     private val logger: PurrLogger,
 ) {
     internal var compensationTimeoutMillis: Long = DEFAULT_COMPENSATION_TIMEOUT_MILLIS
-    suspend fun prepare(params: PrepareCallParams): PreparedCallSession {
+    suspend fun prepare(request: CallPreparationRequest): PreparedCallSession {
         var ownedCallId: String? = null
         try {
             val response = api.createSession(
                 SessionRequestDto(
-                    pairId = params.pairId,
-                    recordingConsent = params.recordingConsent,
-                    expectedCallId = params.expectedCallId,
+                    pairId = request.pairId,
+                    recordingConsent = request.recordingConsent,
+                    expectedCallId = (request as? CallPreparationRequest.Existing)?.callId,
                 ),
             )
             ownedCallId = response.callId.takeIf { response.createdByRequest }
-            check(params.expectedCallId == null || response.callId == params.expectedCallId) {
-                "Prepared call identity does not match the requested incoming call"
+            if (request is CallPreparationRequest.Existing && response.callId != request.callId) {
+                throw IllegalStateException("Prepared call identity does not match requested call")
             }
             val callStatus = callStatusRemoteDataSource.getStatus(response.callId)
             val session = callUiSnapshotAssembler.assemble(
@@ -49,8 +49,8 @@ internal class CallSessionPreparationCoordinator @Inject constructor(
                     pairId = response.pairId,
                     participantIdentity = ParticipantIdentity(local = response.participantIdentity),
                     roomName = response.roomName,
-                    remoteDisplayName = params.remoteDisplayName,
-                    direction = params.direction,
+                    remoteDisplayName = request.remoteDisplayName,
+                    direction = request.direction,
                     connectionState = CallConnectionState.Preparing,
                     localAudioState = LocalAudioState.Disabled,
                     recordingState = callStatus.recordingStatus.toRecordingState(),

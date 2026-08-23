@@ -14,17 +14,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.core.model.CallDirection
 import life.fxs.purr.core.presentation.toUserMessage
 import life.fxs.purr.domain.call.model.CallConnectionState
+import life.fxs.purr.domain.call.model.CallPreparationRequest
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.LocalAudioState
-import life.fxs.purr.domain.call.model.PrepareCallParams
 import life.fxs.purr.domain.call.model.isEffectivelyMuted
 import life.fxs.purr.domain.call.usecase.ConnectCallUseCase
+import life.fxs.purr.domain.call.usecase.CancelCallPreparationUseCase
 import life.fxs.purr.domain.call.usecase.DisconnectCallUseCase
 import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
 import life.fxs.purr.domain.call.usecase.PrepareCallSessionUseCase
@@ -36,6 +39,7 @@ import life.fxs.purr.domain.incomingcall.PrepareIncomingCallUseCase
 @HiltViewModel
 class CallViewModel @Inject constructor(
     private val prepareCallSessionUseCase: PrepareCallSessionUseCase,
+    private val cancelCallPreparationUseCase: CancelCallPreparationUseCase,
     private val prepareIncomingCallUseCase: PrepareIncomingCallUseCase,
     private val connectCallUseCase: ConnectCallUseCase,
     private val observeCallStateUseCase: ObserveCallStateUseCase,
@@ -69,11 +73,15 @@ class CallViewModel @Inject constructor(
 
     fun onIntent(intent: CallIntent) {
         when (intent) {
-            is CallIntent.ConnectCall -> startCall(
+            is CallIntent.StartNewOutgoingCall -> startNewOutgoingCall(
+                pairId = intent.pairId,
+                remoteDisplayName = intent.remoteDisplayName,
+            )
+            is CallIntent.OpenExistingCall -> openExistingCall(
                 pairId = intent.pairId,
                 remoteDisplayName = intent.remoteDisplayName,
                 direction = intent.direction,
-                expectedCallId = intent.expectedCallId,
+                callId = intent.callId,
             )
             is CallIntent.MicrophonePermissionResult -> handleMicrophonePermissionResult(intent)
             CallIntent.MuteToggle -> toggleMute()
@@ -97,23 +105,48 @@ class CallViewModel @Inject constructor(
         endCall()
     }
 
-    private fun startCall(
+    private fun startNewOutgoingCall(
+        pairId: String,
+        remoteDisplayName: String,
+    ) {
+        startCall(
+            request = CallPreparationRequest.NewOutgoing(
+                pairId = pairId,
+                recordingConsent = true,
+                remoteDisplayName = remoteDisplayName,
+            ),
+        )
+    }
+
+    private fun openExistingCall(
         pairId: String,
         remoteDisplayName: String,
         direction: CallDirection,
-        expectedCallId: String?,
+        callId: String,
     ) {
-        if (expectedCallId != null && expectedCallId in locallyEndedCallIds) return
+        if (callId in locallyEndedCallIds) return
+        startCall(
+            request = CallPreparationRequest.Existing(
+                pairId = pairId,
+                callId = callId,
+                remoteDisplayName = remoteDisplayName,
+                direction = direction,
+                recordingConsent = true,
+            ),
+        )
+    }
+
+    private fun startCall(request: CallPreparationRequest) {
         prepareJob?.cancel()
         connectJob?.cancel()
         endRequested = false
-        currentCallId = expectedCallId
+        currentCallId = (request as? CallPreparationRequest.Existing)?.callId
         hasNavigatedHome = false
         prepareJob = viewModelScope.launch {
             val existingSession = observeCallStateUseCase().first()
             if (
-                expectedCallId != null &&
-                existingSession?.callId == expectedCallId &&
+                request is CallPreparationRequest.Existing &&
+                existingSession?.callId == request.callId &&
                 existingSession.connectionState.isResumable
             ) {
                 currentCallId = existingSession.callId
@@ -129,17 +162,9 @@ class CallViewModel @Inject constructor(
                 isLoading = true,
                 failureMessage = null,
             )
-            val params = PrepareCallParams(
-                pairId = pairId,
-                recordingConsent = true,
-                remoteDisplayName = remoteDisplayName,
-                direction = direction,
-                expectedCallId = expectedCallId,
-            )
-            val preparation = if (expectedCallId == null) {
-                prepareCallSessionUseCase(params)
-            } else {
-                prepareIncomingCallUseCase(params)
+            val preparation = when (request) {
+                is CallPreparationRequest.NewOutgoing -> prepareCallSessionUseCase(request)
+                is CallPreparationRequest.Existing -> prepareIncomingCallUseCase(request)
             }
             when (val result = preparation) {
                 is AppResult.Success -> {
@@ -156,6 +181,7 @@ class CallViewModel @Inject constructor(
                         failureMessage = message,
                     )
                     _effects.emit(CallEffect.ShowMessage(message))
+                    navigateHomeOnce()
                 }
             }
         }
@@ -169,17 +195,19 @@ class CallViewModel @Inject constructor(
                 screenState = CallScreenState.Connecting,
                 isLoading = true,
             )
-            handleActionResult(
-                result = connectCallUseCase(),
-                fallbackMessage = CALL_CONNECTION_FAILED_MESSAGE,
-                onFailure = { message ->
+            when (val result = connectCallUseCase()) {
+                is AppResult.Success -> Unit
+                is AppResult.Failure -> {
+                    val message = result.error.toCallUserMessage(CALL_CONNECTION_FAILED_MESSAGE)
                     _state.value = _state.value.copy(
                         screenState = CallScreenState.Failed,
                         isLoading = false,
                         failureMessage = message,
                     )
-                },
-            )
+                    _effects.emit(CallEffect.ShowMessage(message))
+                    endCall()
+                }
+            }
         }
     }
 
@@ -199,7 +227,7 @@ class CallViewModel @Inject constructor(
     private fun endCall() {
         if (endRequested) return
         endRequested = true
-        val endedCallId = currentCallId ?: _state.value.session?.callId
+        val endedCallId = currentCallId
         endedCallId?.let(locallyEndedCallIds::add)
         prepareJob?.cancel()
         prepareJob = null
@@ -211,13 +239,13 @@ class CallViewModel @Inject constructor(
             failureMessage = null,
         )
         viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
-            navigateHomeOnce()
-            when (val result = disconnectCallUseCase(endedCallId)) {
-                is AppResult.Success -> Unit
-                is AppResult.Failure -> emitError(
-                    result.error,
-                    fallbackMessage = CALL_END_FAILED_MESSAGE,
-                )
+            // Navigation destroys this ViewModel, but termination is application-owned.
+            // Commit the presentation boundary and the callId handoff in one
+            // non-cancellable section so the repository always receives the request.
+            withContext(NonCancellable) {
+                navigateHomeOnce()
+                cancelCallPreparationUseCase()
+                endedCallId?.let { disconnectCallUseCase(it) }
             }
         }
     }
@@ -259,7 +287,7 @@ class CallViewModel @Inject constructor(
         // A newly-created screen must not navigate away because of that stale snapshot.
         if (session.callId != currentCallId) return
         updateState(session)
-        if (!endRequested && session.connectionState == CallConnectionState.Disconnected) {
+        if (!endRequested && session.connectionState.isTerminal) {
             navigateHomeOnce()
         }
     }
@@ -296,7 +324,6 @@ class CallViewModel @Inject constructor(
     private companion object {
         const val CALL_PREPARATION_FAILED_MESSAGE = "通话准备失败，请稍后重试"
         const val CALL_CONNECTION_FAILED_MESSAGE = "通话连接失败，请稍后重试"
-        const val CALL_END_FAILED_MESSAGE = "通话已结束，但状态同步失败"
         const val CALL_ACTION_FAILED_MESSAGE = "通话操作失败，请稍后重试"
     }
 }

@@ -40,14 +40,13 @@ import life.fxs.purr.core.designsystem.component.VoiceCallScaffold
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.core.model.CallDirection
 import life.fxs.purr.domain.call.model.CallTiming
+import life.fxs.purr.domain.call.model.CallPreparationRequest
 import life.fxs.purr.domain.call.model.canToggleMute
 import life.fxs.purr.domain.call.model.isEffectivelyMuted
 
 @Composable
 fun CallScreenRoute(
-    pairId: String,
-    direction: CallDirection = CallDirection.Outgoing,
-    expectedCallId: String? = null,
+    request: CallPreparationRequest,
     partnerName: String = "对方",
     partnerAvatarUrl: String? = null,
     partnerAvatarModifier: Modifier = Modifier,
@@ -90,14 +89,20 @@ fun CallScreenRoute(
         contract = ActivityResultContracts.RequestPermission(),
     ) { requestMicrophonePermission() }
 
-    LaunchedEffect(pairId, partnerName, direction, expectedCallId) {
-        if (pairId.isNotBlank()) {
-            viewModel.onIntent(
-                CallIntent.ConnectCall(
-                    pairId = pairId,
+    LaunchedEffect(request, partnerName) {
+        when (request) {
+            is CallPreparationRequest.NewOutgoing -> viewModel.onIntent(
+                CallIntent.StartNewOutgoingCall(
+                    pairId = request.pairId,
                     remoteDisplayName = partnerName,
-                    direction = direction,
-                    expectedCallId = expectedCallId,
+                ),
+            )
+            is CallPreparationRequest.Existing -> viewModel.onIntent(
+                CallIntent.OpenExistingCall(
+                    pairId = request.pairId,
+                    callId = request.callId,
+                    remoteDisplayName = partnerName,
+                    direction = request.direction,
                 ),
             )
         }

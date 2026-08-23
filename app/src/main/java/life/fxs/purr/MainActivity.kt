@@ -44,10 +44,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             PurrTheme {
                 PurrNavHost(
-                    initialCallPairId = pendingCallRequest?.pairId,
-                    initialCallRequestId = pendingCallRequest?.requestId,
-                    initialCallDirection = pendingCallRequest?.direction ?: CallDirection.Outgoing,
-                    initialExpectedCallId = pendingCallRequest?.expectedCallId,
+                    initialCallRequest = pendingCallRequest,
                     onCallRequestConsumed = ::consumeCallRequest,
                     onCallSurfaceVisibilityChanged = callOverlayVisibilityStore::setCallSurfaceVisible,
                     onRecordingDownload = ::downloadRecording,
@@ -84,7 +81,7 @@ class MainActivity : ComponentActivity() {
         pendingCallRequest = callNavigationRequestStore.submit(
             intent.getStringExtra(EXTRA_CALL_PAIR_ID),
             intent.callDirection(),
-            intent.getStringExtra(EXTRA_EXPECTED_CALL_ID),
+            intent.getStringExtra(EXTRA_CALL_ID),
         )
     }
 
@@ -94,7 +91,7 @@ class MainActivity : ComponentActivity() {
                 Intent(intent).apply {
                     removeExtra(EXTRA_CALL_PAIR_ID)
                     removeExtra(EXTRA_CALL_DIRECTION)
-                    removeExtra(EXTRA_EXPECTED_CALL_ID)
+                    removeExtra(EXTRA_CALL_ID)
                 },
             )
         }
@@ -125,18 +122,24 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_CALL_PAIR_ID = IncomingCallNavigationContract.EXTRA_CALL_PAIR_ID
         const val EXTRA_CALL_DIRECTION = IncomingCallNavigationContract.EXTRA_CALL_DIRECTION
-        const val EXTRA_EXPECTED_CALL_ID = IncomingCallNavigationContract.EXTRA_EXPECTED_CALL_ID
+        const val EXTRA_CALL_ID = IncomingCallNavigationContract.EXTRA_CALL_ID
 
-        fun intent(context: android.content.Context, pairId: String?): Intent =
+        fun intent(
+            context: android.content.Context,
+            pairId: String,
+            callId: String,
+            direction: CallDirection,
+        ): Intent =
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                if (!pairId.isNullOrBlank()) putExtra(EXTRA_CALL_PAIR_ID, pairId)
+                putExtra(EXTRA_CALL_PAIR_ID, pairId)
+                putExtra(EXTRA_CALL_ID, callId)
+                putExtra(EXTRA_CALL_DIRECTION, direction.name)
             }
     }
 
 }
 
-private fun Intent.callDirection(): CallDirection =
+private fun Intent.callDirection(): CallDirection? =
     getStringExtra(MainActivity.EXTRA_CALL_DIRECTION)
         ?.let { serialized -> runCatching { CallDirection.valueOf(serialized) }.getOrNull() }
-        ?: CallDirection.Outgoing

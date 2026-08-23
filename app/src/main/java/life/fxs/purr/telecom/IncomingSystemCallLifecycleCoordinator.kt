@@ -63,7 +63,10 @@ class IncomingSystemCallLifecycleCoordinator @Inject internal constructor(
                 throw cancellation
             } catch (error: Throwable) {
                 Log.e(TAG, "Unable to release incoming Telecom call $currentCallId", error)
-                return@withLock
+                // The old owner is no longer authoritative for business state.
+                // Do not let a failed best-effort Telecom cleanup gate the next
+                // call; the platform controller owns its own eventual teardown.
+                managedCallId = null
             }
         }
 

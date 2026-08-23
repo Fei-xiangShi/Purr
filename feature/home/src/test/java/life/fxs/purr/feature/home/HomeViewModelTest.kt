@@ -106,10 +106,10 @@ class HomeViewModelTest {
 
             assertThat(viewModel.uiState.value.hasActiveCall).isTrue()
             assertThat(viewModel.uiState.value.activeCallTarget).isEqualTo(
-                HomeCallTarget(
+                HomeCallTarget.Existing(
                     pairId = "active-pair",
                     direction = CallDirection.Incoming,
-                    expectedCallId = "call-1",
+                    callId = "call-1",
                 ),
             )
             assertThat(viewModel.uiState.value.isCallable).isFalse()
@@ -119,10 +119,10 @@ class HomeViewModelTest {
 
             assertThat(effect.await()).isEqualTo(
                 HomeEffect.NavigateToCall(
-                    HomeCallTarget(
+                    HomeCallTarget.Existing(
                         pairId = "active-pair",
                         direction = CallDirection.Incoming,
-                        expectedCallId = "call-1",
+                        callId = "call-1",
                     ),
                 ),
             )
@@ -144,7 +144,8 @@ class HomeViewModelTest {
                 runCurrent()
 
                 assertThat(viewModel.uiState.value.hasActiveCall).isTrue()
-                assertThat(viewModel.uiState.value.activeCallTarget?.expectedCallId).isEqualTo("call-1")
+                assertThat((viewModel.uiState.value.activeCallTarget as? HomeCallTarget.Existing)?.callId)
+                    .isEqualTo("call-1")
                 assertThat(viewModel.uiState.value.isCallable).isFalse()
                 assertThat(viewModel.uiState.value.partner?.isCallable).isFalse()
             }
@@ -175,7 +176,7 @@ class HomeViewModelTest {
     }
 
     @Test
-    fun `local terminal state remains blocked while server end synchronization is pending`() =
+    fun `local terminal state is callable while server end synchronization is pending`() =
         runTest(dispatcher) {
             callLifecycleState.value = CallLifecycleState(
                 session = callSession(CallConnectionState.Disconnected),
@@ -183,16 +184,19 @@ class HomeViewModelTest {
             )
             withViewModel { viewModel ->
                 runCurrent()
-
-                assertThat(viewModel.uiState.value.hasActiveCall).isFalse()
-                assertThat(viewModel.uiState.value.isEndingCall).isTrue()
-                assertThat(viewModel.uiState.value.isCallable).isFalse()
-
-                callLifecycleState.value = callLifecycleState.value.copy(disconnectingCallId = null)
+                val effect = async { viewModel.effects.first() }
                 runCurrent()
 
+                assertThat(viewModel.uiState.value.hasActiveCall).isFalse()
                 assertThat(viewModel.uiState.value.isEndingCall).isFalse()
                 assertThat(viewModel.uiState.value.isCallable).isTrue()
+
+                viewModel.onIntent(HomeIntent.StartCall)
+                runCurrent()
+
+                assertThat(effect.await()).isEqualTo(
+                    HomeEffect.NavigateToCall(HomeCallTarget.NewOutgoing(pairId = "pair-1")),
+                )
             }
         }
 
@@ -224,7 +228,7 @@ class HomeViewModelTest {
                 runCurrent()
 
                 assertThat(effect.await()).isEqualTo(
-                    HomeEffect.NavigateToCall(HomeCallTarget(pairId = "pair-1")),
+                    HomeEffect.NavigateToCall(HomeCallTarget.NewOutgoing(pairId = "pair-1")),
                 )
             }
         }
@@ -265,7 +269,7 @@ class HomeViewModelTest {
 
             assertThat(effect.await()).isEqualTo(
                 HomeEffect.NavigateToCall(
-                    HomeCallTarget(pairId = "active-pair", expectedCallId = "call-1"),
+                    HomeCallTarget.Existing(pairId = "active-pair", callId = "call-1", direction = CallDirection.Outgoing),
                 ),
             )
         }
@@ -315,7 +319,7 @@ class HomeViewModelTest {
             runCurrent()
 
             assertThat(effect.await()).isEqualTo(
-                HomeEffect.NavigateToCall(HomeCallTarget(pairId = "pair-1")),
+                HomeEffect.NavigateToCall(HomeCallTarget.NewOutgoing(pairId = "pair-1")),
             )
             refreshGate.complete(Unit)
             runCurrent()

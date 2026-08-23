@@ -6,15 +6,15 @@ import org.junit.Test
 
 class CallLifecycleStateTest {
     @Test
-    fun `terminal session stays blocked until disconnect synchronization completes`() {
+    fun `terminal session is callable while disconnect synchronization completes`() {
         val session = session(CallConnectionState.Disconnected)
 
         val pending = CallLifecycleState(session, disconnectingCallId = session.callId)
         val complete = CallLifecycleState(session)
 
         assertThat(pending.resumableSession).isNull()
-        assertThat(pending.isTerminationInProgress).isTrue()
-        assertThat(pending.isNewCallBlocked).isTrue()
+        assertThat(pending.isTerminationInProgress).isFalse()
+        assertThat(pending.isNewCallBlocked).isFalse()
         assertThat(complete.isTerminationInProgress).isFalse()
         assertThat(complete.isNewCallBlocked).isFalse()
     }

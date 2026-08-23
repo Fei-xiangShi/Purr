@@ -129,9 +129,7 @@ class HomeViewModel @Inject constructor(
                     } else if (latestCallLifecycle.isNewCallBlocked) {
                         _effects.emit(HomeEffect.ShowError("上一通电话正在结束，请稍候"))
                     } else if (latestPair?.pairId != null) {
-                        _effects.emit(
-                            HomeEffect.NavigateToCall(HomeCallTarget(pairId = latestPair.pairId)),
-                        )
+                        _effects.emit(HomeEffect.NavigateToCall(HomeCallTarget.NewOutgoing(latestPair.pairId)))
                     } else {
                         _effects.emit(HomeEffect.ShowError("当前无法发起通话"))
                     }
@@ -161,10 +159,10 @@ class HomeViewModel @Inject constructor(
     }
 }
 
-private fun CallSession.toHomeCallTarget() = HomeCallTarget(
+private fun CallSession.toHomeCallTarget() = HomeCallTarget.Existing(
     pairId = pairId,
+    callId = callId,
     direction = direction,
-    expectedCallId = callId,
 )
 
 private data class HomeSources(

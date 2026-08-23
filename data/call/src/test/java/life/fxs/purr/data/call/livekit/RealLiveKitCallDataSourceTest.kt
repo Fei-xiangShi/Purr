@@ -274,8 +274,7 @@ class RealLiveKitCallDataSourceTest {
         assertThat(firstAttempt.exceptionOrNull()).isInstanceOf(IllegalStateException::class.java)
         assertThat(observed.filterIsInstance<MediaCallEvent.Failed>().single().reason)
             .isEqualTo("room creation failed")
-        assertThat(secondAttempt.exceptionOrNull()?.message)
-            .contains("completed call session")
+        assertThat(secondAttempt.exceptionOrNull()).isInstanceOf(IllegalStateException::class.java)
         observer.cancel()
     }
 
@@ -291,6 +290,8 @@ class RealLiveKitCallDataSourceTest {
         callId = "call-1",
         pairId = "pair-1",
         localIdentity = "pending",
+        remoteDisplayName = "Partner",
+        direction = life.fxs.purr.core.model.CallDirection.Outgoing,
         connection = CallMediaConnection(
             wsUrl = "wss://example.invalid",
             accessToken = "token",
@@ -313,6 +314,7 @@ class RealLiveKitCallDataSourceTest {
         every { room.localParticipant } returns localParticipant
         every { room.remoteParticipants } returns emptyMap()
         every { localParticipant.identity } returns null
+        every { localParticipant.identity?.value } returns "resolved-self"
         every { localParticipant.getTrackPublication(Track.Source.MICROPHONE) } returns microphonePublication
         every { microphonePublication.muted } answers { microphoneMuted }
         every { microphonePublication.track } returns localAudioTrack

@@ -28,6 +28,7 @@ import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.ParticipantIdentity
 import life.fxs.purr.domain.call.model.RecordingState
 import life.fxs.purr.domain.call.usecase.ConnectCallUseCase
+import life.fxs.purr.domain.call.usecase.CancelCallPreparationUseCase
 import life.fxs.purr.domain.call.usecase.DisconnectCallUseCase
 import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
 import life.fxs.purr.domain.call.usecase.PrepareCallSessionUseCase
@@ -45,6 +46,7 @@ class CallViewModelTest {
 
     private val prepareCallSessionUseCase = mockk<PrepareCallSessionUseCase>()
     private val prepareIncomingCallUseCase = mockk<PrepareIncomingCallUseCase>()
+    private val cancelCallPreparationUseCase = mockk<CancelCallPreparationUseCase>()
     private val connectCallUseCase = mockk<ConnectCallUseCase>()
     private val observeCallStateUseCase = mockk<ObserveCallStateUseCase>()
     private val toggleMuteUseCase = mockk<ToggleMuteUseCase>()
@@ -63,6 +65,7 @@ class CallViewModelTest {
         coEvery { toggleMuteUseCase.invoke(any()) } returns AppResult.Success(Unit)
         coEvery { selectAudioRouteUseCase.invoke(any()) } returns AppResult.Success(Unit)
         coEvery { disconnectCallUseCase.invoke(any()) } returns AppResult.Success(Unit)
+        coEvery { cancelCallPreparationUseCase.invoke() } returns Unit
     }
 
     @After
@@ -79,7 +82,7 @@ class CallViewModelTest {
         ))
         val viewModel = createViewModel()
 
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+        viewModel.onIntent(CallIntent.StartNewOutgoingCall(pairId = "pair-1"))
         advanceUntilIdle()
 
         coVerify(exactly = 1) {
@@ -98,7 +101,7 @@ class CallViewModelTest {
         ))
         val viewModel = createViewModel()
 
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+        viewModel.onIntent(CallIntent.StartNewOutgoingCall(pairId = "pair-1"))
         runCurrent()
         viewModel.onIntent(CallIntent.MicrophonePermissionResult(granted = true))
         advanceUntilIdle()
@@ -119,11 +122,11 @@ class CallViewModelTest {
         val viewModel = createViewModel()
 
         viewModel.onIntent(
-            CallIntent.ConnectCall(
+            CallIntent.OpenExistingCall(
                 pairId = "pair-1",
                 remoteDisplayName = "Partner",
                 direction = CallDirection.Incoming,
-                expectedCallId = "call-1",
+                callId = "call-1",
             ),
         )
         advanceUntilIdle()
@@ -134,7 +137,7 @@ class CallViewModelTest {
                     params.pairId == "pair-1" &&
                         params.remoteDisplayName == "Partner" &&
                         params.direction == CallDirection.Incoming &&
-                        params.expectedCallId == "call-1"
+                        params.callId == "call-1"
                 },
             )
         }
@@ -150,7 +153,7 @@ class CallViewModelTest {
         )
         val viewModel = createViewModel()
 
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-1"))
+        viewModel.onIntent(CallIntent.OpenExistingCall(pairId = "pair-1", callId = "call-1", direction = CallDirection.Outgoing))
         advanceUntilIdle()
 
         coVerify(exactly = 0) { prepareCallSessionUseCase.invoke(any()) }
@@ -169,7 +172,7 @@ class CallViewModelTest {
         )
         val viewModel = createViewModel()
 
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-1"))
+        viewModel.onIntent(CallIntent.OpenExistingCall(pairId = "pair-1", callId = "call-1", direction = CallDirection.Outgoing))
         runCurrent()
         viewModel.onIntent(CallIntent.MicrophonePermissionResult(granted = true))
         advanceUntilIdle()
@@ -198,7 +201,7 @@ class CallViewModelTest {
         val viewModel = createViewModel()
 
         viewModel.effects.test {
-            viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+            viewModel.onIntent(CallIntent.StartNewOutgoingCall(pairId = "pair-1"))
             advanceUntilIdle()
 
             assertThat(awaitItem()).isEqualTo(CallEffect.RequestMicrophonePermission)
@@ -217,7 +220,7 @@ class CallViewModelTest {
         ))
         val viewModel = createViewModel()
 
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+        viewModel.onIntent(CallIntent.StartNewOutgoingCall(pairId = "pair-1"))
         runCurrent()
         viewModel.onIntent(CallIntent.MicrophonePermissionResult(granted = false))
         advanceUntilIdle()
@@ -234,7 +237,7 @@ class CallViewModelTest {
         coEvery { prepareCallSessionUseCase.invoke(any()) } coAnswers { preparedSession.await() }
         val viewModel = createViewModel()
 
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+        viewModel.onIntent(CallIntent.StartNewOutgoingCall(pairId = "pair-1"))
         runCurrent()
         assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Dialing)
 
@@ -250,7 +253,7 @@ class CallViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 0) { connectCallUseCase.invoke() }
-        coVerify(exactly = 1) { disconnectCallUseCase.invoke(null) }
+        coVerify(exactly = 0) { disconnectCallUseCase.invoke(any()) }
         assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
         assertThat(viewModel.state.value.isLoading).isFalse()
     }
@@ -265,7 +268,7 @@ class CallViewModelTest {
         coEvery { connectCallUseCase.invoke() } coAnswers { awaitCancellation() }
         val viewModel = createViewModel()
 
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1"))
+        viewModel.onIntent(CallIntent.StartNewOutgoingCall(pairId = "pair-1"))
         runCurrent()
         viewModel.onIntent(CallIntent.MicrophonePermissionResult(granted = true))
         runCurrent()
@@ -286,12 +289,12 @@ class CallViewModelTest {
             localAudioState = LocalAudioState.Enabled,
             recordingState = RecordingState.Recording,
         )
-        coEvery { disconnectCallUseCase.invoke() } coAnswers {
+        coEvery { disconnectCallUseCase.invoke(any()) } coAnswers {
             finishTermination.await()
             AppResult.Success(Unit)
         }
         val viewModel = createViewModel()
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-1"))
+        viewModel.onIntent(CallIntent.OpenExistingCall(pairId = "pair-1", callId = "call-1", direction = CallDirection.Outgoing))
         runCurrent()
 
         viewModel.effects.test {
@@ -334,14 +337,13 @@ class CallViewModelTest {
         coEvery { disconnectCallUseCase.invoke("call-1") } returns
             AppResult.Failure(AppError.Network("disconnect failed"))
         val viewModel = createViewModel()
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-1"))
+        viewModel.onIntent(CallIntent.OpenExistingCall(pairId = "pair-1", callId = "call-1", direction = CallDirection.Outgoing))
         runCurrent()
 
         viewModel.effects.test {
             viewModel.onIntent(CallIntent.EndCall)
 
             assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome)
-            assertThat(awaitItem()).isInstanceOf(CallEffect.ShowMessage::class.java)
             assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
 
             sessionFlow.value = sampleSession(
@@ -374,7 +376,7 @@ class CallViewModelTest {
             ),
         )
         val viewModel = createViewModel()
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-old"))
+        viewModel.onIntent(CallIntent.OpenExistingCall(pairId = "pair-1", callId = "call-old", direction = CallDirection.Outgoing))
         runCurrent()
 
         viewModel.effects.test {
@@ -382,7 +384,7 @@ class CallViewModelTest {
             assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome)
 
             viewModel.onIntent(
-                CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-new"),
+                CallIntent.OpenExistingCall(pairId = "pair-1", callId = "call-new", direction = CallDirection.Incoming),
             )
             advanceUntilIdle()
             assertThat(awaitItem()).isEqualTo(CallEffect.RequestMicrophonePermission)
@@ -410,7 +412,7 @@ class CallViewModelTest {
             recordingState = RecordingState.Recording,
         )
         val viewModel = createViewModel()
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-1"))
+        viewModel.onIntent(CallIntent.OpenExistingCall(pairId = "pair-1", callId = "call-1", direction = CallDirection.Outgoing))
         runCurrent()
 
         viewModel.effects.test {
@@ -436,10 +438,10 @@ class CallViewModelTest {
 
             viewModel.effects.test {
                 viewModel.onIntent(
-                    CallIntent.ConnectCall(
+                    CallIntent.OpenExistingCall(
                         pairId = "pair-1",
                         direction = CallDirection.Incoming,
-                        expectedCallId = "call-1",
+                        callId = "call-1",
                     ),
                 )
                 runCurrent()
@@ -447,13 +449,14 @@ class CallViewModelTest {
                 assertThat(awaitItem()).isEqualTo(
                     CallEffect.ShowMessage("通话准备失败，请稍后重试"),
                 )
+                assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome)
                 assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Failed)
                 assertThat(viewModel.state.value.failureMessage)
                     .isEqualTo("通话准备失败，请稍后重试")
                 expectNoEvents()
 
                 viewModel.onIntent(CallIntent.EndCall)
-                assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome)
+                expectNoEvents()
                 coVerify(exactly = 1) { disconnectCallUseCase.invoke("call-1") }
                 cancelAndIgnoreRemainingEvents()
             }
@@ -474,24 +477,23 @@ class CallViewModelTest {
 
         viewModel.effects.test {
             viewModel.onIntent(
-                CallIntent.ConnectCall(
+                CallIntent.OpenExistingCall(
                     pairId = "pair-1",
                     direction = CallDirection.Incoming,
-                    expectedCallId = "call-1",
+                    callId = "call-1",
                 ),
             )
+            runCurrent()
             assertThat(awaitItem()).isEqualTo(CallEffect.RequestMicrophonePermission)
 
             viewModel.onIntent(CallIntent.MicrophonePermissionResult(granted = true))
-            runCurrent()
+            advanceUntilIdle()
 
             assertThat(awaitItem()).isEqualTo(
                 CallEffect.ShowMessage("网络连接失败，请检查网络后重试"),
             )
-            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Failed)
-            assertThat(viewModel.state.value.failureMessage)
-                .isEqualTo("网络连接失败，请检查网络后重试")
-            expectNoEvents()
+            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome)
+            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
             cancelAndIgnoreRemainingEvents()
         }
     }
@@ -504,7 +506,7 @@ class CallViewModelTest {
             recordingState = RecordingState.Recording,
         )
         val viewModel = createViewModel()
-        viewModel.onIntent(CallIntent.ConnectCall(pairId = "pair-1", expectedCallId = "call-1"))
+        viewModel.onIntent(CallIntent.OpenExistingCall(pairId = "pair-1", callId = "call-1", direction = CallDirection.Outgoing))
         runCurrent()
 
         viewModel.effects.test {
@@ -518,7 +520,7 @@ class CallViewModelTest {
             assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Failed)
             assertThat(viewModel.state.value.failureMessage)
                 .isEqualTo("通话连接失败，请稍后重试")
-            expectNoEvents()
+            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome)
             cancelAndIgnoreRemainingEvents()
         }
     }
@@ -590,6 +592,7 @@ class CallViewModelTest {
 
     private fun createViewModel(): CallViewModel = CallViewModel(
         prepareCallSessionUseCase = prepareCallSessionUseCase,
+        cancelCallPreparationUseCase = cancelCallPreparationUseCase,
         prepareIncomingCallUseCase = prepareIncomingCallUseCase,
         connectCallUseCase = connectCallUseCase,
         observeCallStateUseCase = observeCallStateUseCase,
