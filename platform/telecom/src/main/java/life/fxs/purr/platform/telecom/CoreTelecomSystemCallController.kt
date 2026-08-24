@@ -9,6 +9,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -96,17 +97,36 @@ class CoreTelecomSystemCallController @Inject internal constructor(
             try {
                 session.controlScope.disconnect(DisconnectCause(DisconnectCause.LOCAL))
                     .requireSuccess("disconnect")
-                withTimeout(CALL_CLOSE_TIMEOUT_MILLIS) { session.closed.await() }
+                // Telecom may take several seconds to deliver the final close
+                // callback. The app's local call state must not wait for that
+                // callback, otherwise a hang-up appears stuck and the next call
+                // is incorrectly blocked by an old platform session.
+                detachActiveSession(session)
+                applicationScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                    try {
+                        withTimeout(CALL_CLOSE_TIMEOUT_MILLIS) { session.closed.await() }
+                    } catch (timeout: TimeoutCancellationException) {
+                        session.owner.job?.cancel(timeout)
+                    }
+                }
             } catch (timeout: TimeoutCancellationException) {
-                session.owner.job?.cancel(timeout)
                 throw timeout
             } catch (error: Throwable) {
                 if (!session.closed.isCompleted) {
                     session.signals.localDisconnectRequested = false
                 }
+                detachActiveSession(session)
                 throw error
             }
         }
+    }
+
+    private fun detachActiveSession(session: ActiveSession) {
+        synchronized(lock) {
+            if (activeSession === session) activeSession = null
+        }
+        mutableAvailableRoutes.value = DEFAULT_ROUTES
+        mutableActiveRoute.value = AudioRoute.Earpiece
     }
 
     override suspend fun selectRoute(route: AudioRoute) {

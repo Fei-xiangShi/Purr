@@ -8,12 +8,15 @@ import io.livekit.android.room.participant.ConnectionQuality
 import io.livekit.android.room.track.LocalAudioTrack
 import io.livekit.android.room.track.RemoteAudioTrack
 import io.livekit.android.room.track.Track
+import livekit.org.webrtc.PeerConnection
 import java.util.LinkedHashSet
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -21,6 +24,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import life.fxs.purr.core.common.ApplicationScope
 import life.fxs.purr.core.common.PurrLogger
 import life.fxs.purr.data.call.audio.MutableCallAudioLevelProvider
@@ -104,6 +108,12 @@ class RealLiveKitCallDataSource @Inject constructor(
                     // Subscribing must stay enabled so the peer microphone is
                     // delivered even when local publication starts manually.
                     autoSubscribe = true,
+                    // Keep a small public STUN fallback in addition to the ICE
+                    // servers returned by LiveKit.  Some Android 16/OnePlus
+                    // networks do not gather a server-reflexive candidate from
+                    // the server-only list; without one, ICE can remain in
+                    // `unknown` even though signaling succeeded.
+                    iceServers = FALLBACK_ICE_SERVERS,
                     audio = false,
                     video = false,
                 ),
@@ -155,7 +165,11 @@ class RealLiveKitCallDataSource @Inject constructor(
         activeCall.set(null)
         rememberTerminatedCall(current.callId)
         generationCounter.incrementAndGet()
-        releaseRoomLocked()?.let { throw it }
+        // A user hang-up is a local state transition, not a synchronous wait for
+        // WebRTC/DTLS shutdown.  Detach all process-visible references now and
+        // let the native room finish disconnecting in ApplicationScope.  This
+        // keeps the next call and the UI independent from a slow peer/network.
+        releaseRoomAsyncLocked()
     }
 
     private suspend fun setMuted(command: MediaCallCommand.SetMuted) = lifecycleMutex.withLock {
@@ -453,6 +467,55 @@ class RealLiveKitCallDataSource @Inject constructor(
         return failure
     }
 
+    /** Detaches the room immediately and performs native shutdown off the call path. */
+    private fun releaseRoomAsyncLocked() {
+        roomEventsJob?.cancel()
+        roomEventsJob = null
+        detachLocalAudioLevel()
+        detachRemoteAudioLevel()
+        val detachedRoom = room
+        room = null
+        roomStateProvider.update(null)
+        if (detachedRoom == null) return
+
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            withContext(Dispatchers.IO) {
+                val disconnectStartedAt = System.nanoTime()
+                logger.d(LOG_TAG, "phase=livekit.disconnect event=begin async=true")
+                runCatching { detachedRoom.disconnect() }
+                    .onSuccess {
+                        logger.d(
+                            LOG_TAG,
+                            "phase=livekit.disconnect event=end async=true elapsedMs=${elapsedMillis(disconnectStartedAt)}",
+                        )
+                    }
+                    .onFailure { throwable ->
+                        logger.e(
+                            LOG_TAG,
+                            throwable,
+                            "phase=livekit.disconnect event=error async=true elapsedMs=${elapsedMillis(disconnectStartedAt)}",
+                        )
+                    }
+                val releaseStartedAt = System.nanoTime()
+                logger.d(LOG_TAG, "phase=livekit.release event=begin async=true")
+                runCatching { detachedRoom.release() }
+                    .onSuccess {
+                        logger.d(
+                            LOG_TAG,
+                            "phase=livekit.release event=end async=true elapsedMs=${elapsedMillis(releaseStartedAt)}",
+                        )
+                    }
+                    .onFailure { throwable ->
+                        logger.e(
+                            LOG_TAG,
+                            throwable,
+                            "phase=livekit.release event=error async=true elapsedMs=${elapsedMillis(releaseStartedAt)}",
+                        )
+                    }
+            }
+        }
+    }
+
     private data class ActiveMediaCall(
         val callId: String,
         val generation: Long,
@@ -464,6 +527,10 @@ class RealLiveKitCallDataSource @Inject constructor(
         const val LOG_TAG = "CallLiveKit"
         const val EVENT_BUFFER_SIZE = 64
         const val MAX_TERMINATED_CALL_IDS = 128
+        val FALLBACK_ICE_SERVERS = listOf(
+            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
+        )
     }
 }
 
