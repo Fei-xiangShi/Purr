@@ -67,6 +67,11 @@ class RealLiveKitCallDataSource @Inject constructor(
     }
 
     private suspend fun connect(command: MediaCallCommand.Connect) = lifecycleMutex.withLock {
+        val connectStartedAt = System.nanoTime()
+        logger.d(
+            LOG_TAG,
+            "callId=${command.callId} phase=livekit.connect event=begin wsUrl=${command.connection.wsUrl}",
+        )
         if (command.callId in terminatedCallIds) {
             throw IllegalStateException("A completed call session cannot be connected again")
         }
@@ -118,6 +123,10 @@ class RealLiveKitCallDataSource @Inject constructor(
                     video = false,
                 ),
             )
+            logger.d(
+                LOG_TAG,
+                "callId=${command.callId} phase=livekit.connect event=signaling_connected elapsedMs=${elapsedMillis(connectStartedAt)}",
+            )
             command.terminationSignal.throwIfRequested()
 
             if (!isCurrent(createdRoom, generation)) return@withLock
@@ -139,7 +148,16 @@ class RealLiveKitCallDataSource @Inject constructor(
                     remoteParticipantConnected = createdRoom.remoteParticipants.isNotEmpty(),
                 ),
             )
+            logger.d(
+                LOG_TAG,
+                "callId=${command.callId} phase=livekit.connect event=media_ready elapsedMs=${elapsedMillis(connectStartedAt)} localIdentity=$localIdentity remoteCount=${createdRoom.remoteParticipants.size}",
+            )
         } catch (throwable: Throwable) {
+            logger.e(
+                LOG_TAG,
+                throwable,
+                "callId=${command.callId} phase=livekit.connect event=error elapsedMs=${elapsedMillis(connectStartedAt)}",
+            )
             val shouldPublishFailure = isActiveGeneration(command.callId, generation)
             if (shouldPublishFailure) {
                 activeCall.set(null)
@@ -200,6 +218,10 @@ class RealLiveKitCallDataSource @Inject constructor(
             activeRoom.events.collect { event ->
                 when (event) {
                     is RoomEvent.Connected -> {
+                        logger.d(
+                            LOG_TAG,
+                            "callId=${mediaCall.callId} phase=livekit.event event=connected remoteCount=${activeRoom.remoteParticipants.size}",
+                        )
                         attachRemoteAudioLevel(activeRoom)
                         publishParticipantChanged(activeRoom, mediaCall)
                     }
@@ -209,6 +231,10 @@ class RealLiveKitCallDataSource @Inject constructor(
                     is RoomEvent.Reconnecting -> publishReconnecting(activeRoom, mediaCall)
 
                     is RoomEvent.Reconnected -> {
+                        logger.d(
+                            LOG_TAG,
+                            "callId=${mediaCall.callId} phase=livekit.event event=reconnected remoteCount=${activeRoom.remoteParticipants.size}",
+                        )
                         attachLocalAudioLevel(activeRoom)
                         attachRemoteAudioLevel(activeRoom)
                         publishReconnected(activeRoom, mediaCall)
@@ -223,11 +249,19 @@ class RealLiveKitCallDataSource @Inject constructor(
                     is RoomEvent.ParticipantConnected,
                     is RoomEvent.ParticipantDisconnected,
                     -> {
+                        logger.d(
+                            LOG_TAG,
+                            "callId=${mediaCall.callId} phase=livekit.event event=participant_changed remoteCount=${activeRoom.remoteParticipants.size}",
+                        )
                         attachRemoteAudioLevel(activeRoom)
                         publishParticipantChanged(activeRoom, mediaCall)
                     }
 
                     is RoomEvent.TrackSubscribed -> {
+                        logger.d(
+                            LOG_TAG,
+                            "callId=${mediaCall.callId} phase=livekit.event event=track_subscribed kind=${event.track.kind}",
+                        )
                         (event.track as? RemoteAudioTrack)?.let(::attachRemoteAudioLevel)
                     }
 
