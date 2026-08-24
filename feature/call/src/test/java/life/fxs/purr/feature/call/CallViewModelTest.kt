@@ -212,6 +212,41 @@ class CallViewModelTest {
     }
 
     @Test
+    fun `same call id terminal snapshot is ignored until a new preparation starts`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            callId = "call-1",
+            connectionState = CallConnectionState.Disconnected,
+            localAudioState = LocalAudioState.Disabled,
+            recordingState = RecordingState.NotRecording,
+        )
+        coEvery { prepareIncomingCallUseCase.invoke(any()) } returns AppResult.Success(
+            sampleSession(
+                callId = "call-1",
+                connectionState = CallConnectionState.Preparing,
+                localAudioState = LocalAudioState.Disabled,
+                recordingState = RecordingState.NotRecording,
+            ),
+        )
+        val viewModel = createViewModel()
+
+        viewModel.effects.test {
+            viewModel.onIntent(
+                CallIntent.OpenExistingCall(
+                    pairId = "pair-1",
+                    callId = "call-1",
+                    direction = CallDirection.Incoming,
+                ),
+            )
+            runCurrent()
+
+            assertThat(awaitItem()).isEqualTo(CallEffect.RequestMicrophonePermission)
+            assertThat(viewModel.state.value.session?.connectionState)
+                .isEqualTo(CallConnectionState.Preparing)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun `microphone permission denial prevents joining call`() = runTest(dispatcher) {
         coEvery { prepareCallSessionUseCase.invoke(any()) } returns AppResult.Success(sampleSession(
             connectionState = CallConnectionState.Preparing,

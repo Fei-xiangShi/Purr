@@ -35,9 +35,11 @@ class AndroidCallServiceController @Inject constructor(
             android.content.Intent(context, CallForegroundService::class.java)
                 .putExtra(CallForegroundService.EXTRA_CALL_ID, callId),
         )
-        withTimeout(SERVICE_LIFECYCLE_TIMEOUT_MILLIS) {
-            stateStore.state.filter { it.activeCallId != callId }.first()
-        }
+        // The app owns the local termination boundary. Android may deliver
+        // Service.onDestroy() later (or not at all during process teardown),
+        // but that lifecycle callback must never keep the call UI in
+        // "ending" state. onDestroy() remains an idempotent confirmation.
+        stateStore.markStopped(callId)
     }
 
     private companion object {

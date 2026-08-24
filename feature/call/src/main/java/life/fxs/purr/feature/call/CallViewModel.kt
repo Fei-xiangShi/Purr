@@ -51,7 +51,10 @@ class CallViewModel @Inject constructor(
     private val _state = MutableStateFlow(CallState())
     val state = _state.asStateFlow()
 
-    private val _effects = MutableSharedFlow<CallEffect>()
+    // Effects are process-local commands. Keep a small buffer so the
+    // navigation boundary cannot be delayed by a transient collector
+    // lifecycle while the repository continues teardown in ApplicationScope.
+    private val _effects = MutableSharedFlow<CallEffect>(extraBufferCapacity = 1)
     val effects = _effects.asSharedFlow()
     val localAudioLevel: StateFlow<Float> = audioLevelProvider.localAudioLevel
     val remoteAudioLevel: StateFlow<Float> = audioLevelProvider.remoteAudioLevel
@@ -60,6 +63,7 @@ class CallViewModel @Inject constructor(
     private var connectJob: Job? = null
     private var endRequested: Boolean = false
     private var currentCallId: String? = null
+    private var hasStartedCurrentCall: Boolean = false
     private var hasNavigatedHome: Boolean = false
     private val locallyEndedCallIds = mutableSetOf<String>()
 
@@ -141,6 +145,7 @@ class CallViewModel @Inject constructor(
         connectJob?.cancel()
         endRequested = false
         currentCallId = (request as? CallPreparationRequest.Existing)?.callId
+        hasStartedCurrentCall = false
         hasNavigatedHome = false
         prepareJob = viewModelScope.launch {
             val existingSession = observeCallStateUseCase().first()
@@ -150,6 +155,7 @@ class CallViewModel @Inject constructor(
                 existingSession.connectionState.isResumable
             ) {
                 currentCallId = existingSession.callId
+                hasStartedCurrentCall = true
                 updateState(existingSession)
                 if (existingSession.connectionState == CallConnectionState.Preparing) {
                     _effects.emit(CallEffect.RequestMicrophonePermission)
@@ -170,6 +176,7 @@ class CallViewModel @Inject constructor(
                 is AppResult.Success -> {
                     if (endRequested) return@launch
                     currentCallId = result.value.callId
+                    hasStartedCurrentCall = true
                     updateState(result.value)
                     _effects.emit(CallEffect.RequestMicrophonePermission)
                 }
@@ -287,7 +294,7 @@ class CallViewModel @Inject constructor(
         // A newly-created screen must not navigate away because of that stale snapshot.
         if (session.callId != currentCallId) return
         updateState(session)
-        if (!endRequested && session.connectionState.isTerminal) {
+        if (!endRequested && hasStartedCurrentCall && session.connectionState.isTerminal) {
             navigateHomeOnce()
         }
     }

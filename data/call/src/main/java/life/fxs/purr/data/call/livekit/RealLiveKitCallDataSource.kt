@@ -99,6 +99,11 @@ class RealLiveKitCallDataSource @Inject constructor(
                 url = command.connection.wsUrl,
                 token = command.connection.accessToken,
                 options = ConnectOptions(
+                    // Publishing is enabled only after the room is connected
+                    // and the termination signal has been checked below.
+                    // Subscribing must stay enabled so the peer microphone is
+                    // delivered even when local publication starts manually.
+                    autoSubscribe = true,
                     audio = false,
                     video = false,
                 ),
