@@ -13,7 +13,11 @@ import life.fxs.purr.core.common.ApplicationScope
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.media.telecom.SystemCallController
 import life.fxs.purr.core.media.telecom.SystemCallEvent
+import life.fxs.purr.core.media.telecom.SystemCallInterruptionDispatcher
+import life.fxs.purr.core.media.telecom.SystemCallInterruptionHandler
 import life.fxs.purr.core.model.CallDirection
+import life.fxs.purr.core.model.SystemCallInterruptionRequest
+import life.fxs.purr.core.model.SystemCallInterruptionResult
 import life.fxs.purr.domain.account.model.IncomingCall
 import life.fxs.purr.domain.account.usecase.DeclineIncomingCallUseCase
 import life.fxs.purr.domain.account.usecase.ObservePairBondUseCase
@@ -21,12 +25,17 @@ import life.fxs.purr.domain.account.usecase.ObserveRealtimeStateUseCase
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.usecase.DisconnectCallUseCase
 import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
+import life.fxs.purr.domain.call.usecase.ResumeCallAfterSystemCallUseCase
+import life.fxs.purr.domain.call.usecase.SuspendCallForSystemCallUseCase
 import life.fxs.purr.domain.incomingcall.IncomingCallReminderContent
 import life.fxs.purr.incomingcall.IncomingCallUiLauncher
 
 @Singleton
 class SystemCallEventCoordinator @Inject constructor(
     private val systemCallController: SystemCallController,
+    private val interruptionDispatcher: SystemCallInterruptionDispatcher,
+    private val suspendCallForSystemCall: SuspendCallForSystemCallUseCase,
+    private val resumeCallAfterSystemCall: ResumeCallAfterSystemCallUseCase,
     private val disconnectCall: DisconnectCallUseCase,
     private val declineIncomingCall: DeclineIncomingCallUseCase,
     private val observeCallState: ObserveCallStateUseCase,
@@ -34,11 +43,12 @@ class SystemCallEventCoordinator @Inject constructor(
     private val observePairBond: ObservePairBondUseCase,
     private val incomingCallUiLauncher: IncomingCallUiLauncher,
     @ApplicationScope private val applicationScope: CoroutineScope,
-) {
+) : SystemCallInterruptionHandler {
     private val started = AtomicBoolean(false)
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
+        interruptionDispatcher.register(this)
         systemCallController.events
             .onEach { event ->
                 when (event) {
@@ -48,6 +58,14 @@ class SystemCallEventCoordinator @Inject constructor(
             }
             .launchIn(applicationScope)
     }
+
+    override suspend fun onSetInactive(
+        request: SystemCallInterruptionRequest,
+    ): SystemCallInterruptionResult = suspendCallForSystemCall(request)
+
+    override suspend fun onSetActive(
+        request: SystemCallInterruptionRequest,
+    ): SystemCallInterruptionResult = resumeCallAfterSystemCall(request)
 
     private suspend fun handleDisconnectRequest(callId: String) {
         try {

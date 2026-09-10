@@ -14,4 +14,5 @@ data class CallSession(
     val recordingState: RecordingState = RecordingState.NotRecording,
     val timing: CallTiming = CallTiming(),
     val uiSnapshot: CallUiSnapshot = CallUiSnapshot(),
+    val interruptionState: CallInterruptionState = CallInterruptionState(),
 )

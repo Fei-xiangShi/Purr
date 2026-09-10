@@ -235,7 +235,7 @@ private fun Modifier.partnerAvatarElement(
     transitionScope: SharedTransitionScope,
     animatedVisibilityScope: AnimatedVisibilityScope,
 ): Modifier = with(transitionScope) {
-    sharedElement(
+    this@partnerAvatarElement.sharedElement(
         state = rememberSharedContentState(PARTNER_AVATAR_SHARED_KEY),
         animatedVisibilityScope = animatedVisibilityScope,
     )

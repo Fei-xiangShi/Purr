@@ -42,7 +42,7 @@ class ObservePresentableIncomingCallUseCaseTest {
     }
 
     @Test
-    fun `matching local session suppresses a candidate through termination`() = runTest {
+    fun `matching local session suppresses a candidate only while the attempt is ongoing`() = runTest {
         val candidate = incomingCall("call-1")
         val observed = mutableListOf<IncomingCall?>()
         val collection = launch(UnconfinedTestDispatcher(testScheduler)) {
@@ -54,7 +54,7 @@ class ObservePresentableIncomingCallUseCaseTest {
         callSession.value = session("call-1", CallConnectionState.Disconnected)
         collection.cancelAndJoin()
 
-        assertThat(observed).containsExactly(null, candidate, null).inOrder()
+        assertThat(observed).containsExactly(null, candidate, null, candidate).inOrder()
     }
 
     @Test
@@ -109,4 +109,3 @@ class ObservePresentableIncomingCallUseCaseTest {
         connectionState = state,
     )
 }
-

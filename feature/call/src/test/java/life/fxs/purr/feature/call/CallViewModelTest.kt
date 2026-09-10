@@ -31,11 +31,14 @@ import life.fxs.purr.core.media.screenshare.WhepPlaybackRequest
 import life.fxs.purr.core.media.screenshare.WhepPlaybackStatus
 import life.fxs.purr.domain.call.repository.CallAudioLevelProvider
 import life.fxs.purr.domain.call.model.CallConnectionState
+import life.fxs.purr.domain.call.model.CallInterruptionState
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.CallUiSnapshot
 import life.fxs.purr.domain.call.model.LocalAudioState
+import life.fxs.purr.domain.call.model.LocalCallInterruption
 import life.fxs.purr.domain.call.model.ParticipantIdentity
 import life.fxs.purr.domain.call.model.RecordingState
+import life.fxs.purr.domain.call.model.RemoteCallInterruption
 import life.fxs.purr.domain.call.model.ScreenShareMediaEndpoint
 import life.fxs.purr.domain.call.model.ScreenSharePublishing
 import life.fxs.purr.domain.call.model.ScreenShareSession
@@ -664,6 +667,46 @@ class CallViewModelTest {
     }
 
     @Test
+    fun `interruption projection uses local then remote precedence while termination wins`() =
+        runTest(dispatcher) {
+            val viewModel = createViewModel()
+            sessionFlow.value = sampleSession(
+                connectionState = CallConnectionState.Reconnecting,
+                localAudioState = LocalAudioState.Enabled,
+                recordingState = RecordingState.Recording,
+                interruptionState = CallInterruptionState(
+                    remote = RemoteCallInterruption.Suspended("remote-operation", degraded = false),
+                ),
+            )
+            runCurrent()
+            assertThat(viewModel.state.value.screenState)
+                .isEqualTo(CallScreenState.RemoteSystemCallSuspended)
+
+            sessionFlow.value = requireNotNull(sessionFlow.value).copy(
+                interruptionState = CallInterruptionState(
+                    local = LocalCallInterruption.Suspended("local-operation", degraded = false),
+                    remote = RemoteCallInterruption.Suspended("remote-operation", degraded = false),
+                ),
+            )
+            runCurrent()
+            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.SystemCallSuspended)
+
+            sessionFlow.value = requireNotNull(sessionFlow.value).copy(
+                interruptionState = CallInterruptionState(
+                    local = LocalCallInterruption.Resuming("local-operation", 1, 20),
+                ),
+            )
+            runCurrent()
+            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.ResumingAfterSystemCall)
+
+            sessionFlow.value = requireNotNull(sessionFlow.value).copy(
+                connectionState = CallConnectionState.Terminating,
+            )
+            runCurrent()
+            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ending)
+        }
+
+    @Test
     fun `mobile screen share requests projection permission before publishing`() = runTest(dispatcher) {
         sessionFlow.value = sampleSession(
             connectionState = CallConnectionState.Connected,
@@ -817,6 +860,49 @@ class CallViewModelTest {
     }
 
     @Test
+    fun `remote screen playback waits until LiveKit media is initialized`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Preparing,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.Recording,
+        )
+        val viewModel = createViewModel()
+        viewModel.onIntent(
+            CallIntent.OpenExistingCall(
+                pairId = "pair-1",
+                callId = "call-1",
+                direction = CallDirection.Outgoing,
+            ),
+        )
+        runCurrent()
+
+        screenShareFlow.value = ScreenShareSnapshot(
+            callId = "call-1",
+            session = sampleScreenShare(
+                source = ScreenShareSource.Mobile,
+                status = ScreenShareStatus.Live,
+                publishing = null,
+                playback = sampleMediaEndpoint("https://media.test/whep"),
+            ),
+            isOwnedByCurrentUser = false,
+        )
+        runCurrent()
+
+        verify(exactly = 0) { whepPlaybackController.start(any()) }
+
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.Recording,
+        )
+        advanceUntilIdle()
+
+        verify(exactly = 1) {
+            whepPlaybackController.start(match { it.shareId == "share-1" })
+        }
+    }
+
+    @Test
     fun `WHEP failure leaves LiveKit voice call active`() = runTest(dispatcher) {
         sessionFlow.value = sampleSession(
             connectionState = CallConnectionState.Connected,
@@ -899,6 +985,7 @@ class CallViewModelTest {
         coVerify(exactly = 1) { disconnectCallUseCase.invoke("call-1") }
         assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
     }
+
     private fun createViewModel(): CallViewModel = CallViewModel(
         prepareCallSessionUseCase = prepareCallSessionUseCase,
         cancelCallPreparationUseCase = cancelCallPreparationUseCase,
@@ -922,6 +1009,7 @@ class CallViewModelTest {
         localAudioState: LocalAudioState,
         recordingState: RecordingState,
         remoteParticipantConnected: Boolean = true,
+        interruptionState: CallInterruptionState = CallInterruptionState(),
     ) = CallSession(
         callId = callId,
         pairId = "pair-1",
@@ -930,6 +1018,7 @@ class CallViewModelTest {
         connectionState = connectionState,
         localAudioState = localAudioState,
         recordingState = recordingState,
+        interruptionState = interruptionState,
         uiSnapshot = CallUiSnapshot(
             activeAudioRoute = AudioRoute.Speaker,
             availableAudioRoutes = listOf(AudioRoute.Earpiece, AudioRoute.Speaker),

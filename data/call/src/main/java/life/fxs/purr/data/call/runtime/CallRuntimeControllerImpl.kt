@@ -30,6 +30,10 @@ class CallRuntimeControllerImpl @Inject constructor(
     private var activeCallId: String? = null
 
     override suspend fun execute(command: MediaCallCommand) = lifecycleMutex.withLock {
+        logger.d(
+            LOG_TAG,
+            "callId=${command.callId} phase=runtime event=command type=${command::class.simpleName} activeCallId=$activeCallId",
+        )
         when (command) {
             is MediaCallCommand.Connect -> connectLocked(command)
             is MediaCallCommand.Disconnect -> disconnectLocked(command)
@@ -43,7 +47,10 @@ class CallRuntimeControllerImpl @Inject constructor(
             // The same call command may be delivered more than once by a resumed
             // screen or notification. It is already owned by this runtime, so the
             // duplicate is a no-op; a different call must never replace it.
-            if (existingCallId == command.callId) return
+            if (existingCallId == command.callId) {
+                logger.d(LOG_TAG, "callId=${command.callId} phase=runtime.connect event=duplicate_noop")
+                return
+            }
             throw IllegalStateException(
                 "A different call runtime is already active: $existingCallId",
             )
@@ -72,6 +79,11 @@ class CallRuntimeControllerImpl @Inject constructor(
             runStage(command, "livekit.connect") { mediaCallPort.execute(command) }
             command.terminationSignal.throwIfRequested()
         } catch (throwable: Throwable) {
+            logger.e(
+                LOG_TAG,
+                throwable,
+                "callId=${command.callId} phase=runtime.connect event=error",
+            )
             withContext(NonCancellable) {
                 releaseResourcesLocked()?.let(throwable::addSuppressed)
                 activeCallId = null
@@ -81,12 +93,20 @@ class CallRuntimeControllerImpl @Inject constructor(
     }
 
     private suspend fun disconnectLocked(command: MediaCallCommand.Disconnect) {
+        logger.d(LOG_TAG, "callId=${command.callId} phase=runtime.disconnect event=begin activeCallId=$activeCallId")
         val currentCallId = activeCallId
         if (currentCallId == null) {
             releaseResourcesLocked(callIdOverride = command.callId)?.let { throw it }
+            logger.d(LOG_TAG, "callId=${command.callId} phase=runtime.disconnect event=no_active_runtime")
             return
         }
-        if (currentCallId != command.callId) return
+        if (currentCallId != command.callId) {
+            logger.d(
+                LOG_TAG,
+                "callId=${command.callId} phase=runtime.disconnect event=stale_command activeCallId=$currentCallId",
+            )
+            return
+        }
         var failure: Throwable? = null
         try {
             mediaCallPort.execute(command)
@@ -97,12 +117,18 @@ class CallRuntimeControllerImpl @Inject constructor(
             failure?.addSuppressed(error) ?: run { failure = error }
         }
         activeCallId = null
+        logger.d(LOG_TAG, "callId=${command.callId} phase=runtime.disconnect event=end")
         failure?.let { throw it }
     }
 
     private suspend fun setMutedLocked(command: MediaCallCommand.SetMuted) {
-        if (activeCallId != command.callId) return
+        if (activeCallId != command.callId) {
+            logger.d(LOG_TAG, "callId=${command.callId} phase=runtime.mute event=ignored activeCallId=$activeCallId")
+            return
+        }
+        logger.d(LOG_TAG, "callId=${command.callId} phase=runtime.mute event=begin muted=${command.muted}")
         mediaCallPort.execute(command)
+        logger.d(LOG_TAG, "callId=${command.callId} phase=runtime.mute event=end muted=${command.muted}")
     }
 
     override suspend fun releaseResources() = lifecycleMutex.withLock {
@@ -112,7 +138,40 @@ class CallRuntimeControllerImpl @Inject constructor(
         Unit
     }
 
+    override suspend fun suspendForSystemCall(
+        request: MediaSystemCallSuspendRequest,
+    ): MediaSystemCallInterruptionResult = lifecycleMutex.withLock {
+        if (activeCallId != request.callId) {
+            logger.d(
+                LOG_TAG,
+                "callId=${request.callId} phase=runtime.interruption event=suspend_ignored activeCallId=$activeCallId",
+            )
+            return@withLock MediaSystemCallInterruptionResult.Stale(
+                generation = null,
+                reasonCode = "runtime_call_mismatch",
+            )
+        }
+        mediaCallPort.suspendForSystemCall(request)
+    }
+
+    override suspend fun resumeAfterSystemCall(
+        request: MediaSystemCallResumeRequest,
+    ): MediaSystemCallInterruptionResult = lifecycleMutex.withLock {
+        if (activeCallId != request.callId) {
+            logger.d(
+                LOG_TAG,
+                "callId=${request.callId} phase=runtime.interruption event=resume_ignored activeCallId=$activeCallId",
+            )
+            return@withLock MediaSystemCallInterruptionResult.Stale(
+                generation = null,
+                reasonCode = "runtime_call_mismatch",
+            )
+        }
+        mediaCallPort.resumeAfterSystemCall(request)
+    }
+
     private suspend fun releaseResourcesLocked(callIdOverride: String? = null): Throwable? {
+        val startedAt = System.nanoTime()
         var failure: Throwable? = null
         try {
             callAudioSessionController.release()
@@ -132,6 +191,10 @@ class CallRuntimeControllerImpl @Inject constructor(
                 failure?.addSuppressed(error) ?: run { failure = error }
             }
         }
+        logger.d(
+            LOG_TAG,
+            "callId=${callIdOverride ?: activeCallId} phase=runtime.release event=${if (failure == null) "end" else "error"} elapsedMs=${elapsedMillis(startedAt)}",
+        )
         return failure
     }
 

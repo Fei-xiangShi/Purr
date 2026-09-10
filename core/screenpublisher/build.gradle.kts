@@ -28,6 +28,8 @@ dependencies {
     api(projects.core.media)
     implementation(libs.androidx.annotation)
     implementation(libs.root.encoder) {
+        // Kotlin/coroutines are version-aligned at the application level. Keep
+        // RootEncoder's declarations from introducing a second version source.
         exclude(group = "org.jetbrains.kotlin")
         exclude(group = "org.jetbrains.kotlinx")
     }

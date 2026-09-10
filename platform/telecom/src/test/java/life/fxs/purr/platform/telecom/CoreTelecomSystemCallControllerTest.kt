@@ -20,12 +20,18 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import life.fxs.purr.core.common.NoOpPurrLogger
 import life.fxs.purr.core.media.telecom.SystemCallDescriptor
 import life.fxs.purr.core.media.telecom.SystemCallEvent
+import life.fxs.purr.core.media.telecom.SystemCallInterruptionDispatcher
+import life.fxs.purr.core.media.telecom.SystemCallInterruptionHandler
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.core.model.CallDirection
+import life.fxs.purr.core.model.SystemCallInterruptionRequest
+import life.fxs.purr.core.model.SystemCallInterruptionResult
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -71,17 +77,53 @@ class CoreTelecomSystemCallControllerTest {
     }
 
     @Test
-    fun `set inactive requests domain teardown but still allows final Telecom disconnect`() = runTest {
+    fun `inactive and active callbacks dispatch one paired interruption operation`() = runTest {
         val harness = harness()
         harness.controller.startCall(descriptor(CallDirection.Outgoing))
-        val event = async(start = CoroutineStart.UNDISPATCHED) { harness.controller.events.first() }
 
         harness.gateway.callbacks!!.onSetInactive()
+        harness.gateway.callbacks!!.onSetActive()
 
-        assertThat(event.await()).isEqualTo(SystemCallEvent.DisconnectRequested("call-1"))
+        assertThat(harness.interruptionHandler.inactiveRequests).hasSize(1)
+        assertThat(harness.interruptionHandler.activeRequests).hasSize(1)
+        assertThat(harness.interruptionHandler.activeRequests.single().operationId)
+            .isEqualTo(harness.interruptionHandler.inactiveRequests.single().operationId)
+        assertThat(harness.interruptionHandler.activeRequests.single().telecomSequence)
+            .isGreaterThan(harness.interruptionHandler.inactiveRequests.single().telecomSequence)
         harness.controller.disconnectCall("call-1")
         assertThat(harness.controlScope.disconnectCauses).hasSize(1)
         assertThat(harness.controlScope.disconnectCauses.single().code).isEqualTo(DisconnectCause.LOCAL)
+    }
+
+    @Test
+    fun `callback timeout stops waiting but application interruption operation continues`() = runTest {
+        val cutoffStarted = CompletableDeferred<Unit>()
+        val releaseCutoff = CompletableDeferred<Unit>()
+        val harness = harness(
+            interruptionHandler = RecordingInterruptionHandler(
+                onInactive = {
+                    cutoffStarted.complete(Unit)
+                    releaseCutoff.await()
+                    SystemCallInterruptionResult.Applied
+                },
+            ),
+        )
+        harness.controller.startCall(descriptor(CallDirection.Outgoing))
+        val callback = async { harness.gateway.callbacks!!.onSetInactive() }
+        runCurrent()
+        cutoffStarted.await()
+
+        advanceTimeBy(4_000L)
+        runCurrent()
+
+        assertThat(callback.isCompleted).isTrue()
+        assertThat(harness.interruptionHandler.inactiveCompletions).isEqualTo(0)
+
+        releaseCutoff.complete(Unit)
+        runCurrent()
+
+        assertThat(harness.interruptionHandler.inactiveCompletions).isEqualTo(1)
+        harness.controller.disconnectCall("call-1")
     }
 
     @Test
@@ -126,6 +168,44 @@ class CoreTelecomSystemCallControllerTest {
     }
 
     @Test
+    fun `successful route request updates active route before Telecom callback`() = runTest {
+        val harness = harness()
+        harness.controller.startCall(descriptor(CallDirection.Outgoing))
+        runCurrent()
+
+        harness.controller.selectRoute(AudioRoute.Speaker)
+
+        assertThat(harness.controlScope.requestedEndpoints)
+            .containsExactly(harness.controlScope.speakerEndpoint)
+        assertThat(harness.controller.activeRoute.value).isEqualTo(AudioRoute.Speaker)
+        harness.controller.disconnectCall("call-1")
+    }
+
+    @Test
+    fun `stale endpoint callback does not overwrite a newer route request`() = runTest {
+        val harness = harness()
+        harness.controller.startCall(descriptor(CallDirection.Outgoing))
+        runCurrent()
+
+        harness.controller.selectRoute(AudioRoute.Speaker)
+        harness.controller.selectRoute(AudioRoute.Earpiece)
+        harness.controlScope.emitCurrentEndpoint(AudioRoute.Speaker)
+        runCurrent()
+
+        assertThat(harness.controlScope.requestedEndpoints).containsExactly(
+            harness.controlScope.speakerEndpoint,
+            harness.controlScope.earpieceEndpoint,
+        ).inOrder()
+        assertThat(harness.controller.activeRoute.value).isEqualTo(AudioRoute.Earpiece)
+
+        harness.controlScope.emitCurrentEndpoint(AudioRoute.Earpiece)
+        runCurrent()
+
+        assertThat(harness.controller.activeRoute.value).isEqualTo(AudioRoute.Earpiece)
+        harness.controller.disconnectCall("call-1")
+    }
+
+    @Test
     fun `unexpected Telecom session closure requests domain teardown`() = runTest {
         val harness = harness(behavior = FakeTelecomCallGateway.Behavior.ReturnAfterReady)
         val event = async(start = CoroutineStart.UNDISPATCHED) { harness.controller.events.first() }
@@ -151,18 +231,25 @@ class CoreTelecomSystemCallControllerTest {
     private fun TestScope.harness(
         initialRoute: AudioRoute = AudioRoute.Earpiece,
         behavior: FakeTelecomCallGateway.Behavior = FakeTelecomCallGateway.Behavior.HoldOpen,
+        interruptionHandler: RecordingInterruptionHandler = RecordingInterruptionHandler(),
     ): Harness {
         val controlScope = FakeCallControlScope(backgroundScope.coroutineContext, initialRoute)
         val gateway = FakeTelecomCallGateway(controlScope, behavior)
+        val interruptionDispatcher = SystemCallInterruptionDispatcher().apply {
+            register(interruptionHandler)
+        }
         controlScope.onDisconnect = gateway::finishCall
         return Harness(
             controller = CoreTelecomSystemCallController(
                 callGateway = gateway,
                 attributesFactory = TelecomCallAttributesFactory(),
+                interruptionDispatcher = interruptionDispatcher,
+                logger = NoOpPurrLogger,
                 applicationScope = backgroundScope,
             ),
             gateway = gateway,
             controlScope = controlScope,
+            interruptionHandler = interruptionHandler,
         )
     }
 
@@ -178,7 +265,36 @@ private data class Harness(
     val controller: CoreTelecomSystemCallController,
     val gateway: FakeTelecomCallGateway,
     val controlScope: FakeCallControlScope,
+    val interruptionHandler: RecordingInterruptionHandler,
 )
+
+private class RecordingInterruptionHandler(
+    private val onInactive: suspend (SystemCallInterruptionRequest) -> SystemCallInterruptionResult = {
+        SystemCallInterruptionResult.Applied
+    },
+    private val onActive: suspend (SystemCallInterruptionRequest) -> SystemCallInterruptionResult = {
+        SystemCallInterruptionResult.Applied
+    },
+) : SystemCallInterruptionHandler {
+    val inactiveRequests = mutableListOf<SystemCallInterruptionRequest>()
+    val activeRequests = mutableListOf<SystemCallInterruptionRequest>()
+    var inactiveCompletions: Int = 0
+        private set
+
+    override suspend fun onSetInactive(
+        request: SystemCallInterruptionRequest,
+    ): SystemCallInterruptionResult {
+        inactiveRequests += request
+        return onInactive(request).also { inactiveCompletions += 1 }
+    }
+
+    override suspend fun onSetActive(
+        request: SystemCallInterruptionRequest,
+    ): SystemCallInterruptionResult {
+        activeRequests += request
+        return onActive(request)
+    }
+}
 
 private class FakeTelecomCallGateway(
     private val controlScope: CallControlScope,
@@ -275,6 +391,16 @@ private class FakeCallControlScope(
 
     fun emitAvailableEndpoints() {
         endpoints.tryEmit(listOf(earpieceEndpoint, speakerEndpoint))
+    }
+
+    fun emitCurrentEndpoint(route: AudioRoute) {
+        currentEndpoint.tryEmit(
+            when (route) {
+                AudioRoute.Earpiece -> earpieceEndpoint
+                AudioRoute.Speaker -> speakerEndpoint
+                else -> error("Unsupported fake route: $route")
+            },
+        )
     }
 
     private fun endpoint(name: String, type: Int) = CallEndpointCompat(name, type, mockk())

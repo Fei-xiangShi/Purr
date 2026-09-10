@@ -9,15 +9,27 @@ import org.junit.Test
 
 class PresentableIncomingCallPolicyTest {
     @Test
-    fun `matching local session suppresses the same incoming call permanently`() {
+    fun `matching ongoing local session suppresses the same incoming call`() {
         val candidate = incomingCall("call-1")
 
         assertThat(
             PresentableIncomingCallPolicy.resolve(candidate, session("call-1", CallConnectionState.Connected)),
         ).isNull()
+    }
+
+    @Test
+    fun `matching terminal local attempt allows the server call to be presented again`() {
+        val candidate = incomingCall("call-1")
+
         assertThat(
             PresentableIncomingCallPolicy.resolve(candidate, session("call-1", CallConnectionState.Disconnected)),
-        ).isNull()
+        ).isEqualTo(candidate)
+        assertThat(
+            PresentableIncomingCallPolicy.resolve(
+                candidate,
+                session("call-1", CallConnectionState.Failed("ICE failed")),
+            ),
+        ).isEqualTo(candidate)
     }
 
     @Test

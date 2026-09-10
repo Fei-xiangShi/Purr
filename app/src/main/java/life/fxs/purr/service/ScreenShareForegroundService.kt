@@ -76,33 +76,33 @@ class ScreenShareForegroundService : Service() {
             return
         }
 
-        publisher?.stop()
+        stopPublisherSafely()
         activeRequest = request
         explicitStop = false
         terminalFailure = false
         stateStore.connecting(request)
-        publisher = RootEncoderWhipScreenPublisher(
-            applicationContext,
-            projection,
-            request,
-            object : RootEncoderWhipScreenPublisher.Listener {
-                override fun onLive(request: ScreenSharePublishRequest) {
-                    stateStore.live(request)
-                }
-
-                override fun onStopped(request: ScreenSharePublishRequest) {
-                    if (!terminalFailure) stateStore.idle(request.callId)
-                    stopSelf()
-                }
-
-                override fun onFailed(request: ScreenSharePublishRequest, message: String) {
-                    terminalFailure = true
-                    stateStore.failed(request.callId, request.shareId, message)
-                    stopSelf()
-                }
-            },
-        )
         try {
+            publisher = RootEncoderWhipScreenPublisher(
+                applicationContext,
+                projection,
+                request,
+                object : RootEncoderWhipScreenPublisher.Listener {
+                    override fun onLive(request: ScreenSharePublishRequest) {
+                        stateStore.live(request)
+                    }
+
+                    override fun onStopped(request: ScreenSharePublishRequest) {
+                        if (!terminalFailure) stateStore.idle(request.callId)
+                        stopSelf()
+                    }
+
+                    override fun onFailed(request: ScreenSharePublishRequest, message: String) {
+                        terminalFailure = true
+                        stateStore.failed(request.callId, request.shareId, message)
+                        stopSelf()
+                    }
+                },
+            )
             publisher?.start()
         } catch (error: Throwable) {
             fail(request, error.message ?: "设备无法启动屏幕和系统音频编码")
@@ -155,8 +155,7 @@ class ScreenShareForegroundService : Service() {
     private fun stopPublishing(explicit: Boolean) {
         explicitStop = explicitStop || explicit
         activeRequest?.let(stateStore::stopping)
-        publisher?.stop()
-        publisher = null
+        stopPublisherSafely()
         activeRequest?.let { request ->
             if (!terminalFailure) stateStore.idle(request.callId)
         }
@@ -168,8 +167,7 @@ class ScreenShareForegroundService : Service() {
     private fun fail(request: ScreenSharePublishRequest?, message: String) {
         terminalFailure = true
         stateStore.failed(request?.callId, request?.shareId, message)
-        publisher?.stop()
-        publisher = null
+        stopPublisherSafely()
         activeRequest = null
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -181,10 +179,21 @@ class ScreenShareForegroundService : Service() {
             terminalFailure = true
             stateStore.failed(request?.callId, request?.shareId, "投屏服务被系统终止")
         }
-        publisher?.stop()
-        publisher = null
+        stopPublisherSafely()
         activeRequest = null
         super.onDestroy()
+    }
+
+    private fun stopPublisherSafely() {
+        val current = publisher
+        publisher = null
+        try {
+            current?.stop()
+        } catch (_: RuntimeException) {
+            // A screen-publisher failure must never terminate the LiveKit call process.
+        } catch (_: LinkageError) {
+            // Third-party binary mismatches are contained to screen sharing.
+        }
     }
 
     companion object {

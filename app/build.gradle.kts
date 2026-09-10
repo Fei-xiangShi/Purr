@@ -31,6 +31,12 @@ val purrBaseUrl = normalizedBaseUrl(
 )
 val purrVersionCode = providers.gradleProperty("PURR_VERSION_CODE").get().toInt()
 val purrVersionName = providers.gradleProperty("PURR_VERSION_NAME").get()
+val purrSentryDsn = providers.gradleProperty("PURR_SENTRY_DSN")
+    .orElse(appConfigProperties.getProperty("purr.sentryDsn") ?: "")
+    .get()
+    .trim()
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
 val firebaseReleaseProperties = listOf(
     "PURR_FIREBASE_APPLICATION_ID",
     "PURR_FIREBASE_API_KEY",
@@ -73,6 +79,7 @@ android {
         versionCode = purrVersionCode
         versionName = purrVersionName
         buildConfigField("String", "PURR_BASE_URL", "\"$purrBaseUrl\"")
+        buildConfigField("String", "PURR_SENTRY_DSN", "\"$purrSentryDsn\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -200,6 +207,7 @@ dependencies {
     implementation(libs.okhttp.core)
     implementation(libs.okhttp.logging)
     implementation(libs.coil)
+    implementation(libs.sentry.android)
 
     kapt(libs.hilt.compiler)
 

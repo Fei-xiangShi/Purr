@@ -8,6 +8,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.selects.select
 import life.fxs.purr.core.model.CallDirection
+import life.fxs.purr.core.model.SystemCallInterruptionPhase
 
 class CallTerminationSignal {
     private val requested = CompletableDeferred<Unit>()
@@ -124,6 +125,14 @@ sealed interface MediaCallEvent {
         val sampledAtEpochMillis: Long,
     ) : MediaCallEvent
 
+    data class RemoteSystemCallInterruptionChanged(
+        override val callId: String,
+        override val generation: Long,
+        val operationId: String,
+        val phase: SystemCallInterruptionPhase,
+        val degraded: Boolean,
+    ) : MediaCallEvent
+
     data class Disconnected(
         override val callId: String,
         override val generation: Long,
@@ -141,4 +150,57 @@ interface MediaCallPort {
     val events: Flow<MediaCallEvent>
 
     suspend fun execute(command: MediaCallCommand)
+
+    suspend fun suspendForSystemCall(
+        request: MediaSystemCallSuspendRequest,
+    ): MediaSystemCallInterruptionResult
+
+    suspend fun resumeAfterSystemCall(
+        request: MediaSystemCallResumeRequest,
+    ): MediaSystemCallInterruptionResult
+}
+
+data class MediaSystemCallSuspendRequest(
+    val callId: String,
+    val expectedGeneration: Long,
+    val operationId: String,
+)
+
+data class MediaSystemCallResumeRequest(
+    val callId: String,
+    val expectedGeneration: Long,
+    val operationId: String,
+    val enableMicrophone: Boolean,
+)
+
+sealed interface MediaSystemCallInterruptionResult {
+    val generation: Long?
+
+    data class Applied(
+        override val generation: Long,
+    ) : MediaSystemCallInterruptionResult
+
+    data class Degraded(
+        override val generation: Long,
+        val reasonCode: String,
+    ) : MediaSystemCallInterruptionResult
+
+    data class PausedReconnecting(
+        override val generation: Long,
+    ) : MediaSystemCallInterruptionResult
+
+    data class Failed(
+        override val generation: Long,
+        val reasonCode: String,
+    ) : MediaSystemCallInterruptionResult
+
+    data class TerminalFailure(
+        override val generation: Long,
+        val reasonCode: String,
+    ) : MediaSystemCallInterruptionResult
+
+    data class Stale(
+        override val generation: Long?,
+        val reasonCode: String,
+    ) : MediaSystemCallInterruptionResult
 }

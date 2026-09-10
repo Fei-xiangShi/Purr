@@ -1,6 +1,7 @@
 package life.fxs.purr.domain.incomingcall
 
 import javax.inject.Inject
+import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.domain.account.usecase.ConsumeIncomingCallUseCase
 import life.fxs.purr.domain.call.model.CallPreparationRequest
@@ -18,6 +19,11 @@ class PrepareIncomingCallUseCase @Inject constructor(
         }
         return when (val result = prepareCallSession(request)) {
             is AppResult.Success -> {
+                if (result.value.callId != request.callId) {
+                    return AppResult.Failure(
+                        AppError.Validation("Prepared call identity does not match requested call"),
+                    )
+                }
                 consumeIncomingCall(request.callId)
                 result
             }

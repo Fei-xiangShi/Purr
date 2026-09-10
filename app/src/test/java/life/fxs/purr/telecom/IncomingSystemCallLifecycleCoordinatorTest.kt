@@ -33,7 +33,7 @@ class IncomingSystemCallLifecycleCoordinatorTest {
     private val observePairBond = mockk<ObservePairBondUseCase>()
 
     @Test
-    fun `incoming candidate is registered before media and prepared session retains ownership`() = runTest {
+    fun `terminal local attempt releases Telecom and a recurring server candidate is registered again`() = runTest {
         val controller = FakeLifecycleSystemCallController()
         val coordinator = coordinator(controller)
         coordinator.start()
@@ -57,6 +57,13 @@ class IncomingSystemCallLifecycleCoordinatorTest {
         runCurrent()
 
         assertThat(controller.disconnectedCallIds).containsExactly("call-1")
+
+        realtimeState.value = RealtimeState(incomingCallCandidate = incomingCall())
+        runCurrent()
+
+        assertThat(controller.startedDescriptors.map { it.callId })
+            .containsExactly("call-1", "call-1")
+            .inOrder()
     }
 
     @Test

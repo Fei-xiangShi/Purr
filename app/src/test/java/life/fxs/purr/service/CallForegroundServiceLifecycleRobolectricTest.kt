@@ -22,6 +22,8 @@ import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.media.service.ForegroundCallServiceState
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.core.model.CallDirection
+import life.fxs.purr.core.model.SystemCallInterruptionRequest
+import life.fxs.purr.core.model.SystemCallInterruptionResult
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.CallLifecycleState
 import life.fxs.purr.domain.call.model.CallPreparationRequest
@@ -388,6 +390,14 @@ class CallForegroundServiceLifecycleRobolectricTest {
             disconnectedCallIds += callId
             return AppResult.Success(Unit)
         }
+
+        override suspend fun suspendForSystemCall(
+            request: SystemCallInterruptionRequest,
+        ): SystemCallInterruptionResult = error("Not used by this lifecycle test")
+
+        override suspend fun resumeAfterSystemCall(
+            request: SystemCallInterruptionRequest,
+        ): SystemCallInterruptionResult = error("Not used by this lifecycle test")
 
         override suspend fun setMuted(muted: Boolean): AppResult<Unit> =
             error("Not used by this lifecycle test")

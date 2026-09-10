@@ -38,7 +38,9 @@ internal object PresentableIncomingCallPolicy {
         if (!isAuthenticated) return null
         candidate ?: return null
         localSession ?: return candidate
-        if (localSession.callId == candidate.callId) return null
+        // A terminal local attempt does not terminate the remote caller's business call.
+        // If the server still advertises the same call, present it again and let the user
+        // explicitly decide whether to start a new media generation.
         return candidate.takeUnless { localSession.connectionState.isOngoing }
     }
 }

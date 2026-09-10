@@ -10,6 +10,14 @@ interface CallRuntimeController {
 
     suspend fun execute(command: MediaCallCommand)
 
+    suspend fun suspendForSystemCall(
+        request: MediaSystemCallSuspendRequest,
+    ): MediaSystemCallInterruptionResult
+
+    suspend fun resumeAfterSystemCall(
+        request: MediaSystemCallResumeRequest,
+    ): MediaSystemCallInterruptionResult
+
     suspend fun releaseResources()
 
     suspend fun selectAudioRoute(route: AudioRoute)

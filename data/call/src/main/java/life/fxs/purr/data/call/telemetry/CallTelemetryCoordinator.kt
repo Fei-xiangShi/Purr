@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import life.fxs.purr.core.common.ApplicationScope
+import life.fxs.purr.core.common.PurrLogger
 import life.fxs.purr.data.call.diagnostics.AndroidCallEnvironmentReader
 import life.fxs.purr.data.call.diagnostics.LiveKitCallMetricsCollector
 import life.fxs.purr.data.call.diagnostics.RtpByteSample
@@ -30,6 +31,7 @@ class CallTelemetryCoordinator @Inject constructor(
     private val metricsCollector: LiveKitCallMetricsCollector,
     private val environmentReader: AndroidCallEnvironmentReader,
     private val telemetryRepository: CallTelemetryRepository,
+    private val logger: PurrLogger,
     @ApplicationScope private val applicationScope: CoroutineScope,
 ) {
     private val started = AtomicBoolean(false)
@@ -44,6 +46,7 @@ class CallTelemetryCoordinator @Inject constructor(
                 .distinctUntilChanged()
                 .collectLatest { callId ->
                     callId ?: return@collectLatest
+                    logger.d(LOG_TAG, "callId=$callId phase=telemetry event=start intervalMs=$SAMPLE_INTERVAL_MILLIS")
                     var previous: RtpByteSample? = null
                     while (currentCoroutineContext().isActive) {
                         delay(SAMPLE_INTERVAL_MILLIS)
@@ -60,17 +63,33 @@ class CallTelemetryCoordinator @Inject constructor(
                                     device = environmentReader.read(),
                                 ),
                             )
+                            logger.d(
+                                LOG_TAG,
+                                "callId=$callId phase=telemetry event=sample " +
+                                    "remoteConnected=${collected.remoteConnected} " +
+                                    "path=${collected.transport.path} " +
+                                    "upKbps=${collected.transport.uplinkBitrateKbps} " +
+                                    "downKbps=${collected.transport.downlinkBitrateKbps} " +
+                                    "sendCodec=${collected.audio.sendCodec} " +
+                                    "receiveCodec=${collected.audio.receiveCodec}",
+                            )
                         } catch (error: CancellationException) {
                             throw error
-                        } catch (_: Throwable) {
-                            // The next bounded sample remains independently reportable.
+                        } catch (error: Throwable) {
+                            logger.e(
+                                LOG_TAG,
+                                error,
+                                "callId=$callId phase=telemetry event=sample_error",
+                            )
                         }
                     }
+                    logger.d(LOG_TAG, "callId=$callId phase=telemetry event=stop")
                 }
         }
     }
 
     private companion object {
+        const val LOG_TAG = "CallTelemetry"
         const val SAMPLE_INTERVAL_MILLIS = 15_000L
     }
 }

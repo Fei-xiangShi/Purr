@@ -202,12 +202,24 @@ fun CallScreen(
         CallScreenState.Connecting,
         CallScreenState.Waiting,
         CallScreenState.Active,
+        CallScreenState.SystemCallSuspended,
+        CallScreenState.ResumingAfterSystemCall,
+        CallScreenState.RemoteSystemCallSuspended,
+        CallScreenState.RemoteResumingAfterSystemCall,
         CallScreenState.Reconnecting,
         CallScreenState.Failed,
     )
     val detail = when {
         state.screenState == CallScreenState.Failed ->
             state.failureMessage ?: "通话连接失败，请稍后重试"
+        state.screenState.isSystemCallInterruptionState() -> {
+            val interruptionDetail = state.screenState.connectionDetail()
+            if (callDurationSeconds > 0L) {
+                "$interruptionDetail · ${callDurationSeconds.toCallDuration()}"
+            } else {
+                interruptionDetail
+            }
+        }
         state.screenState == CallScreenState.Active || callDurationSeconds > 0L ->
             callDurationSeconds.toCallDuration()
         else -> state.screenState.connectionDetail()
@@ -324,6 +336,10 @@ private fun CallScreenState.title(): String = when (this) {
     CallScreenState.Connecting -> "正在连接"
     CallScreenState.Waiting -> "等待对方接听"
     CallScreenState.Active -> "通话中"
+    CallScreenState.SystemCallSuspended -> "通话已暂时挂起"
+    CallScreenState.ResumingAfterSystemCall -> "正在恢复通话"
+    CallScreenState.RemoteSystemCallSuspended -> "对方正在接听系统电话"
+    CallScreenState.RemoteResumingAfterSystemCall -> "对方正在恢复通话"
     CallScreenState.Reconnecting -> "正在重新连接"
     CallScreenState.Ending -> "正在结束"
     CallScreenState.Ended -> "通话结束"
@@ -334,11 +350,24 @@ private fun CallScreenState.connectionDetail(): String = when (this) {
     CallScreenState.Dialing -> "正在发起安全语音通话"
     CallScreenState.Connecting -> "正在建立加密连接"
     CallScreenState.Waiting -> "对方加入后即可通话"
+    CallScreenState.SystemCallSuspended -> "系统电话结束后将自动恢复"
+    CallScreenState.ResumingAfterSystemCall -> "正在恢复麦克风和通话声音"
+    CallScreenState.RemoteSystemCallSuspended -> "对方系统电话结束后将自动恢复"
+    CallScreenState.RemoteResumingAfterSystemCall -> "请稍候，正在重新接通对方声音"
     CallScreenState.Reconnecting -> "网络波动，请稍候"
     CallScreenState.Ending -> "正在释放通话资源"
     CallScreenState.Ended -> "感谢使用 Purr 语音"
     CallScreenState.Failed -> "通话连接失败，请稍后重试"
     else -> "Purr 语音"
+}
+
+private fun CallScreenState.isSystemCallInterruptionState(): Boolean = when (this) {
+    CallScreenState.SystemCallSuspended,
+    CallScreenState.ResumingAfterSystemCall,
+    CallScreenState.RemoteSystemCallSuspended,
+    CallScreenState.RemoteResumingAfterSystemCall,
+    -> true
+    else -> false
 }
 
 internal fun Long.toCallDuration(): String {

@@ -34,7 +34,13 @@ import life.fxs.purr.core.common.NoOpPurrLogger
 import life.fxs.purr.core.media.audio.AudioRouteController
 import life.fxs.purr.core.media.service.CallServiceController
 import life.fxs.purr.core.media.service.ForegroundCallServiceState
+import life.fxs.purr.core.media.telemetry.CallInterruptionTelemetry
+import life.fxs.purr.core.media.telemetry.CallInterruptionTelemetryOperation
+import life.fxs.purr.core.media.telemetry.CallInterruptionTransitionContext
+import life.fxs.purr.core.media.telemetry.NoOpCallInterruptionTelemetry
 import life.fxs.purr.core.model.AudioRoute
+import life.fxs.purr.core.model.SystemCallInterruptionRequest
+import life.fxs.purr.core.model.SystemCallInterruptionResult
 import life.fxs.purr.core.network.api.PurrCallApi
 import life.fxs.purr.core.network.model.CallStatusDto
 import life.fxs.purr.core.network.model.SessionResponseDto
@@ -42,10 +48,12 @@ import life.fxs.purr.data.call.remote.CallStatusRemoteDataSource
 import life.fxs.purr.data.call.remote.CallStatusSynchronizer
 import life.fxs.purr.data.call.runtime.MediaCallCommand
 import life.fxs.purr.data.call.runtime.MediaCallEvent
+import life.fxs.purr.data.call.runtime.MediaSystemCallInterruptionResult
 import life.fxs.purr.data.call.runtime.CallRuntimeController
 import life.fxs.purr.data.call.state.CallMediaEventReducer
 import life.fxs.purr.data.call.state.CallUiSnapshotAssembler
 import life.fxs.purr.domain.call.model.CallConnectionState
+import life.fxs.purr.domain.call.model.LocalCallInterruption
 import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.CallPreparationRequest
 import life.fxs.purr.domain.call.model.RecordingState
@@ -407,6 +415,7 @@ class CallRepositoryImplTest {
                 recordingStatus = "idle",
             )
             every { callStatusRemoteDataSource.observeStatus("call-1") } returns emptyFlow()
+            coEvery { api.endCall("call-1") } returns Unit
             coEvery {
                 callRuntimeController.execute(MediaCallCommand.Disconnect("call-1"))
             } throws CancellationException("runtime cleanup cancelled")
@@ -450,16 +459,17 @@ class CallRepositoryImplTest {
 
         val disconnect = async { repository.disconnectCall("call-1") }
         serverEndStarted.await()
+        runCurrent()
 
         val localState = repository.observeCallSession().first()?.connectionState
         assertThat(localState).isInstanceOf(CallConnectionState.Failed::class.java)
-        assertThat(disconnect.isCompleted).isFalse()
+        assertThat(disconnect.await()).isInstanceOf(AppResult.Failure::class.java)
         val lifecycle = repository.observeCallLifecycle().first()
         assertThat(lifecycle.isTerminationInProgress).isFalse()
         assertThat(lifecycle.isNewCallBlocked).isFalse()
 
         finishServerEnd.complete(Unit)
-        assertThat(disconnect.await()).isInstanceOf(AppResult.Failure::class.java)
+        runCurrent()
         assertThat(repository.observeCallSession().first()?.connectionState)
             .isInstanceOf(CallConnectionState.Failed::class.java)
     }
@@ -878,7 +888,266 @@ class CallRepositoryImplTest {
         }
     }
 
-    private fun repository() = CallRepositoryImpl(
+    @Test
+    fun `resume performs one immediate attempt plus twenty retries then disconnects once`() =
+        runTest(dispatcher) {
+            val runtimeEvents = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 8)
+            configureConnectedSystemInterruptionCall(runtimeEvents)
+            coEvery { callRuntimeController.suspendForSystemCall(any()) } returns
+                MediaSystemCallInterruptionResult.Applied(generation = 1L)
+            coEvery { callRuntimeController.resumeAfterSystemCall(any()) } returns
+                MediaSystemCallInterruptionResult.Failed(
+                    generation = 1L,
+                    reasonCode = "restore_failed",
+                )
+            val telemetry = RecordingInterruptionTelemetry()
+            val repository = repository(telemetry)
+            establishConnectedCall(repository, runtimeEvents)
+            runCurrent()
+
+            val suspendResult = repository.suspendForSystemCall(interruptionRequest(sequence = 1L))
+            val resumeResult = repository.resumeAfterSystemCall(interruptionRequest(sequence = 2L))
+
+            assertThat(suspendResult).isEqualTo(SystemCallInterruptionResult.Applied)
+            assertThat(resumeResult).isEqualTo(SystemCallInterruptionResult.RetryScheduled)
+            advanceTimeBy(20_000L)
+            runCurrent()
+            advanceUntilIdle()
+
+            coVerify(exactly = 21) { callRuntimeController.resumeAfterSystemCall(any()) }
+            coVerify(exactly = 1) {
+                callRuntimeController.execute(MediaCallCommand.Disconnect("call-1"))
+            }
+            coVerify(exactly = 1) { api.endCall("call-1") }
+            assertThat(telemetry.finalFailures).isEqualTo(1)
+            assertThat(telemetry.attempts).isEqualTo(22)
+            assertThat(repository.observeCallSession().first()?.connectionState)
+                .isEqualTo(CallConnectionState.Disconnected)
+        }
+
+    @Test
+    fun `success on retry twenty restores call without disconnecting`() = runTest(dispatcher) {
+        val runtimeEvents = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 8)
+        configureConnectedSystemInterruptionCall(runtimeEvents)
+        var attempts = 0
+        coEvery { callRuntimeController.suspendForSystemCall(any()) } returns
+            MediaSystemCallInterruptionResult.Applied(generation = 1L)
+        coEvery { callRuntimeController.resumeAfterSystemCall(any()) } coAnswers {
+            attempts += 1
+            if (attempts == 21) {
+                MediaSystemCallInterruptionResult.Applied(generation = 1L)
+            } else {
+                MediaSystemCallInterruptionResult.Failed(
+                    generation = 1L,
+                    reasonCode = "restore_failed",
+                )
+            }
+        }
+        val repository = repository()
+        establishConnectedCall(repository, runtimeEvents)
+        runCurrent()
+
+        repository.suspendForSystemCall(interruptionRequest(sequence = 1L))
+        repository.resumeAfterSystemCall(interruptionRequest(sequence = 2L))
+        advanceTimeBy(20_000L)
+        runCurrent()
+
+        assertThat(attempts).isEqualTo(21)
+        assertThat(repository.observeCallSession().first()?.interruptionState?.local)
+            .isEqualTo(LocalCallInterruption.None)
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Connected)
+        coVerify(exactly = 0) {
+            callRuntimeController.execute(match { it is MediaCallCommand.Disconnect })
+        }
+        coVerify(exactly = 0) { api.endCall(any()) }
+    }
+
+    @Test
+    fun `reconnecting pauses resume retries without consuming an attempt`() = runTest(dispatcher) {
+        val runtimeEvents = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 8)
+        configureConnectedSystemInterruptionCall(runtimeEvents)
+        var attempts = 0
+        coEvery { callRuntimeController.suspendForSystemCall(any()) } returns
+            MediaSystemCallInterruptionResult.Applied(generation = 1L)
+        coEvery { callRuntimeController.resumeAfterSystemCall(any()) } coAnswers {
+            attempts += 1
+            if (attempts == 1) {
+                MediaSystemCallInterruptionResult.Failed(
+                    generation = 1L,
+                    reasonCode = "restore_failed",
+                )
+            } else {
+                MediaSystemCallInterruptionResult.Applied(generation = 1L)
+            }
+        }
+        val repository = repository()
+        establishConnectedCall(repository, runtimeEvents)
+        runCurrent()
+        repository.suspendForSystemCall(interruptionRequest(sequence = 1L))
+        repository.resumeAfterSystemCall(interruptionRequest(sequence = 2L))
+
+        runtimeEvents.emit(MediaCallEvent.Reconnecting(callId = "call-1", generation = 1L))
+        runCurrent()
+        advanceTimeBy(30_000L)
+        runCurrent()
+
+        assertThat(attempts).isEqualTo(1)
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Reconnecting)
+
+        runtimeEvents.emit(
+            MediaCallEvent.Reconnected(
+                callId = "call-1",
+                generation = 1L,
+                remoteIdentity = "partner",
+                remoteParticipantConnected = true,
+            ),
+        )
+        runCurrent()
+
+        assertThat(attempts).isEqualTo(2)
+        assertThat(repository.observeCallSession().first()?.interruptionState?.local)
+            .isEqualTo(LocalCallInterruption.None)
+        coVerify(exactly = 0) {
+            callRuntimeController.execute(match { it is MediaCallCommand.Disconnect })
+        }
+    }
+
+    @Test
+    fun `reconnecting during a resume attempt retries the same attempt after reconnect`() =
+        runTest(dispatcher) {
+            val runtimeEvents = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 8)
+            configureConnectedSystemInterruptionCall(runtimeEvents)
+            val firstAttemptStarted = CompletableDeferred<Unit>()
+            val finishFirstAttempt = CompletableDeferred<Unit>()
+            var attempts = 0
+            coEvery { callRuntimeController.suspendForSystemCall(any()) } returns
+                MediaSystemCallInterruptionResult.Applied(generation = 1L)
+            coEvery { callRuntimeController.resumeAfterSystemCall(any()) } coAnswers {
+                attempts += 1
+                if (attempts == 1) {
+                    firstAttemptStarted.complete(Unit)
+                    finishFirstAttempt.await()
+                    MediaSystemCallInterruptionResult.Failed(
+                        generation = 1L,
+                        reasonCode = "restore_failed",
+                    )
+                } else {
+                    MediaSystemCallInterruptionResult.Applied(generation = 1L)
+                }
+            }
+            val repository = repository()
+            establishConnectedCall(repository, runtimeEvents)
+            runCurrent()
+            repository.suspendForSystemCall(interruptionRequest(sequence = 1L))
+
+            val resumeResult = async {
+                repository.resumeAfterSystemCall(interruptionRequest(sequence = 2L))
+            }
+            runCurrent()
+            firstAttemptStarted.await()
+            runtimeEvents.emit(MediaCallEvent.Reconnecting(callId = "call-1", generation = 1L))
+            runCurrent()
+            finishFirstAttempt.complete(Unit)
+            runCurrent()
+
+            assertThat(resumeResult.await()).isEqualTo(SystemCallInterruptionResult.RetryScheduled)
+            advanceTimeBy(30_000L)
+            runCurrent()
+            assertThat(attempts).isEqualTo(1)
+
+            runtimeEvents.emit(
+                MediaCallEvent.Reconnected(
+                    callId = "call-1",
+                    generation = 1L,
+                    remoteIdentity = "partner",
+                    remoteParticipantConnected = true,
+                ),
+            )
+            runCurrent()
+
+            assertThat(attempts).isEqualTo(2)
+            assertThat(repository.observeCallSession().first()?.interruptionState?.local)
+                .isEqualTo(LocalCallInterruption.None)
+            coVerify(exactly = 0) {
+                callRuntimeController.execute(match { it is MediaCallCommand.Disconnect })
+            }
+        }
+
+    @Test
+    fun `a newer inactive operation cancels the old resume retry owner`() = runTest(dispatcher) {
+        val runtimeEvents = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 8)
+        configureConnectedSystemInterruptionCall(runtimeEvents)
+        var resumeAttempts = 0
+        coEvery { callRuntimeController.suspendForSystemCall(any()) } returns
+            MediaSystemCallInterruptionResult.Applied(generation = 1L)
+        coEvery { callRuntimeController.resumeAfterSystemCall(any()) } coAnswers {
+            resumeAttempts += 1
+            MediaSystemCallInterruptionResult.Failed(
+                generation = 1L,
+                reasonCode = "restore_failed",
+            )
+        }
+        val repository = repository()
+        establishConnectedCall(repository, runtimeEvents)
+        runCurrent()
+        repository.suspendForSystemCall(
+            interruptionRequest(sequence = 1L, operationId = "operation-1"),
+        )
+        repository.resumeAfterSystemCall(
+            interruptionRequest(sequence = 2L, operationId = "operation-1"),
+        )
+
+        val secondSuspend = repository.suspendForSystemCall(
+            interruptionRequest(sequence = 3L, operationId = "operation-2"),
+        )
+        advanceTimeBy(30_000L)
+        runCurrent()
+
+        assertThat(secondSuspend).isEqualTo(SystemCallInterruptionResult.Applied)
+        assertThat(resumeAttempts).isEqualTo(1)
+        assertThat(repository.observeCallSession().first()?.interruptionState?.local)
+            .isEqualTo(LocalCallInterruption.Suspended("operation-2", degraded = false))
+        coVerify(exactly = 0) {
+            callRuntimeController.execute(match { it is MediaCallCommand.Disconnect })
+        }
+    }
+
+    @Test
+    fun `suspension preserves foreground service recording timing and server call`() =
+        runTest(dispatcher) {
+            val runtimeEvents = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 8)
+            configureConnectedSystemInterruptionCall(
+                runtimeEvents = runtimeEvents,
+                recordingStatus = "recording",
+            )
+            coEvery { callRuntimeController.suspendForSystemCall(any()) } returns
+                MediaSystemCallInterruptionResult.Applied(generation = 1L)
+            val repository = repository()
+            establishConnectedCall(repository, runtimeEvents)
+            runCurrent()
+            val before = requireNotNull(repository.observeCallSession().first())
+
+            val result = repository.suspendForSystemCall(interruptionRequest(sequence = 1L))
+            val after = requireNotNull(repository.observeCallSession().first())
+
+            assertThat(result).isEqualTo(SystemCallInterruptionResult.Applied)
+            assertThat(after.connectionState).isEqualTo(CallConnectionState.Connected)
+            assertThat(after.recordingState).isEqualTo(RecordingState.Recording)
+            assertThat(after.timing).isEqualTo(before.timing)
+            assertThat(after.timing.isRunning).isTrue()
+            assertThat(callServiceController.foregroundState.value.activeCallId).isEqualTo("call-1")
+            coVerify(exactly = 0) { callServiceController.stopForegroundCall(any()) }
+            coVerify(exactly = 0) {
+                callRuntimeController.execute(match { it is MediaCallCommand.Disconnect })
+            }
+            coVerify(exactly = 0) { api.endCall(any()) }
+        }
+
+    private fun repository(
+        interruptionTelemetry: CallInterruptionTelemetry = NoOpCallInterruptionTelemetry,
+    ) = CallRepositoryImpl(
         api = api,
         sessionPreparationCoordinator = CallSessionPreparationCoordinator(
             api = api,
@@ -892,6 +1161,64 @@ class CallRepositoryImplTest {
         callUiSnapshotAssembler = CallUiSnapshotAssembler(audioRouteController, callServiceController),
         logger = NoOpPurrLogger,
         applicationScope = applicationScope,
+        interruptionTelemetry = interruptionTelemetry,
+    )
+
+    private fun configureConnectedSystemInterruptionCall(
+        runtimeEvents: MutableSharedFlow<MediaCallEvent>,
+        recordingStatus: String = "idle",
+    ) {
+        every { audioRouteController.activeRoute } returns MutableStateFlow(AudioRoute.Speaker)
+        every { audioRouteController.availableRoutes } returns MutableStateFlow(listOf(AudioRoute.Speaker))
+        every { callServiceController.foregroundState } returns MutableStateFlow(
+            ForegroundCallServiceState(activeCallId = "call-1"),
+        )
+        every { callRuntimeController.mediaEvents } returns runtimeEvents
+        coEvery { callRuntimeController.execute(any<MediaCallCommand.Connect>()) } returns Unit
+        coEvery { callRuntimeController.execute(any<MediaCallCommand.Disconnect>()) } returns Unit
+        coEvery { api.endCall("call-1") } returns Unit
+        coEvery { api.createSession(any()) } returns SessionResponseDto(
+            "call-1",
+            "pair-1",
+            "room-1",
+            "self-1",
+            "token-1",
+            "wss://one",
+        )
+        coEvery { callStatusRemoteDataSource.getStatus("call-1") } returns CallStatusDto(
+            callId = "call-1",
+            pairId = "pair-1",
+            state = "active",
+            recordingStatus = recordingStatus,
+            startedAtEpochMillis = 1L,
+        )
+        every { callStatusRemoteDataSource.observeStatus("call-1") } returns emptyFlow()
+    }
+
+    private suspend fun establishConnectedCall(
+        repository: CallRepositoryImpl,
+        runtimeEvents: MutableSharedFlow<MediaCallEvent>,
+    ) {
+        repository.prepareCall(CallPreparationRequest.NewOutgoing("pair-1", true))
+        repository.connectCall()
+        runtimeEvents.emit(
+            MediaCallEvent.Connected(
+                callId = "call-1",
+                generation = 1L,
+                localIdentity = "self-1",
+                remoteIdentity = "partner",
+                remoteParticipantConnected = true,
+            ),
+        )
+    }
+
+    private fun interruptionRequest(
+        sequence: Long,
+        operationId: String = "system-call-operation",
+    ) = SystemCallInterruptionRequest(
+        callId = "call-1",
+        operationId = operationId,
+        telecomSequence = sequence,
     )
 
     private fun configureIdleRuntime() {
@@ -910,4 +1237,42 @@ class CallRepositoryImplTest {
         wsUrl = "wss://example.invalid",
         createdByRequest = createdByRequest,
     )
+}
+
+private class RecordingInterruptionTelemetry : CallInterruptionTelemetry {
+    var attempts: Int = 0
+        private set
+    var finalFailures: Int = 0
+        private set
+
+    override fun recordTelecomCallback(
+        callId: String,
+        operationId: String,
+        sequence: Long,
+        callback: String,
+        result: String,
+        elapsedMillis: Long,
+    ) = Unit
+
+    override fun startTransition(
+        context: CallInterruptionTransitionContext,
+    ): CallInterruptionTelemetryOperation = object : CallInterruptionTelemetryOperation {
+        override fun recordAttempt(
+            attempt: Int,
+            retriesRemaining: Int,
+            result: String,
+            reasonCode: String?,
+        ) {
+            attempts += 1
+        }
+
+        override fun finish(
+            result: String,
+            reasonCode: String?,
+            throwable: Throwable?,
+            finalFailure: Boolean,
+        ) {
+            if (finalFailure) finalFailures += 1
+        }
+    }
 }

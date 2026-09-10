@@ -34,10 +34,13 @@ import life.fxs.purr.core.presentation.toUserMessage
 import life.fxs.purr.domain.call.model.CallConnectionState
 import life.fxs.purr.domain.call.model.CallPreparationRequest
 import life.fxs.purr.domain.call.model.CallSession
+import life.fxs.purr.domain.call.model.LocalCallInterruption
 import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.ScreenShareSnapshot
+import life.fxs.purr.domain.call.model.ScreenShareSession
 import life.fxs.purr.domain.call.model.ScreenShareSource
 import life.fxs.purr.domain.call.model.ScreenShareStatus
+import life.fxs.purr.domain.call.model.RemoteCallInterruption
 import life.fxs.purr.domain.call.model.isEffectivelyMuted
 import life.fxs.purr.domain.call.usecase.ConnectCallUseCase
 import life.fxs.purr.domain.call.usecase.CancelCallPreparationUseCase
@@ -452,6 +455,10 @@ class CallViewModel @Inject constructor(
             currentCallId = session.callId
             observeScreenShare(session.callId)
             updateState(session)
+            maybeStartRemoteScreenPlayback(
+                share = _state.value.screenShare.session,
+                isOwnedByCurrentUser = _state.value.screenShare.isOwnedByCurrentUser,
+            )
             return
         }
 
@@ -543,8 +550,28 @@ class CallViewModel @Inject constructor(
             )
         }
 
+        if (isRemote && share.status == ScreenShareStatus.Live && share.playback != null) {
+            maybeStartRemoteScreenPlayback(share, snapshot.isOwnedByCurrentUser)
+        } else if (currentWhepRequest != null) {
+            stopRemoteScreenPlayback()
+        }
+    }
+
+    private fun maybeStartRemoteScreenPlayback(
+        share: ScreenShareSession?,
+        isOwnedByCurrentUser: Boolean,
+    ) {
+        val voiceState = _state.value.session?.connectionState
+        val voiceMediaReady = voiceState == CallConnectionState.Connected ||
+            voiceState == CallConnectionState.Reconnecting
         val endpoint = share?.playback
-        if (isRemote && share.status == ScreenShareStatus.Live && endpoint != null) {
+        if (
+            voiceMediaReady &&
+            share != null &&
+            !isOwnedByCurrentUser &&
+            share.status == ScreenShareStatus.Live &&
+            endpoint != null
+        ) {
             val playbackRequest = WhepPlaybackRequest(
                 callId = share.callId,
                 shareId = share.shareId,
@@ -556,8 +583,6 @@ class CallViewModel @Inject constructor(
                 currentWhepRequest = playbackRequest
                 whepPlaybackController.start(playbackRequest)
             }
-        } else if (currentWhepRequest != null) {
-            stopRemoteScreenPlayback()
         }
     }
 
@@ -632,17 +657,37 @@ private fun AppError.toCallUserMessage(fallbackMessage: String): String = when (
     else -> toUserMessage().takeIf(String::isNotBlank) ?: fallbackMessage
 }
 
-private fun CallSession.toScreenState(): CallScreenState = when (connectionState) {
-    CallConnectionState.Idle -> CallScreenState.Idle
-    CallConnectionState.Preparing -> CallScreenState.Dialing
-    CallConnectionState.Connecting -> CallScreenState.Connecting
-    CallConnectionState.Connected -> if (uiSnapshot.remoteParticipantConnected) {
-        CallScreenState.Active
-    } else {
-        CallScreenState.Waiting
+private fun CallSession.toScreenState(): CallScreenState {
+    when (connectionState) {
+        CallConnectionState.Terminating -> return CallScreenState.Ending
+        CallConnectionState.Disconnected -> return CallScreenState.Ended
+        is CallConnectionState.Failed -> return CallScreenState.Failed
+        else -> Unit
     }
-    CallConnectionState.Reconnecting -> CallScreenState.Reconnecting
-    CallConnectionState.Terminating -> CallScreenState.Ending
-    CallConnectionState.Disconnected -> CallScreenState.Ended
-    is CallConnectionState.Failed -> CallScreenState.Failed
+    when (interruptionState.local) {
+        is LocalCallInterruption.Resuming -> return CallScreenState.ResumingAfterSystemCall
+        is LocalCallInterruption.Suspending,
+        is LocalCallInterruption.Suspended,
+        -> return CallScreenState.SystemCallSuspended
+        LocalCallInterruption.None -> Unit
+    }
+    when (interruptionState.remote) {
+        is RemoteCallInterruption.Resuming -> return CallScreenState.RemoteResumingAfterSystemCall
+        is RemoteCallInterruption.Suspended -> return CallScreenState.RemoteSystemCallSuspended
+        RemoteCallInterruption.None -> Unit
+    }
+    return when (connectionState) {
+        CallConnectionState.Idle -> CallScreenState.Idle
+        CallConnectionState.Preparing -> CallScreenState.Dialing
+        CallConnectionState.Connecting -> CallScreenState.Connecting
+        CallConnectionState.Connected -> if (uiSnapshot.remoteParticipantConnected) {
+            CallScreenState.Active
+        } else {
+            CallScreenState.Waiting
+        }
+        CallConnectionState.Reconnecting -> CallScreenState.Reconnecting
+        CallConnectionState.Terminating -> CallScreenState.Ending
+        CallConnectionState.Disconnected -> CallScreenState.Ended
+        is CallConnectionState.Failed -> CallScreenState.Failed
+    }
 }

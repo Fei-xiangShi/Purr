@@ -2,20 +2,24 @@ package life.fxs.purr.core.media.screenshare
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.util.Log
 import android.view.View
 import java.io.Closeable
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import livekit.org.webrtc.AudioTrack
 import livekit.org.webrtc.DataChannel
 import livekit.org.webrtc.DefaultVideoDecoderFactory
@@ -118,17 +122,25 @@ class NativeWhepPlaybackController(
                 },
             )
             activeSession = session
-            runCatching { session.connect() }
-                .onFailure { error ->
-                    if (activeRequest == request) {
-                        mutableStatus.value = WhepPlaybackStatus.Failed(
-                            request,
-                            error.message?.takeIf(String::isNotBlank) ?: "WHEP 播放连接失败",
-                        )
-                    }
-                    session.close()
-                    if (activeSession === session) activeSession = null
+            try {
+                withTimeout(WHEP_SETUP_TIMEOUT_MILLIS) { session.connect() }
+            } catch (error: CancellationException) {
+                if (error is TimeoutCancellationException && activeRequest == request) {
+                    mutableStatus.value = WhepPlaybackStatus.Failed(request, "WHEP 协商超时")
                 }
+                session.close()
+                if (activeSession === session) activeSession = null
+                if (error !is TimeoutCancellationException) throw error
+            } catch (error: Throwable) {
+                if (activeRequest == request) {
+                    mutableStatus.value = WhepPlaybackStatus.Failed(
+                        request,
+                        error.message?.takeIf(String::isNotBlank) ?: "WHEP 播放连接失败",
+                    )
+                }
+                session.close()
+                if (activeSession === session) activeSession = null
+            }
         }
     }
 
@@ -172,6 +184,10 @@ class NativeWhepPlaybackController(
     ) {
         if (activeRequest == request) mutableStatus.value = statusProvider()
     }
+
+    private companion object {
+        const val WHEP_SETUP_TIMEOUT_MILLIS = 40_000L
+    }
 }
 
 private class SwitchableVideoSink : VideoSink {
@@ -214,8 +230,11 @@ private class NativeWhepSession(
 
     suspend fun connect() {
         check(!closed.get()) { "WHEP 会话已关闭" }
+        logStage("ice_discovery_start")
         val iceServers = discoverIceServers()
+        logStage("ice_discovery_complete", "servers=${iceServers.size}")
         createPeerConnection(iceServers)
+        logStage("peer_connection_created")
         val connection = requireNotNull(peerConnection)
         connection.addTransceiver(
             MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
@@ -226,19 +245,35 @@ private class NativeWhepSession(
             RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY),
         )
 
+        logStage("offer_create_start")
         val offer = connection.createOfferAwait()
+        logStage("offer_create_complete")
         connection.setLocalDescriptionAwait(offer)
+        logStage("local_description_set")
         if (connection.iceGatheringState() != PeerConnection.IceGatheringState.COMPLETE) {
-            withTimeout(ICE_GATHERING_TIMEOUT_MILLIS) { iceGatheringComplete.await() }
+            logStage("ice_gathering_wait")
+            val completed = withTimeoutOrNull(ICE_GATHERING_GRACE_MILLIS) {
+                iceGatheringComplete.await()
+                true
+            } == true
+            if (!completed) logStage("ice_gathering_partial")
         }
         val gatheredOffer = requireNotNull(connection.localDescription) {
             "WHEP 本地 SDP 不可用"
         }
+        check(SDP_CANDIDATE_MARKER in gatheredOffer.description) {
+            "WHEP 未收集到可用的 ICE candidate"
+        }
+        logStage("ice_gathering_ready")
+        logStage("offer_post_start")
         val answer = postOffer(gatheredOffer.description)
+        logStage("offer_post_complete")
         connection.setRemoteDescriptionAwait(
             SessionDescription(SessionDescription.Type.ANSWER, answer),
         )
+        logStage("remote_description_set")
         withTimeout(CONNECTION_TIMEOUT_MILLIS) { connectionReady.await() }
+        logStage("peer_connection_ready")
         listener.onBuffering()
     }
 
@@ -318,6 +353,7 @@ private class NativeWhepSession(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        logStage("close")
         resourceUrl?.let { url ->
             okHttpClient.newCall(
                 Request.Builder()
@@ -346,17 +382,27 @@ private class NativeWhepSession(
     private fun attachRemoteTrack(track: MediaStreamTrack?) {
         when (track) {
             is VideoTrack -> {
+                logStage("remote_video_track")
                 track.setEnabled(true)
                 track.addSink(videoSink)
             }
-            is AudioTrack -> track.setEnabled(true)
+            is AudioTrack -> {
+                logStage("remote_audio_track")
+                track.setEnabled(true)
+            }
         }
+    }
+
+    private fun logStage(stage: String, detail: String? = null) {
+        val suffix = detail?.let { " $it" }.orEmpty()
+        Log.d(TAG, "share=${request.shareId.takeLast(8)} stage=$stage$suffix")
     }
 
     private inner class Observer : PeerConnection.Observer {
         override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit
 
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
+            logStage("ice_connection_state", "state=$state")
             when (state) {
                 PeerConnection.IceConnectionState.CONNECTED,
                 PeerConnection.IceConnectionState.COMPLETED,
@@ -368,6 +414,7 @@ private class NativeWhepSession(
         }
 
         override fun onConnectionChange(newState: PeerConnection.PeerConnectionState) {
+            logStage("peer_connection_state", "state=$newState")
             when (newState) {
                 PeerConnection.PeerConnectionState.CONNECTED -> connectionReady.complete(Unit)
                 PeerConnection.PeerConnectionState.FAILED -> fail("WHEP 媒体连接失败")
@@ -379,6 +426,7 @@ private class NativeWhepSession(
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
 
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) {
+            logStage("ice_gathering_state", "state=$state")
             if (state == PeerConnection.IceGatheringState.COMPLETE) iceGatheringComplete.complete(Unit)
         }
 
@@ -406,9 +454,11 @@ private class NativeWhepSession(
     }
 
     private companion object {
+        const val TAG = "WhepPlayback"
         val SDP_MEDIA_TYPE = "application/sdp".toMediaType()
-        const val ICE_GATHERING_TIMEOUT_MILLIS = 10_000L
+        const val ICE_GATHERING_GRACE_MILLIS = 2_500L
         const val CONNECTION_TIMEOUT_MILLIS = 20_000L
+        const val SDP_CANDIDATE_MARKER = "a=candidate:"
     }
 }
 

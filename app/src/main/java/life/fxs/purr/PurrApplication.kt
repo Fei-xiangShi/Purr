@@ -11,8 +11,9 @@ import life.fxs.purr.data.call.telemetry.CallTelemetryCoordinator
 import life.fxs.purr.platform.push.PushPlatformCoordinator
 import life.fxs.purr.telecom.IncomingSystemCallLifecycleCoordinator
 import life.fxs.purr.telecom.SystemCallEventCoordinator
-
+import life.fxs.purr.diagnostics.PurrSentry
 import life.fxs.purr.screenshare.ScreenShareCallLifecycleCoordinator
+
 @HiltAndroidApp
 class PurrApplication : Application(), Configuration.Provider {
     @Inject
@@ -46,6 +47,7 @@ class PurrApplication : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        PurrSentry.initialize(this)
         // Plain Robolectric service tests create the application without a Hilt test component.
         // Android production startup always injects this field before Application.onCreate.
         if (::realtimeSessionCoordinator.isInitialized) {

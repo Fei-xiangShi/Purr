@@ -7,6 +7,7 @@ import androidx.annotation.NonNull;
 
 import com.pedro.common.ConnectChecker;
 import com.pedro.common.VideoCodec;
+import com.pedro.common.socket.base.SocketType;
 import com.pedro.encoder.input.sources.audio.InternalAudioSource;
 import com.pedro.encoder.input.sources.video.ScreenSource;
 import com.pedro.library.whip.WhipStream;
@@ -70,6 +71,10 @@ public final class RootEncoderWhipScreenPublisher {
         VideoSize size = adaptive720pSize(context);
         stream.setVideoCodec(VideoCodec.H264);
         stream.getGlInterface().setForceRender(true, STATIC_SCREEN_FPS);
+        // RootEncoder's Ktor transport depends on a newer kotlinx-io runtime than the
+        // application stack. Its Java transport implements the same WHIP UDP/TCP socket
+        // contract without introducing that process-wide Kotlin runtime dependency.
+        stream.getStreamClient().setSocketType(SocketType.JAVA);
         stream.getStreamClient().setAuthorization(request.getBearerToken());
         stream.getStreamClient().setReTries(MAX_RETRIES);
         boolean videoPrepared = stream.prepareVideo(
@@ -100,18 +105,7 @@ public final class RootEncoderWhipScreenPublisher {
     private synchronized void stopInternal(boolean projectionRevoked) {
         if (stopping) return;
         stopping = true;
-        try {
-            if (stream.isStreaming()) stream.stopStream();
-        } catch (RuntimeException ignored) {
-        }
-        try {
-            stream.release();
-        } catch (RuntimeException ignored) {
-        }
-        try {
-            mediaProjection.stop();
-        } catch (RuntimeException ignored) {
-        }
+        releaseResources();
         if (projectionRevoked) {
             listener.onFailed(request, "系统已撤销屏幕录制权限");
         } else {
@@ -132,12 +126,7 @@ public final class RootEncoderWhipScreenPublisher {
             if (stopping) return;
             if (stream.getStreamClient().reTry(RETRY_DELAY_MILLIS, reason, null)) return;
             stopping = true;
-            try {
-                if (stream.isStreaming()) stream.stopStream();
-                stream.release();
-                mediaProjection.stop();
-            } catch (RuntimeException ignored) {
-            }
+            releaseResources();
             listener.onFailed(request, reason.isBlank() ? "WHIP 推流连接失败" : reason);
         }
 
@@ -150,6 +139,21 @@ public final class RootEncoderWhipScreenPublisher {
         }
 
         @Override public void onAuthSuccess() { }
+    }
+
+    private void releaseResources() {
+        try {
+            if (stream.isStreaming()) stream.stopStream();
+        } catch (RuntimeException | LinkageError ignored) {
+        }
+        try {
+            stream.release();
+        } catch (RuntimeException | LinkageError ignored) {
+        }
+        try {
+            mediaProjection.stop();
+        } catch (RuntimeException | LinkageError ignored) {
+        }
     }
 
     private static VideoSize adaptive720pSize(Context context) {

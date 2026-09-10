@@ -6,6 +6,8 @@ import life.fxs.purr.domain.call.model.CallConnectionState
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.ParticipantIdentity
+import life.fxs.purr.domain.call.model.RemoteCallInterruption
+import life.fxs.purr.core.model.SystemCallInterruptionPhase
 import org.junit.Test
 
 class CallMediaEventReducerTest {
@@ -92,6 +94,48 @@ class CallMediaEventReducerTest {
         assertThat(reconnected?.localAudioState).isEqualTo(LocalAudioState.Muted)
         assertThat(reconnected?.participantIdentity?.remote).isEqualTo("remote-restored")
         assertThat(reconnected?.uiSnapshot?.remoteParticipantConnected).isTrue()
+    }
+
+    @Test
+    fun `remote interruption facts are replayed independently from connection state`() {
+        val connected = session().copy(connectionState = CallConnectionState.Connected)
+        val suspended = reducer.reduce(
+            connected,
+            MediaCallEvent.RemoteSystemCallInterruptionChanged(
+                callId = "call-1",
+                generation = 7L,
+                operationId = "operation-1",
+                phase = SystemCallInterruptionPhase.Suspended,
+                degraded = true,
+            ),
+        )
+        val resuming = reducer.reduce(
+            requireNotNull(suspended),
+            MediaCallEvent.RemoteSystemCallInterruptionChanged(
+                callId = "call-1",
+                generation = 7L,
+                operationId = "operation-1",
+                phase = SystemCallInterruptionPhase.Resuming,
+                degraded = false,
+            ),
+        )
+        val active = reducer.reduce(
+            requireNotNull(resuming),
+            MediaCallEvent.RemoteSystemCallInterruptionChanged(
+                callId = "call-1",
+                generation = 7L,
+                operationId = "operation-1",
+                phase = SystemCallInterruptionPhase.Active,
+                degraded = false,
+            ),
+        )
+
+        assertThat(suspended?.interruptionState?.remote)
+            .isEqualTo(RemoteCallInterruption.Suspended("operation-1", degraded = true))
+        assertThat(resuming?.interruptionState?.remote)
+            .isEqualTo(RemoteCallInterruption.Resuming("operation-1"))
+        assertThat(active?.interruptionState?.remote).isEqualTo(RemoteCallInterruption.None)
+        assertThat(active?.connectionState).isEqualTo(CallConnectionState.Connected)
     }
 
     private fun session() = CallSession(

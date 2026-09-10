@@ -86,7 +86,9 @@ class HomeViewModel @Inject constructor(
             }.collect { sources ->
                 val (session, bond, realtimePartnerOnline, callLifecycle) = sources
                 val partnerOnline = realtimePartnerOnline ?: bond?.partner?.isOnline ?: false
-                val isCallable = bond?.pairId != null && !callLifecycle.isNewCallBlocked
+                val isCallable = bond?.pairId != null &&
+                    callLifecycle.resumableSession == null &&
+                    !callLifecycle.isNewCallBlocked
                 _uiState.value = _uiState.value.copy(
                     self = session?.self,
                     pairId = bond?.pairId,

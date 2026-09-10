@@ -6,6 +6,7 @@ import life.fxs.purr.domain.call.model.CallConnectionState
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.NetworkQuality
+import life.fxs.purr.domain.call.model.RemoteCallInterruption
 
 /**
  * Translates provider-neutral media facts into the domain call state.
@@ -69,6 +70,22 @@ class CallMediaEventReducer @Inject constructor() {
                         downlinkScore = event.downlinkScore,
                         lastUpdatedEpochMillis = event.sampledAtEpochMillis,
                     ),
+                ),
+            )
+
+            is MediaCallEvent.RemoteSystemCallInterruptionChanged -> session.copy(
+                interruptionState = session.interruptionState.copy(
+                    remote = when (event.phase) {
+                        life.fxs.purr.core.model.SystemCallInterruptionPhase.Suspended ->
+                            RemoteCallInterruption.Suspended(
+                                operationId = event.operationId,
+                                degraded = event.degraded,
+                            )
+                        life.fxs.purr.core.model.SystemCallInterruptionPhase.Resuming ->
+                            RemoteCallInterruption.Resuming(event.operationId)
+                        life.fxs.purr.core.model.SystemCallInterruptionPhase.Active ->
+                            RemoteCallInterruption.None
+                    },
                 ),
             )
 
