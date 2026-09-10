@@ -4,6 +4,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import life.fxs.purr.core.common.ApplicationScope
@@ -27,7 +28,7 @@ class ScreenShareCallLifecycleCoordinator @Inject constructor(
             callRepository.observeCallSession().collect { session ->
                 if (session != null && session.connectionState.isResumable) {
                     trackedCallId = session.callId
-                    if (cleanedCallId != session.callId) cleanedCallId = null
+                    cleanedCallId = null
                     return@collect
                 }
                 val callId = session?.callId ?: trackedCallId ?: return@collect
@@ -36,7 +37,9 @@ class ScreenShareCallLifecycleCoordinator @Inject constructor(
                     session.connectionState.isTerminal
                 if (!shouldClean || cleanedCallId == callId) return@collect
                 cleanedCallId = callId
-                screenShareRepository.stop(callId)
+                applicationScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                    screenShareRepository.stop(callId)
+                }
             }
         }
     }

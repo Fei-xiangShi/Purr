@@ -39,10 +39,16 @@ internal class CallSessionPreparationCoordinator @Inject constructor(
                 ),
             )
             ownedCallId = response.callId.takeIf { response.createdByRequest }
+            check(request !is CallPreparationRequest.NewOutgoing || response.createdByRequest) {
+                "已有未结束的通话，请先处理当前来电"
+            }
             if (request is CallPreparationRequest.Existing && response.callId != request.callId) {
                 throw IllegalStateException("Prepared call identity does not match requested call")
             }
             val callStatus = callStatusRemoteDataSource.getStatus(response.callId)
+            check(!callStatus.state.equals("ended", ignoreCase = true)) {
+                "Call has already ended"
+            }
             val session = callUiSnapshotAssembler.assemble(
                 CallSession(
                     callId = response.callId,

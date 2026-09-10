@@ -56,6 +56,8 @@ class ApiRealtimeRepository @Inject constructor(
     private var heartbeatJob: Job? = null
     private var reconnectAttempt = 0
     private var lifecycleGeneration = 0L
+    private var callStateRevision = 0L
+    private var refreshSequence = 0L
     private val consumedIncomingCalls = ConsumedIncomingCallRegistry()
 
     override fun observeState(): Flow<RealtimeState> = state.asStateFlow()
@@ -84,12 +86,14 @@ class ApiRealtimeRepository @Inject constructor(
     }
 
     override suspend fun refreshActiveCall(): AppResult<Unit> = appResult {
-        val requestedGeneration = synchronized(this@ApiRealtimeRepository) {
-            lifecycleGeneration.takeIf { shouldRun }
+        val requestIdentity = synchronized(this@ApiRealtimeRepository) {
+            if (shouldRun) Triple(lifecycleGeneration, callStateRevision, ++refreshSequence) else null
         } ?: return@appResult
         val activeCall = api.getActiveCall().activeCall
         synchronized(this@ApiRealtimeRepository) {
-            if (!shouldRun || requestedGeneration != lifecycleGeneration) return@synchronized
+            if (!shouldRun || requestIdentity != Triple(lifecycleGeneration, callStateRevision, refreshSequence)) {
+                return@synchronized
+            }
             val candidate = activeCall.toIncomingCallOrNull(consumedIncomingCalls::contains)
             state.update { current -> current.copy(incomingCallCandidate = candidate) }
         }
@@ -102,6 +106,7 @@ class ApiRealtimeRepository @Inject constructor(
 
     @Synchronized
     override fun consumeIncomingCall(callId: String) {
+        callStateRevision++
         consumedIncomingCalls.markConsumed(callId)
         state.update { current ->
             if (current.incomingCallCandidate?.callId == callId) {
@@ -154,6 +159,12 @@ class ApiRealtimeRepository @Inject constructor(
     private fun handleMessage(webSocket: WebSocket, text: String) {
         if (socket !== webSocket) return
         val event = runCatching { json.decodeFromString<RealtimeEventDto>(text) }.getOrNull() ?: return
+        if (event.type in setOf(SNAPSHOT_EVENT, CALL_STARTED_EVENT, CALL_ENDED_EVENT)) {
+            callStateRevision++
+        }
+        if (event.type == CALL_ENDED_EVENT) {
+            event.callId?.let(consumedIncomingCalls::markConsumed)
+        }
         if (event.type == SCREEN_SHARE_CHANGED_EVENT) {
             event.callId?.let { callId ->
                 screenShareInvalidations.publish(

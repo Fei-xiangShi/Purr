@@ -88,7 +88,7 @@ class ScreenShareRepositoryImplTest {
 
     @Test
     fun `publisher failure automatically stops matching server share once`() = runTest {
-        coEvery { api.stopScreenShare("call-1") } returns ScreenShareEnvelopeDto(
+        coEvery { api.stopScreenShare("call-1", "share-1") } returns ScreenShareEnvelopeDto(
             sampleDto(status = "stopped", publishing = null),
         )
         createRepository()
@@ -107,7 +107,7 @@ class ScreenShareRepositoryImplTest {
         )
         runCurrent()
 
-        coVerify(exactly = 1) { api.stopScreenShare("call-1") }
+        coVerify(exactly = 1) { api.stopScreenShare("call-1", "share-1") }
     }
 
     @Test

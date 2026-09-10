@@ -40,6 +40,7 @@ fun IncomingCallPromptRoute(
     avatarModifier: Modifier = Modifier,
     callId: String,
     acceptImmediately: Boolean = false,
+    recoveryInProgress: Boolean = false,
     onOpenCall: (pairId: String, callId: String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -49,6 +50,7 @@ fun IncomingCallPromptRoute(
         avatarModifier = avatarModifier,
         callId = callId,
         acceptImmediately = acceptImmediately,
+        recoveryInProgress = recoveryInProgress,
         onOpenCall = onOpenCall,
         onDismiss = onDismiss,
         viewModel = hiltViewModel(),
@@ -66,6 +68,7 @@ internal fun IncomingCallPromptRoute(
     onOpenCall: (pairId: String, callId: String) -> Unit,
     onDismiss: () -> Unit,
     viewModel: IncomingCallPromptViewModel,
+    recoveryInProgress: Boolean = false,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -99,11 +102,11 @@ internal fun IncomingCallPromptRoute(
             !state.isResponding
         ) {
             immediateAcceptConsumed = true
-            viewModel.onIntent(IncomingCallPromptIntent.Accept)
+            viewModel.onIntent(IncomingCallPromptIntent.Accept, expectedCallId = callId)
         }
     }
-    LaunchedEffect(state.isReady, state.call?.callId, callId, state.isResponding) {
-        if (!state.isReady || state.isResponding) return@LaunchedEffect
+    LaunchedEffect(state.isReady, state.call?.callId, callId, state.isResponding, recoveryInProgress) {
+        if (!state.isReady || state.isResponding || recoveryInProgress) return@LaunchedEffect
         when {
             state.call != null && !matchesExpectedCall -> onDismiss()
             state.call == null -> {
@@ -118,8 +121,8 @@ internal fun IncomingCallPromptRoute(
         partnerAvatarUrl = partnerAvatarUrl,
         avatarModifier = avatarModifier,
         enabled = state.call != null && matchesExpectedCall && !state.isResponding,
-        onAccept = { viewModel.onIntent(IncomingCallPromptIntent.Accept) },
-        onDecline = { viewModel.onIntent(IncomingCallPromptIntent.Decline) },
+        onAccept = { viewModel.onIntent(IncomingCallPromptIntent.Accept, expectedCallId = callId) },
+        onDecline = { viewModel.onIntent(IncomingCallPromptIntent.Decline, expectedCallId = callId) },
     )
 }
 

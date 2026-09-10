@@ -19,18 +19,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ScreenShare
-import androidx.compose.material.icons.automirrored.rounded.StopScreenShare
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.PhoneAndroid
+import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -52,12 +50,15 @@ import life.fxs.purr.domain.call.model.ScreenSharePublishing
 import life.fxs.purr.domain.call.model.ScreenShareSource
 import life.fxs.purr.domain.call.model.ScreenShareStatus
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun ScreenShareButton(
+internal fun CallToolsSheet(
     state: CallScreenShareState,
-    canStart: Boolean,
-    onOpenPicker: () -> Unit,
-    onStop: () -> Unit,
+    canStartScreenShare: Boolean,
+    onDismiss: () -> Unit,
+    onScreenShare: () -> Unit,
+    onStopScreenShare: () -> Unit,
+    onDiagnostics: () -> Unit,
 ) {
     val active = state.session?.status in setOf(
         ScreenShareStatus.Authorized,
@@ -65,26 +66,41 @@ internal fun ScreenShareButton(
         ScreenShareStatus.Stopping,
     )
     val canStop = active && state.isOwnedByCurrentUser
-    FilledIconButton(
-        onClick = if (canStop) onStop else onOpenPicker,
-        enabled = canStop || (canStart && !active),
-        modifier = Modifier.size(56.dp),
-        colors = IconButtonDefaults.filledIconButtonColors(
-            containerColor = if (canStop) Color(0xFF5F4630) else Color.White.copy(alpha = 0.16f),
-            contentColor = Color.White,
-            disabledContainerColor = Color.White.copy(alpha = 0.07f),
-            disabledContentColor = Color.White.copy(alpha = 0.35f),
-        ),
-    ) {
-        Icon(
-            imageVector = if (canStop) {
-                Icons.AutoMirrored.Rounded.StopScreenShare
-            } else {
-                Icons.AutoMirrored.Rounded.ScreenShare
-            },
-            contentDescription = if (canStop) "停止投屏" else "开始投屏",
-            modifier = Modifier.size(27.dp),
+    val stopping = state.session?.status == ScreenShareStatus.Stopping
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            text = "通话工具",
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
         )
+        ListItem(
+            headlineContent = { Text(if (canStop) "停止投屏" else "投屏与推流") },
+            supportingContent = {
+                Text(when {
+                    stopping -> "正在停止投屏"
+                    state.isCreating -> "正在准备投屏"
+                    canStop -> "停止当前手机投屏或 OBS 推流"
+                    active -> "对方正在投屏"
+                    !canStartScreenShare -> "双方接通后可共享画面"
+                    else -> "选择手机投屏或 OBS 推流"
+                })
+            },
+            leadingContent = { Icon(Icons.AutoMirrored.Rounded.ScreenShare, contentDescription = null) },
+            trailingContent = {
+                Button(
+                    onClick = if (canStop) onStopScreenShare else onScreenShare,
+                    enabled = !state.isCreating && !stopping &&
+                        (canStop || (canStartScreenShare && !active)),
+                ) { Text(if (canStop) "停止" else "选择") }
+            },
+        )
+        ListItem(
+            headlineContent = { Text("网络状况检测") },
+            supportingContent = { Text("查看通话质量、延迟和丢包情况") },
+            leadingContent = { Icon(Icons.Rounded.NetworkCheck, contentDescription = null) },
+            trailingContent = { Button(onClick = onDiagnostics) { Text("查看") } },
+        )
+        Spacer(Modifier.height(28.dp))
     }
 }
 
@@ -131,7 +147,8 @@ internal fun RemoteScreenSharePanel(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(16f / 9f)
+                .weight(1f, fill = false)
+                .aspectRatio(state.remoteAspectRatio)
                 .clip(RoundedCornerShape(18.dp))
                 .background(Color.Black),
             contentAlignment = Alignment.Center,
@@ -173,7 +190,11 @@ internal fun RemoteScreenSharePanel(
         }
         Spacer(Modifier.height(10.dp))
         Text(
-            text = "对方正在共享屏幕 · 节目声音与语音同时播放",
+            text = if (state.remoteState == RemoteScreenShareUiState.Live) {
+                "对方正在共享画面 · 语音通话保持连接"
+            } else {
+                state.remoteStatusLabel()
+            },
             color = Color.White.copy(alpha = 0.74f),
             style = MaterialTheme.typography.bodySmall,
         )
@@ -270,7 +291,7 @@ private fun CopyableCredential(label: String, value: String) {
 private fun CallScreenShareState.remoteStatusLabel(): String = when (remoteState) {
     RemoteScreenShareUiState.None -> "暂无屏幕共享"
     RemoteScreenShareUiState.Preparing -> "对方正在准备投屏"
-    RemoteScreenShareUiState.Connecting -> "正在建立低延迟 WHEP 连接"
+    RemoteScreenShareUiState.Connecting -> "正在连接共享画面"
     RemoteScreenShareUiState.Buffering -> "节目流缓冲中"
     RemoteScreenShareUiState.Live -> "直播中"
     RemoteScreenShareUiState.Failed -> "节目流播放失败"

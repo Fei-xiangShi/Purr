@@ -41,7 +41,7 @@ public final class RootEncoderWhipScreenPublisher {
     private final ScreenSharePublishRequest request;
     private final Listener listener;
     private final WhipStream stream;
-    private boolean stopping;
+    private volatile boolean stopping;
 
     public RootEncoderWhipScreenPublisher(
             @NonNull Context context,
@@ -125,20 +125,25 @@ public final class RootEncoderWhipScreenPublisher {
         @Override public void onConnectionFailed(@NonNull String reason) {
             if (stopping) return;
             if (stream.getStreamClient().reTry(RETRY_DELAY_MILLIS, reason, null)) return;
-            stopping = true;
-            releaseResources();
-            listener.onFailed(request, reason.isBlank() ? "WHIP 推流连接失败" : reason);
+            failInternal(reason.isBlank() ? "WHIP 推流连接失败" : reason);
         }
 
         @Override public void onDisconnect() {
-            if (!stopping) listener.onFailed(request, "WHIP 推流连接已断开");
+            failInternal("WHIP 推流连接已断开");
         }
 
         @Override public void onAuthError() {
-            if (!stopping) listener.onFailed(request, "投屏凭证无效或已过期");
+            failInternal("投屏凭证无效或已过期");
         }
 
         @Override public void onAuthSuccess() { }
+    }
+
+    private synchronized void failInternal(String message) {
+        if (stopping) return;
+        stopping = true;
+        releaseResources();
+        listener.onFailed(request, message);
     }
 
     private void releaseResources() {
@@ -160,9 +165,13 @@ public final class RootEncoderWhipScreenPublisher {
         int rawWidth = Math.max(2, context.getResources().getDisplayMetrics().widthPixels);
         int rawHeight = Math.max(2, context.getResources().getDisplayMetrics().heightPixels);
         int shortSide = Math.min(rawWidth, rawHeight);
-        double scale = (double) TARGET_SHORT_SIDE / (double) shortSide;
-        int width = makeEven(Math.min(MAX_LONG_SIDE, (int) (rawWidth * scale)));
-        int height = makeEven(Math.min(MAX_LONG_SIDE, (int) (rawHeight * scale)));
+        int longSide = Math.max(rawWidth, rawHeight);
+        double scale = Math.min(1.0, Math.min(
+                (double) TARGET_SHORT_SIDE / shortSide,
+                (double) MAX_LONG_SIDE / longSide
+        ));
+        int width = makeEven((int) (rawWidth * scale));
+        int height = makeEven((int) (rawHeight * scale));
         return new VideoSize(width, height);
     }
 

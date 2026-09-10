@@ -4,19 +4,13 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.util.Log
 import android.view.View
-import java.io.Closeable
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -65,7 +59,7 @@ sealed interface WhepPlaybackStatus {
     data object Idle : WhepPlaybackStatus
     data class Connecting(val request: WhepPlaybackRequest) : WhepPlaybackStatus
     data class Buffering(val request: WhepPlaybackRequest) : WhepPlaybackStatus
-    data class Live(val request: WhepPlaybackRequest) : WhepPlaybackStatus
+    data class Live(val request: WhepPlaybackRequest, val width: Int = 0, val height: Int = 0) : WhepPlaybackStatus
     data class Failed(val request: WhepPlaybackRequest, val message: String) : WhepPlaybackStatus
     data class Stopped(val shareId: String?) : WhepPlaybackStatus
 }
@@ -86,75 +80,24 @@ class NativeWhepPlaybackController(
     private val appContext = context.applicationContext
     private val eglBase = EglBase.create()
     private val videoSink = SwitchableVideoSink()
-    private val mutableStatus = MutableStateFlow<WhepPlaybackStatus>(WhepPlaybackStatus.Idle)
-    override val status: StateFlow<WhepPlaybackStatus> = mutableStatus.asStateFlow()
-
-    private var startJob: Job? = null
-    private var activeSession: NativeWhepSession? = null
-    private var activeRequest: WhepPlaybackRequest? = null
-
-    @Synchronized
-    override fun start(request: WhepPlaybackRequest) {
-        if (activeRequest == request && activeSession != null) return
-        startJob?.cancel()
-        startJob = applicationScope.launch {
-            closeActiveSession()
-            activeRequest = request
-            mutableStatus.value = WhepPlaybackStatus.Connecting(request)
-            val session = NativeWhepSession(
+    private val lifecycle = WhepPlaybackLifecycle(
+        scope = CoroutineScope(applicationScope.coroutineContext + Dispatchers.IO),
+        factory = { request, listener ->
+            NativeWhepSession(
                 context = appContext,
                 okHttpClient = okHttpClient,
                 eglContext = eglBase.eglBaseContext,
                 request = request,
                 videoSink = videoSink,
-                listener = object : NativeWhepSession.Listener {
-                    override fun onBuffering() = updateFor(request) {
-                        WhepPlaybackStatus.Buffering(request)
-                    }
-
-                    override fun onFirstFrame() = updateFor(request) {
-                        WhepPlaybackStatus.Live(request)
-                    }
-
-                    override fun onFailed(message: String) = updateFor(request) {
-                        WhepPlaybackStatus.Failed(request, message)
-                    }
-                },
+                listener = listener,
             )
-            activeSession = session
-            try {
-                withTimeout(WHEP_SETUP_TIMEOUT_MILLIS) { session.connect() }
-            } catch (error: CancellationException) {
-                if (error is TimeoutCancellationException && activeRequest == request) {
-                    mutableStatus.value = WhepPlaybackStatus.Failed(request, "WHEP 协商超时")
-                }
-                session.close()
-                if (activeSession === session) activeSession = null
-                if (error !is TimeoutCancellationException) throw error
-            } catch (error: Throwable) {
-                if (activeRequest == request) {
-                    mutableStatus.value = WhepPlaybackStatus.Failed(
-                        request,
-                        error.message?.takeIf(String::isNotBlank) ?: "WHEP 播放连接失败",
-                    )
-                }
-                session.close()
-                if (activeSession === session) activeSession = null
-            }
-        }
-    }
+        },
+    )
+    override val status: StateFlow<WhepPlaybackStatus> = lifecycle.status
 
-    @Synchronized
-    override fun stop(shareId: String?) {
-        val current = activeRequest
-        if (shareId != null && current != null && current.shareId != shareId) return
-        startJob?.cancel()
-        startJob = applicationScope.launch {
-            closeActiveSession()
-            activeRequest = null
-            mutableStatus.value = WhepPlaybackStatus.Stopped(shareId ?: current?.shareId)
-        }
-    }
+    override fun start(request: WhepPlaybackRequest) = lifecycle.start(request)
+
+    override fun stop(shareId: String?) = lifecycle.stop(shareId)
 
     override fun createVideoRenderer(context: Context): View = SurfaceViewRenderer(context).apply {
         init(eglBase.eglBaseContext, null)
@@ -171,38 +114,12 @@ class NativeWhepPlaybackController(
         renderer.release()
     }
 
-    private suspend fun closeActiveSession() {
-        val session = activeSession
-        activeSession = null
-        session?.close()
-    }
-
-    @Synchronized
-    private fun updateFor(
-        request: WhepPlaybackRequest,
-        statusProvider: () -> WhepPlaybackStatus,
-    ) {
-        if (activeRequest == request) mutableStatus.value = statusProvider()
-    }
-
-    private companion object {
-        const val WHEP_SETUP_TIMEOUT_MILLIS = 40_000L
-    }
 }
 
 private class SwitchableVideoSink : VideoSink {
     val target = AtomicReference<VideoSink?>(null)
-    private val deliveredFirstFrame = AtomicBoolean(false)
-    var onFirstFrame: (() -> Unit)? = null
-
     override fun onFrame(frame: VideoFrame) {
-        if (deliveredFirstFrame.compareAndSet(false, true)) onFirstFrame?.invoke()
         target.get()?.onFrame(frame)
-    }
-
-    fun reset(onFirstFrame: () -> Unit) {
-        deliveredFirstFrame.set(false)
-        this.onFirstFrame = onFirstFrame
     }
 }
 
@@ -212,23 +129,26 @@ private class NativeWhepSession(
     private val eglContext: EglBase.Context,
     private val request: WhepPlaybackRequest,
     private val videoSink: SwitchableVideoSink,
-    private val listener: Listener,
-) : Closeable {
-    interface Listener {
-        fun onBuffering()
-        fun onFirstFrame()
-        fun onFailed(message: String)
-    }
+    private val listener: WhepSessionListener,
+) : WhepSession {
 
     private val closed = AtomicBoolean(false)
     private val iceGatheringComplete = CompletableDeferred<Unit>()
     private val connectionReady = CompletableDeferred<Unit>()
+    private val firstFrame = CompletableDeferred<Unit>()
     private var resourceUrl: HttpUrl? = null
     private var peerConnection: PeerConnection? = null
     private var peerConnectionFactory: PeerConnectionFactory? = null
     private var audioDeviceModule: JavaAudioDeviceModule? = null
+    private val frameSink = VideoSink { frame ->
+        if (!closed.get() && listener.onFrame(frame.rotatedWidth, frame.rotatedHeight)) {
+            firstFrame.complete(Unit)
+            videoSink.onFrame(frame)
+        }
+    }
+    private val videoTracks = java.util.concurrent.ConcurrentHashMap.newKeySet<VideoTrack>()
 
-    suspend fun connect() {
+    override suspend fun connect() {
         check(!closed.get()) { "WHEP 会话已关闭" }
         logStage("ice_discovery_start")
         val iceServers = discoverIceServers()
@@ -268,13 +188,14 @@ private class NativeWhepSession(
         logStage("offer_post_start")
         val answer = postOffer(gatheredOffer.description)
         logStage("offer_post_complete")
+        listener.onBuffering()
         connection.setRemoteDescriptionAwait(
             SessionDescription(SessionDescription.Type.ANSWER, answer),
         )
         logStage("remote_description_set")
         withTimeout(CONNECTION_TIMEOUT_MILLIS) { connectionReady.await() }
         logStage("peer_connection_ready")
-        listener.onBuffering()
+        withTimeout(CONNECTION_TIMEOUT_MILLIS) { firstFrame.await() }
     }
 
     private fun createPeerConnection(iceServers: List<PeerConnection.IceServer>) {
@@ -309,7 +230,6 @@ private class NativeWhepSession(
         connection.setAudioRecording(false)
         connection.setAudioPlayout(true)
         peerConnection = connection
-        videoSink.reset(listener::onFirstFrame)
     }
 
     private suspend fun discoverIceServers(): List<PeerConnection.IceServer> {
@@ -318,7 +238,7 @@ private class NativeWhepSession(
             .method("OPTIONS", null)
             .header("Authorization", "Bearer ${request.bearerToken}")
             .build()
-        return okHttpClient.newCall(options).execute().use { response ->
+        return okHttpClient.newCall(options).awaitResponse().use { response ->
             if (response.code == 401 || response.code == 403) {
                 error("WHEP 播放凭证无效或已过期")
             }
@@ -329,14 +249,14 @@ private class NativeWhepSession(
         }
     }
 
-    private fun postOffer(sdp: String): String {
+    private suspend fun postOffer(sdp: String): String {
         val post = Request.Builder()
             .url(request.url)
             .post(sdp.toRequestBody(SDP_MEDIA_TYPE))
             .header("Authorization", "Bearer ${request.bearerToken}")
             .header("Accept", "application/sdp")
             .build()
-        return okHttpClient.newCall(post).execute().use { response ->
+        return okHttpClient.newCall(post).awaitResponse().use { response ->
             if (!response.isSuccessful) {
                 if (response.code == 401 || response.code == 403) {
                     error("WHEP 播放凭证无效或已过期")
@@ -370,21 +290,24 @@ private class NativeWhepSession(
             })
         }
         resourceUrl = null
-        peerConnection?.close()
-        peerConnection?.dispose()
+        videoTracks.forEach { track -> runCatching { track.removeSink(frameSink) } }
+        videoTracks.clear()
+        runCatching { peerConnection?.close() }
+        runCatching { peerConnection?.dispose() }
         peerConnection = null
-        peerConnectionFactory?.dispose()
+        runCatching { peerConnectionFactory?.dispose() }
         peerConnectionFactory = null
-        audioDeviceModule?.release()
+        runCatching { audioDeviceModule?.release() }
         audioDeviceModule = null
     }
 
     private fun attachRemoteTrack(track: MediaStreamTrack?) {
+        if (closed.get()) return
         when (track) {
             is VideoTrack -> {
                 logStage("remote_video_track")
                 track.setEnabled(true)
-                track.addSink(videoSink)
+                if (videoTracks.add(track)) track.addSink(frameSink)
             }
             is AudioTrack -> {
                 logStage("remote_audio_track")
@@ -408,6 +331,7 @@ private class NativeWhepSession(
                 PeerConnection.IceConnectionState.COMPLETED,
                 -> connectionReady.complete(Unit)
                 PeerConnection.IceConnectionState.FAILED -> fail("WHEP ICE 连接失败")
+                PeerConnection.IceConnectionState.DISCONNECTED -> if (!closed.get()) listener.onBuffering()
                 PeerConnection.IceConnectionState.CLOSED -> if (!closed.get()) fail("WHEP 连接已关闭")
                 else -> Unit
             }
@@ -418,6 +342,7 @@ private class NativeWhepSession(
             when (newState) {
                 PeerConnection.PeerConnectionState.CONNECTED -> connectionReady.complete(Unit)
                 PeerConnection.PeerConnectionState.FAILED -> fail("WHEP 媒体连接失败")
+                PeerConnection.PeerConnectionState.DISCONNECTED -> if (!closed.get()) listener.onBuffering()
                 PeerConnection.PeerConnectionState.CLOSED -> if (!closed.get()) fail("WHEP 媒体连接已关闭")
                 else -> Unit
             }
@@ -460,6 +385,19 @@ private class NativeWhepSession(
         const val CONNECTION_TIMEOUT_MILLIS = 20_000L
         const val SDP_CANDIDATE_MARKER = "a=candidate:"
     }
+}
+
+private suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutine { continuation ->
+    continuation.invokeOnCancellation { cancel() }
+    enqueue(object : Callback {
+        override fun onFailure(call: Call, error: IOException) {
+            if (continuation.isActive) continuation.resumeWithException(error)
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            continuation.resume(response) { _, value, _ -> value.close() }
+        }
+    })
 }
 
 private suspend fun PeerConnection.createOfferAwait(): SessionDescription =

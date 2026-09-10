@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -21,6 +22,7 @@ import life.fxs.purr.core.common.ApplicationScope
 import life.fxs.purr.core.media.screenshare.ScreenSharePublisherController
 import life.fxs.purr.core.media.screenshare.ScreenSharePublisherStatus
 import life.fxs.purr.core.media.screenshare.callIdOrNull
+import life.fxs.purr.core.media.screenshare.requestOrNull
 import life.fxs.purr.core.network.api.PurrCallApi
 import life.fxs.purr.core.network.model.CreateScreenShareRequestDto
 import life.fxs.purr.core.network.model.ScreenShareDto
@@ -58,7 +60,7 @@ class ScreenShareRepositoryImpl @Inject constructor(
                 val callId = failure.callId ?: return@collect
                 val shareId = failure.shareId ?: return@collect
                 val shouldStop = synchronized(autoStoppedShares) { autoStoppedShares.add(shareId) }
-                if (shouldStop) stopRemoteOnly(callId)
+                if (shouldStop) stopRemoteOnly(callId, shareId)
             }
         }
     }
@@ -102,22 +104,24 @@ class ScreenShareRepositoryImpl @Inject constructor(
     override suspend fun create(
         callId: String,
         source: ScreenShareSource,
-    ): AppResult<ScreenShareSession> = when (val result = callApiResult {
-        requireNotNull(
-            api.createScreenShare(
-                callId,
-                CreateScreenShareRequestDto(source.wireValue),
-            ).screenShare,
-        ) { "Screen-share creation returned no session" }.toDomain()
-    }) {
-        is AppResult.Success -> {
-            updateServerState(callId, result.value, null)
-            synchronized(autoStoppedShares) { autoStoppedShares.remove(result.value.shareId) }
-            result
-        }
-        is AppResult.Failure -> {
-            updateSyncFailure(callId, result.error.toScreenShareMessage())
-            result
+    ): AppResult<ScreenShareSession> = refreshMutex.withLock {
+        when (val result = callApiResult {
+            requireNotNull(
+                api.createScreenShare(
+                    callId,
+                    CreateScreenShareRequestDto(source.wireValue),
+                ).screenShare,
+            ) { "Screen-share creation returned no session" }.toDomain()
+        }) {
+            is AppResult.Success -> {
+                updateServerState(callId, result.value, null)
+                synchronized(autoStoppedShares) { autoStoppedShares.remove(result.value.shareId) }
+                result
+            }
+            is AppResult.Failure -> {
+                updateSyncFailure(callId, result.error.toScreenShareMessage())
+                result
+            }
         }
     }
 
@@ -139,18 +143,20 @@ class ScreenShareRepositoryImpl @Inject constructor(
 
     override suspend fun stop(callId: String): AppResult<ScreenShareSession?> {
         publisherController.stop(callId)
-        return stopRemoteOnly(callId)
+        return stopRemoteOnly(callId, serverStates.value[callId]?.session?.shareId)
     }
 
-    private suspend fun stopRemoteOnly(callId: String): AppResult<ScreenShareSession?> =
-        when (val result = callApiResult { api.stopScreenShare(callId).screenShare?.toDomain() }) {
-            is AppResult.Success -> {
-                updateServerState(callId, result.value, null)
-                result
-            }
-            is AppResult.Failure -> {
-                updateSyncFailure(callId, result.error.toScreenShareMessage())
-                result
+    private suspend fun stopRemoteOnly(callId: String, expectedShareId: String?): AppResult<ScreenShareSession?> =
+        refreshMutex.withLock {
+            when (val result = callApiResult { api.stopScreenShare(callId, expectedShareId).screenShare?.toDomain() }) {
+                is AppResult.Success -> {
+                    updateServerState(callId, result.value, null)
+                    result
+                }
+                is AppResult.Failure -> {
+                    updateSyncFailure(callId, result.error.toScreenShareMessage())
+                    result
+                }
             }
         }
 
@@ -159,9 +165,12 @@ class ScreenShareRepositoryImpl @Inject constructor(
         session: ScreenShareSession?,
         errorMessage: String?,
     ) {
-        serverStates.value = serverStates.value + (
-            callId to ServerState(session, errorMessage)
-        )
+        serverStates.update { it + (callId to ServerState(session, errorMessage)) }
+        if (session != null && session.status !in setOf(ScreenShareStatus.Authorized, ScreenShareStatus.Live) &&
+            publisherController.status.value.requestOrNull()?.shareId == session.shareId
+        ) {
+            publisherController.stop(callId)
+        }
     }
 
     private fun updateSyncFailure(callId: String, errorMessage: String) {
@@ -184,7 +193,11 @@ private fun ScreenSharePublisherStatus.toDomainLocalState(
     session: ScreenShareSession?,
     owned: Boolean,
 ): LocalScreenShareState {
-    if (callIdOrNull() == callId) {
+    val matchesShare = requestOrNull()?.shareId?.let { it == session?.shareId }
+        ?: ((this as? ScreenSharePublisherStatus.Failed)?.shareId == session?.shareId)
+    if (callIdOrNull() == callId && matchesShare &&
+        session?.status in setOf(ScreenShareStatus.Authorized, ScreenShareStatus.Live)
+    ) {
         return when (this) {
             is ScreenSharePublisherStatus.RequestingPermission ->
                 LocalScreenShareState.RequestingPermission(request.shareId)
@@ -213,7 +226,9 @@ private fun ScreenSharePublisherStatus.toDomainLocalState(
 }
 
 private fun ScreenShareSession.preservingPublishingFrom(previous: ScreenShareSession?): ScreenShareSession =
-    if (previous?.shareId == shareId && publishing == null) copy(publishing = previous.publishing) else this
+    if (previous?.shareId == shareId && publishing == null &&
+        status in setOf(ScreenShareStatus.Authorized, ScreenShareStatus.Live)
+    ) copy(publishing = previous.publishing) else this
 
 private fun ScreenShareDto.toDomain() = ScreenShareSession(
     shareId = shareId,

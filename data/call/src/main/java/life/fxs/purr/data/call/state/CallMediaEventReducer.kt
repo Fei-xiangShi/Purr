@@ -47,6 +47,10 @@ class CallMediaEventReducer @Inject constructor() {
             )
 
             is MediaCallEvent.ParticipantChanged -> session.copy(
+                interruptionState = session.interruptionState.copy(
+                    remote = session.interruptionState.remote.takeIf { event.remoteParticipantConnected }
+                        ?: RemoteCallInterruption.None,
+                ),
                 participantIdentity = session.participantIdentity.copy(
                     remote = event.remoteIdentity,
                 ),

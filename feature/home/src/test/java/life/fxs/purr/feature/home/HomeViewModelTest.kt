@@ -235,6 +235,30 @@ class HomeViewModelTest {
     }
 
     @Test
+    fun `pending incoming call blocks a new outgoing call`() = runTest(dispatcher) {
+        realtimeState.value = RealtimeState(
+            incomingCallCandidate = life.fxs.purr.domain.account.model.IncomingCall(
+                callId = "incoming-1",
+                pairId = "pair-1",
+                callerUserId = "partner",
+                startedAtEpochMillis = 1L,
+            ),
+        )
+        withViewModel { viewModel ->
+            runCurrent()
+            assertThat(viewModel.uiState.value.isCallable).isFalse()
+            val effect = async { viewModel.effects.first() }
+            runCurrent()
+            viewModel.onIntent(HomeIntent.StartCall)
+            runCurrent()
+            assertThat(effect.await()).isEqualTo(HomeEffect.ShowError("请先接听或拒绝当前来电"))
+            realtimeState.value = RealtimeState()
+            runCurrent()
+            assertThat(viewModel.uiState.value.isCallable).isTrue()
+        }
+    }
+
+    @Test
     fun `unpaired user cannot start a call`() = runTest(dispatcher) {
         pairState.value = null
         realtimeState.value = RealtimeState(isConnected = true, partnerOnline = true)

@@ -80,14 +80,15 @@ fun VoiceCallScaffold(
                 color = Color.White.copy(alpha = 0.78f),
                 textAlign = TextAlign.Center,
             )
-            Spacer(Modifier.weight(0.72f))
             if (centerContent != null) {
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().weight(1f),
                     horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
                     content = centerContent,
                 )
             } else {
+                Spacer(Modifier.weight(0.72f))
                 VoiceActivityAvatar(
                     avatarUrl = partnerAvatarUrl,
                     contentDescription = "$partnerName 的头像",
@@ -112,8 +113,8 @@ fun VoiceCallScaffold(
                         textAlign = TextAlign.Center,
                     )
                 }
+                Spacer(Modifier.weight(1f))
             }
-            Spacer(Modifier.weight(1f))
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,

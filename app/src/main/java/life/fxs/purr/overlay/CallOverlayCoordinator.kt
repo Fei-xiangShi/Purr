@@ -19,6 +19,8 @@ import life.fxs.purr.domain.account.usecase.ObserveAuthSessionUseCase
 import life.fxs.purr.domain.account.usecase.ObservePairBondUseCase
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.repository.CallAudioLevelProvider
+import life.fxs.purr.domain.call.model.canShowLocalAudioActivity
+import life.fxs.purr.domain.call.model.canShowRemoteAudioActivity
 import life.fxs.purr.domain.call.usecase.ObserveCallOverlayStyleUseCase
 import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
 
@@ -78,8 +80,8 @@ class CallOverlayCoordinator @Inject constructor(
                     durationSeconds = overlay.session.timing
                         .durationAtMonotonicMillis(nowMillis)
                         .div(1_000L),
-                    localAudioLevel = localLevel,
-                    remoteAudioLevel = remoteLevel,
+                    localAudioLevel = localLevel.takeIf { overlay.session.canShowLocalAudioActivity } ?: 0f,
+                    remoteAudioLevel = remoteLevel.takeIf { overlay.session.canShowRemoteAudioActivity } ?: 0f,
                 )
             }
                 .sample(RENDER_INTERVAL_MILLIS)

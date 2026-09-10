@@ -114,10 +114,10 @@ class CallRepositoryImpl @Inject internal constructor(
                     if (expectedGeneration != null && expectedGeneration != mediaEvent.generation) {
                         return@withLock null
                     }
-                    if (
-                        current.connectionState == CallConnectionState.Terminating &&
-                        mediaEvent !is MediaCallEvent.Disconnected &&
-                        mediaEvent !is MediaCallEvent.Failed
+                    // Teardown clears mediaGeneration. Late buffered callbacks must not
+                    // use that empty generation slot to revive an ended local session.
+                    if (current.connectionState.isTerminal ||
+                        current.connectionState == CallConnectionState.Terminating
                     ) {
                         return@withLock null
                     }
@@ -145,6 +145,7 @@ class CallRepositoryImpl @Inject internal constructor(
                         sessionState.emit(
                             current.copy(
                                 connectionState = CallConnectionState.Terminating,
+                                timing = current.timing.stoppedLocally(System.nanoTime() / NANOS_PER_MILLI),
                                 localAudioState = LocalAudioState.Disabled,
                                 uiSnapshot = current.uiSnapshot.copy(remoteParticipantConnected = false),
                             ),
@@ -1011,6 +1012,16 @@ class CallRepositoryImpl @Inject internal constructor(
     private suspend fun terminateCall(
         callId: String,
         terminalState: CallConnectionState,
+    ): AppResult<Unit> = repositoryScope.async {
+        // Stopping status synchronization can cancel the requesting coroutine.
+        // Own the complete handoff, including starting the lazy cleanup job,
+        // independently of the observer, screen, or platform callback's lifetime.
+        requestTermination(callId, terminalState)
+    }.await()
+
+    private suspend fun requestTermination(
+        callId: String,
+        terminalState: CallConnectionState,
     ): AppResult<Unit> {
         var serverEndGeneration = 0L
         var shouldEnqueueServerEnd = false
@@ -1054,6 +1065,7 @@ class CallRepositoryImpl @Inject internal constructor(
                 sessionState.emit(
                     session.copy(
                         connectionState = CallConnectionState.Terminating,
+                        timing = session.timing.stoppedLocally(System.nanoTime() / NANOS_PER_MILLI),
                         localAudioState = LocalAudioState.Disabled,
                         uiSnapshot = session.uiSnapshot.copy(remoteParticipantConnected = false),
                     ),
@@ -1322,6 +1334,9 @@ class CallRepositoryImpl @Inject internal constructor(
             val callEnded = operationMutex.withLock {
                 val latestSession = sessionState.value
                 if (latestSession == null || latestSession.callId != callId) return@withLock false
+                if (latestSession.connectionState.isTerminal ||
+                    latestSession.connectionState == CallConnectionState.Terminating
+                ) return@withLock false
                 val syncedSession = latestSession.copy(
                     recordingState = callStatus.recordingStatus.toRecordingState(),
                     timing = callStatus.toCallTiming(previous = latestSession.timing),

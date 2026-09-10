@@ -83,6 +83,65 @@ class CallRepositoryImplTest {
     }
 
     @Test
+    fun `late media events cannot revive a locally ended call`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 8)
+        configureConnectedSystemInterruptionCall(events)
+        val repository = repository()
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+        repository.disconnectCall("call-1")
+        runCurrent()
+
+        events.emit(MediaCallEvent.Reconnecting("call-1", 1L))
+        events.emit(MediaCallEvent.Connected("call-1", 1L, "self-1", "partner", true))
+        events.emit(MediaCallEvent.Reconnected("call-1", 1L, "partner", true))
+        events.emit(MediaCallEvent.ParticipantChanged("call-1", 1L, "partner", true))
+        events.emit(MediaCallEvent.AudioStateChanged("call-1", 1L, false))
+        runCurrent()
+
+        val session = repository.observeCallSession().first()
+        assertThat(session?.connectionState).isEqualTo(CallConnectionState.Disconnected)
+        assertThat(session?.localAudioState).isEqualTo(LocalAudioState.Disabled)
+        assertThat(session?.uiSnapshot?.remoteParticipantConnected).isFalse()
+        coVerify(exactly = 1) { api.endCall("call-1") }
+    }
+
+    @Test
+    fun `preparation rejects a call that ended before status was fetched`() = runTest(dispatcher) {
+        configureIdleRuntime()
+        coEvery { api.createSession(any()) } returns sessionResponse(createdByRequest = false)
+        coEvery { callStatusRemoteDataSource.getStatus("call-1") } returns CallStatusDto(
+            callId = "call-1", pairId = "pair-1", state = "ended", recordingStatus = "idle",
+        )
+        val repository = repository()
+
+        val result = repository.prepareCall(CallPreparationRequest.Existing(
+            pairId = "pair-1", callId = "call-1", recordingConsent = true,
+            direction = life.fxs.purr.core.model.CallDirection.Incoming,
+        ))
+
+        assertThat(result).isInstanceOf(AppResult.Failure::class.java)
+        assertThat(repository.observeCallSession().first()).isNull()
+        coVerify(exactly = 0) { callRuntimeController.execute(any()) }
+    }
+
+    @Test
+    fun `new outgoing rejects legacy server reuse without ending the existing call`() = runTest(dispatcher) {
+        configureIdleRuntime()
+        coEvery { api.createSession(any()) } returns sessionResponse(createdByRequest = false)
+        val repository = repository()
+
+        val result = repository.prepareCall(CallPreparationRequest.NewOutgoing(pairId = "pair-1", recordingConsent = true))
+
+        assertThat(result).isInstanceOf(AppResult.Failure::class.java)
+        assertThat(repository.observeCallSession().first()).isNull()
+        coVerify(exactly = 0) { callStatusRemoteDataSource.getStatus(any()) }
+        coVerify(exactly = 0) { callRuntimeController.execute(any()) }
+        coVerify(exactly = 0) { api.endCall(any()) }
+    }
+
+    @Test
     fun `failed preparation never ends an existing incoming call joined by this request`() = runTest(dispatcher) {
         configureIdleRuntime()
         coEvery { api.createSession(any()) } returns sessionResponse(createdByRequest = false)
@@ -161,6 +220,7 @@ class CallRepositoryImplTest {
             participantIdentity = "self",
             token = "token",
             wsUrl = "ws://example.invalid",
+            createdByRequest = true,
         )
         coEvery { callStatusRemoteDataSource.getStatus("call-1") } returns CallStatusDto(
             callId = "call-1",
@@ -220,6 +280,7 @@ class CallRepositoryImplTest {
             participantIdentity = "self",
             token = "token",
             wsUrl = "ws://example.invalid",
+            createdByRequest = true,
         )
         coEvery { callStatusRemoteDataSource.getStatus("call-1") } returns CallStatusDto(
             callId = "call-1",
@@ -239,6 +300,7 @@ class CallRepositoryImplTest {
         val result = repository.disconnectCall("call-1")
 
         assertThat(result).isInstanceOf(AppResult.Success::class.java)
+        assertThat(repository.observeCallSession().first()?.timing?.isRunning).isFalse()
         coVerify(exactly = 1) { api.endCall("call-1") }
         coVerifyOrder {
             api.endCall("call-1")
@@ -262,8 +324,8 @@ class CallRepositoryImplTest {
             finishServerEnd.await()
         }
         coEvery { api.createSession(any()) } returnsMany listOf(
-            SessionResponseDto("call-1", "pair-1", "room-1", "self-1", "token-1", "wss://one"),
-            SessionResponseDto("call-2", "pair-1", "room-2", "self-2", "token-2", "wss://two"),
+            SessionResponseDto("call-1", "pair-1", "room-1", "self-1", "token-1", "wss://one", createdByRequest = true),
+            SessionResponseDto("call-2", "pair-1", "room-2", "self-2", "token-2", "wss://two", createdByRequest = true),
         )
         coEvery { callStatusRemoteDataSource.getStatus(any()) } answers {
             CallStatusDto(
@@ -489,6 +551,7 @@ class CallRepositoryImplTest {
             participantIdentity = "self",
             token = "token",
             wsUrl = "ws://example.invalid",
+            createdByRequest = true,
         )
         coEvery { callStatusRemoteDataSource.getStatus(any()) } answers { CallStatusDto(
             callId = firstArg(),
@@ -526,8 +589,8 @@ class CallRepositoryImplTest {
         coEvery { callRuntimeController.execute(any<MediaCallCommand.Disconnect>()) } returns Unit
         coEvery { api.endCall("call-1") } returns Unit
         coEvery { api.createSession(any()) } returnsMany listOf(
-            SessionResponseDto("call-1", "pair-1", "room-1", "self-1", "token-1", "wss://one"),
-            SessionResponseDto("call-2", "pair-1", "room-2", "self-2", "token-2", "wss://two"),
+            SessionResponseDto("call-1", "pair-1", "room-1", "self-1", "token-1", "wss://one", createdByRequest = true),
+            SessionResponseDto("call-2", "pair-1", "room-2", "self-2", "token-2", "wss://two", createdByRequest = true),
         )
         coEvery { callStatusRemoteDataSource.getStatus(any()) } answers {
             CallStatusDto(
@@ -585,6 +648,7 @@ class CallRepositoryImplTest {
             "self-1",
             "token-1",
             "wss://one",
+            createdByRequest = true,
         )
         coEvery { callStatusRemoteDataSource.getStatus("call-1") } returns CallStatusDto(
             callId = "call-1",
@@ -659,6 +723,7 @@ class CallRepositoryImplTest {
             "self-1",
             "token-1",
             "wss://one",
+            createdByRequest = true,
         )
         coEvery { callStatusRemoteDataSource.getStatus("call-1") } returns CallStatusDto(
             callId = "call-1",
@@ -732,8 +797,8 @@ class CallRepositoryImplTest {
         coEvery { callRuntimeController.releaseResources() } returns Unit
         coEvery { api.endCall(any()) } returns Unit
         coEvery { api.createSession(any()) } returnsMany listOf(
-            SessionResponseDto("call-1", "pair-1", "room-1", "self-1", "token-1", "wss://one"),
-            SessionResponseDto("call-2", "pair-1", "room-2", "self-2", "token-2", "wss://two"),
+            SessionResponseDto("call-1", "pair-1", "room-1", "self-1", "token-1", "wss://one", createdByRequest = true),
+            SessionResponseDto("call-2", "pair-1", "room-2", "self-2", "token-2", "wss://two", createdByRequest = true),
         )
         coEvery { callStatusRemoteDataSource.getStatus(any()) } returns CallStatusDto(
             callId = "call-1",
@@ -841,6 +906,7 @@ class CallRepositoryImplTest {
                 participantIdentity = "self",
                 token = "token",
                 wsUrl = "ws://example.invalid",
+                createdByRequest = true,
             )
         }
         coEvery { callStatusRemoteDataSource.getStatus("call-1") } returns CallStatusDto(
@@ -1184,6 +1250,7 @@ class CallRepositoryImplTest {
             "self-1",
             "token-1",
             "wss://one",
+            createdByRequest = true,
         )
         coEvery { callStatusRemoteDataSource.getStatus("call-1") } returns CallStatusDto(
             callId = "call-1",

@@ -39,9 +39,10 @@ internal class IncomingCallPromptViewModel @Inject constructor(
         initialValue = IncomingCallPromptState(),
     )
 
-    fun onIntent(intent: IncomingCallPromptIntent) {
+    fun onIntent(intent: IncomingCallPromptIntent, expectedCallId: String? = null) {
         if (responseJob?.isActive == true) return
         val call = state.value.call ?: return
+        if (expectedCallId != null && call.callId != expectedCallId) return
 
         responseJob = viewModelScope.launch {
             responding.value = true

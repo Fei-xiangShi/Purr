@@ -19,6 +19,8 @@ import life.fxs.purr.R
 import life.fxs.purr.core.media.screenshare.ScreenCapturePermission
 import life.fxs.purr.core.media.screenshare.ScreenSharePublishRequest
 import life.fxs.purr.core.media.screenshare.ScreenSharePublisherStateStore
+import life.fxs.purr.core.media.screenshare.ScreenSharePublisherStatus
+import life.fxs.purr.core.media.screenshare.requestOrNull
 import life.fxs.purr.core.screenpublisher.RootEncoderWhipScreenPublisher
 
 @AndroidEntryPoint
@@ -35,7 +37,13 @@ class ScreenShareForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> stopPublishing(explicit = true)
+            ACTION_STOP -> {
+                val expectedCallId = intent.getStringExtra(EXTRA_CALL_ID)
+                val expectedShareId = intent.getStringExtra(EXTRA_SHARE_ID)
+                if (activeRequest == null || (activeRequest?.callId == expectedCallId &&
+                        (expectedShareId == null || activeRequest?.shareId == expectedShareId))
+                ) stopPublishing(explicit = true)
+            }
             ACTION_START -> startPublishing(intent)
             else -> stopSelf(startId)
         }
@@ -44,6 +52,13 @@ class ScreenShareForegroundService : Service() {
 
     private fun startPublishing(intent: Intent) {
         val request = intent.toPublishRequest()
+        if (request != null && (stateStore.status.value !is ScreenSharePublisherStatus.Connecting ||
+                stateStore.status.value.requestOrNull() != request)
+        ) {
+            if (activeRequest == null) stopSelf()
+            return
+        }
+        if (request != null && activeRequest == request && publisher != null) return
         val permissionData = intent.permissionData()
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
         if (request == null || permissionData == null || resultCode != Activity.RESULT_OK) {
@@ -59,7 +74,7 @@ class ScreenShareForegroundService : Service() {
         // exchanging the one-shot permission token for a MediaProjection instance.
         try {
             startProjectionForeground(request)
-        } catch (error: SecurityException) {
+        } catch (error: RuntimeException) {
             fail(request, "无法启动屏幕录制前台服务")
             return
         }
@@ -76,6 +91,7 @@ class ScreenShareForegroundService : Service() {
             return
         }
 
+        activeRequest = null
         stopPublisherSafely()
         activeRequest = request
         explicitStop = false
@@ -88,18 +104,26 @@ class ScreenShareForegroundService : Service() {
                 request,
                 object : RootEncoderWhipScreenPublisher.Listener {
                     override fun onLive(request: ScreenSharePublishRequest) {
-                        stateStore.live(request)
+                        mainExecutor.execute {
+                            if (activeRequest == request && !terminalFailure && !explicitStop) stateStore.live(request)
+                        }
                     }
 
                     override fun onStopped(request: ScreenSharePublishRequest) {
-                        if (!terminalFailure) stateStore.idle(request.callId)
-                        stopSelf()
+                        mainExecutor.execute {
+                            if (activeRequest != request) return@execute
+                            if (!terminalFailure) stateStore.idle(request.callId, request.shareId)
+                            stopSelf()
+                        }
                     }
 
                     override fun onFailed(request: ScreenSharePublishRequest, message: String) {
-                        terminalFailure = true
-                        stateStore.failed(request.callId, request.shareId, message)
-                        stopSelf()
+                        mainExecutor.execute {
+                            if (activeRequest != request) return@execute
+                            terminalFailure = true
+                            stateStore.failed(request.callId, request.shareId, message)
+                            stopSelf()
+                        }
                     }
                 },
             )
@@ -114,7 +138,7 @@ class ScreenShareForegroundService : Service() {
         val stopPendingIntent = PendingIntent.getService(
             this,
             STOP_REQUEST_CODE,
-            stopIntent(this, request.callId),
+            stopIntent(this, request.callId, request.shareId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -157,7 +181,7 @@ class ScreenShareForegroundService : Service() {
         activeRequest?.let(stateStore::stopping)
         stopPublisherSafely()
         activeRequest?.let { request ->
-            if (!terminalFailure) stateStore.idle(request.callId)
+            if (!terminalFailure) stateStore.idle(request.callId, request.shareId)
         }
         activeRequest = null
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -224,10 +248,11 @@ class ScreenShareForegroundService : Service() {
             .putExtra(EXTRA_RESULT_CODE, permission.resultCode)
             .putExtra(EXTRA_PERMISSION_DATA, permission.data)
 
-        fun stopIntent(context: Context, callId: String): Intent =
+        fun stopIntent(context: Context, callId: String, shareId: String? = null): Intent =
             Intent(context, ScreenShareForegroundService::class.java)
                 .setAction(ACTION_STOP)
                 .putExtra(EXTRA_CALL_ID, callId)
+                .putExtra(EXTRA_SHARE_ID, shareId)
     }
 
     private fun Intent.toPublishRequest(): ScreenSharePublishRequest? {

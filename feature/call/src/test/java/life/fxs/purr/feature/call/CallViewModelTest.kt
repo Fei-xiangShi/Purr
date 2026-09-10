@@ -115,6 +115,62 @@ class CallViewModelTest {
     }
 
     @Test
+    fun `late share creation after hangup is compensated without asking permission`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.NotRecording,
+        )
+        val result = CompletableDeferred<AppResult<ScreenShareSession>>()
+        coEvery { createScreenShareUseCase.invoke("call-1", ScreenShareSource.Mobile) } coAnswers { result.await() }
+        val viewModel = createViewModel()
+        viewModel.onIntent(CallIntent.OpenExistingCall("pair-1", "call-1", direction = CallDirection.Outgoing))
+        runCurrent()
+        viewModel.onIntent(CallIntent.StartMobileScreenShare)
+        viewModel.onIntent(CallIntent.StartMobileScreenShare)
+        runCurrent()
+        viewModel.onIntent(CallIntent.EndCall)
+        result.complete(AppResult.Success(sampleScreenShare(ScreenShareSource.Mobile)))
+        runCurrent()
+
+        assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
+        assertThat(viewModel.state.value.screenShare.session).isNull()
+        assertThat(viewModel.state.value.screenShare.obsSetupVisible).isFalse()
+        verify(exactly = 0) { screenSharePublisherController.prepare(any()) }
+        coVerify(exactly = 1) { createScreenShareUseCase.invoke(any(), any()) }
+        coVerify(exactly = 2) { stopScreenShareUseCase.invoke("call-1") }
+    }
+
+    @Test
+    fun `stale playback stop cannot hide current portrait stream and refresh preserves playback failure`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.NotRecording,
+        )
+        val viewModel = createViewModel()
+        viewModel.onIntent(CallIntent.OpenExistingCall("pair-1", "call-1", direction = CallDirection.Outgoing))
+        runCurrent()
+        val endpoint = sampleMediaEndpoint("https://media.test/whep")
+        val share = sampleScreenShare(ScreenShareSource.Mobile, ScreenShareStatus.Live, playback = endpoint)
+        screenShareFlow.value = ScreenShareSnapshot("call-1", session = share, isOwnedByCurrentUser = false)
+        runCurrent()
+        val request = WhepPlaybackRequest("call-1", share.shareId, endpoint.url, endpoint.bearerToken, endpoint.expiresAtEpochMillis)
+        whepStatusFlow.value = WhepPlaybackStatus.Live(request, 720, 1280)
+        runCurrent()
+        whepStatusFlow.value = WhepPlaybackStatus.Stopped("old-share")
+        runCurrent()
+        assertThat(viewModel.state.value.screenShare.remoteState).isEqualTo(RemoteScreenShareUiState.Live)
+        assertThat(viewModel.state.value.screenShare.remoteAspectRatio).isEqualTo(720f / 1280)
+
+        whepStatusFlow.value = WhepPlaybackStatus.Failed(request, "ICE failed")
+        runCurrent()
+        screenShareFlow.value = screenShareFlow.value.copy(syncErrorMessage = "refresh failed")
+        runCurrent()
+        assertThat(viewModel.state.value.screenShare.remoteState).isEqualTo(RemoteScreenShareUiState.Failed)
+    }
+
+    @Test
     fun `connect creates call session before requesting microphone permission`() = runTest(dispatcher) {
         coEvery { prepareCallSessionUseCase.invoke(any()) } returns AppResult.Success(sampleSession(
             connectionState = CallConnectionState.Preparing,
@@ -525,13 +581,13 @@ class CallViewModelTest {
                 assertThat(awaitItem()).isEqualTo(
                     CallEffect.ShowMessage("通话准备失败，请稍后重试"),
                 )
-                assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome)
                 assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Failed)
                 assertThat(viewModel.state.value.failureMessage)
                     .isEqualTo("通话准备失败，请稍后重试")
                 expectNoEvents()
 
                 viewModel.onIntent(CallIntent.EndCall)
+                assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome)
                 expectNoEvents()
                 coVerify(exactly = 1) { disconnectCallUseCase.invoke("call-1") }
                 cancelAndIgnoreRemainingEvents()
@@ -568,8 +624,8 @@ class CallViewModelTest {
             assertThat(awaitItem()).isEqualTo(
                 CallEffect.ShowMessage("网络连接失败，请检查网络后重试"),
             )
-            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome)
-            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
+            expectNoEvents()
+            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Failed)
             cancelAndIgnoreRemainingEvents()
         }
     }
@@ -596,7 +652,7 @@ class CallViewModelTest {
             assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Failed)
             assertThat(viewModel.state.value.failureMessage)
                 .isEqualTo("通话连接失败，请稍后重试")
-            assertThat(awaitItem()).isEqualTo(CallEffect.NavigateHome)
+            expectNoEvents()
             cancelAndIgnoreRemainingEvents()
         }
     }

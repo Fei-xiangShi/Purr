@@ -11,7 +11,6 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -20,6 +19,7 @@ import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.model.PairBond
 import life.fxs.purr.core.presentation.toUserMessage
 import life.fxs.purr.domain.account.model.AuthSession
+import life.fxs.purr.domain.account.model.RealtimeState
 import life.fxs.purr.domain.account.usecase.ObserveAuthSessionUseCase
 import life.fxs.purr.domain.account.usecase.ObservePairBondUseCase
 import life.fxs.purr.domain.account.usecase.RefreshPairBondUseCase
@@ -53,12 +53,11 @@ class HomeViewModel @Inject constructor(
             initialValue = null,
         )
 
-    private val partnerOnlineState = observeRealtimeStateUseCase()
-        .map { it.partnerOnline }
+    private val realtimeState = observeRealtimeStateUseCase()
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
-            initialValue = null,
+            initialValue = RealtimeState(),
         )
 
     private val callLifecycleState = observeCallLifecycleUseCase()
@@ -79,16 +78,17 @@ class HomeViewModel @Inject constructor(
             combine(
                 authSessionState,
                 pairBondState,
-                partnerOnlineState,
+                realtimeState,
                 callLifecycleState,
-            ) { session, bond, realtimePartnerOnline, callLifecycle ->
-                HomeSources(session, bond, realtimePartnerOnline, callLifecycle)
+            ) { session, bond, realtime, callLifecycle ->
+                HomeSources(session, bond, realtime, callLifecycle)
             }.collect { sources ->
-                val (session, bond, realtimePartnerOnline, callLifecycle) = sources
+                val (session, bond, realtime, callLifecycle) = sources
+                val realtimePartnerOnline = realtime.partnerOnline
                 val partnerOnline = realtimePartnerOnline ?: bond?.partner?.isOnline ?: false
                 val isCallable = bond?.pairId != null &&
                     callLifecycle.resumableSession == null &&
-                    !callLifecycle.isNewCallBlocked
+                    !callLifecycle.isNewCallBlocked && realtime.incomingCallCandidate == null
                 _uiState.value = _uiState.value.copy(
                     self = session?.self,
                     pairId = bond?.pairId,
@@ -130,6 +130,8 @@ class HomeViewModel @Inject constructor(
                         _effects.emit(HomeEffect.NavigateToCall(resumeTarget))
                     } else if (latestCallLifecycle.isNewCallBlocked) {
                         _effects.emit(HomeEffect.ShowError("上一通电话正在结束，请稍候"))
+                    } else if (realtimeState.value.incomingCallCandidate != null) {
+                        _effects.emit(HomeEffect.ShowError("请先接听或拒绝当前来电"))
                     } else if (latestPair?.pairId != null) {
                         _effects.emit(HomeEffect.NavigateToCall(HomeCallTarget.NewOutgoing(latestPair.pairId)))
                     } else {
@@ -170,6 +172,6 @@ private fun CallSession.toHomeCallTarget() = HomeCallTarget.Existing(
 private data class HomeSources(
     val session: AuthSession?,
     val bond: PairBond?,
-    val realtimePartnerOnline: Boolean?,
+    val realtime: RealtimeState,
     val callLifecycle: CallLifecycleState,
 )

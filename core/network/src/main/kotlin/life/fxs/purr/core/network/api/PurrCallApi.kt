@@ -11,6 +11,7 @@ import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 interface PurrCallApi {
     @POST("calls/session")
@@ -35,6 +36,9 @@ interface PurrCallApi {
     suspend fun getScreenShare(@Path("callId") callId: String): ScreenShareEnvelopeDto
 
     @DELETE("calls/{callId}/screen-share")
-    suspend fun stopScreenShare(@Path("callId") callId: String): ScreenShareEnvelopeDto
+    suspend fun stopScreenShare(
+        @Path("callId") callId: String,
+        @Query("expectedShareId") expectedShareId: String? = null,
+    ): ScreenShareEnvelopeDto
 
 }

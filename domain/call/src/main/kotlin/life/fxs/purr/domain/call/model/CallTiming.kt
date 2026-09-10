@@ -7,6 +7,12 @@ data class CallTiming(
     val synchronizedAtMonotonicMillis: Long = 0L,
     val isRunning: Boolean = false,
 ) {
+    fun stoppedLocally(nowMonotonicMillis: Long): CallTiming = copy(
+        synchronizedDurationMillis = durationAtMonotonicMillis(nowMonotonicMillis),
+        synchronizedAtMonotonicMillis = nowMonotonicMillis,
+        isRunning = false,
+    )
+
     fun durationAtMonotonicMillis(nowMillis: Long): Long {
         val synchronizedDuration = synchronizedDurationMillis.coerceAtLeast(0L)
         if (!isRunning) return synchronizedDuration

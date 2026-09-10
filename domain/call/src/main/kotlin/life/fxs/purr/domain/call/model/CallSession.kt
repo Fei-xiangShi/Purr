@@ -16,3 +16,11 @@ data class CallSession(
     val uiSnapshot: CallUiSnapshot = CallUiSnapshot(),
     val interruptionState: CallInterruptionState = CallInterruptionState(),
 )
+
+val CallSession.canShowLocalAudioActivity: Boolean
+    get() = connectionState == CallConnectionState.Connected &&
+        localAudioState == LocalAudioState.Enabled && interruptionState.local == LocalCallInterruption.None
+
+val CallSession.canShowRemoteAudioActivity: Boolean
+    get() = connectionState == CallConnectionState.Connected && uiSnapshot.remoteParticipantConnected &&
+        interruptionState.local == LocalCallInterruption.None && interruptionState.remote == RemoteCallInterruption.None

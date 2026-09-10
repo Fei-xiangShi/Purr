@@ -228,6 +228,98 @@ class CoreTelecomSystemCallControllerTest {
         assertThat(harness.gateway.cancelledBeforeReady.isCompleted).isTrue()
     }
 
+    @Test
+    fun `different call cannot reuse an active Telecom session`() = runTest {
+        val harness = harness()
+        harness.controller.startCall(descriptor(CallDirection.Outgoing))
+        val attempt = runCatching {
+            harness.controller.startCall(descriptor(CallDirection.Outgoing).copy(callId = "call-2"))
+        }
+        assertThat(attempt.exceptionOrNull()).isInstanceOf(IllegalStateException::class.java)
+        assertThat(harness.gateway.registerCount).isEqualTo(1)
+        harness.controller.disconnectCall("call-1")
+    }
+
+    @Test
+    fun `different call cannot reuse a pending Telecom session`() = runTest {
+        val harness = harness(behavior = FakeTelecomCallGateway.Behavior.NeverReady)
+        val pending = async { harness.controller.startCall(descriptor(CallDirection.Outgoing)) }
+        runCurrent()
+        val attempt = runCatching {
+            harness.controller.startCall(descriptor(CallDirection.Outgoing).copy(callId = "call-2"))
+        }
+        assertThat(attempt.exceptionOrNull()).isInstanceOf(IllegalStateException::class.java)
+        assertThat(harness.gateway.registerCount).isEqualTo(1)
+        pending.cancelAndJoin()
+    }
+
+    @Test
+    fun `detached Telecom endpoint events do not restore the previous call route`() = runTest {
+        val harness = harness()
+        harness.controller.startCall(descriptor(CallDirection.Outgoing))
+        runCurrent()
+        harness.controlScope.onDisconnect = {}
+        harness.controller.disconnectCall("call-1")
+        assertThat(harness.controller.activeRoute.value).isEqualTo(AudioRoute.Earpiece)
+        harness.controlScope.emitCurrentEndpoint(AudioRoute.Speaker)
+        runCurrent()
+        assertThat(harness.controller.activeRoute.value).isEqualTo(AudioRoute.Earpiece)
+        harness.gateway.finishCall()
+    }
+
+    @Test
+    fun `explicit disconnect cancels the matching pending Telecom call`() = runTest {
+        val harness = harness(behavior = FakeTelecomCallGateway.Behavior.NeverReady)
+        val pending = async { harness.controller.startCall(descriptor(CallDirection.Incoming)) }
+        runCurrent()
+        harness.controller.disconnectCall("call-1")
+        runCurrent()
+        assertThat(pending.isCancelled).isTrue()
+        assertThat(harness.gateway.cancelledBeforeReady.isCompleted).isTrue()
+    }
+
+    @Test
+    fun `late old Telecom closure preserves the replacement route`() = runTest {
+        val firstScope = FakeCallControlScope(backgroundScope.coroutineContext, AudioRoute.Earpiece)
+        val secondScope = FakeCallControlScope(backgroundScope.coroutineContext, AudioRoute.Speaker)
+        val scopes = listOf(firstScope, secondScope)
+        val closures = listOf(CompletableDeferred<Unit>(), CompletableDeferred<Unit>())
+        var next = 0
+        val gateway = object : TelecomCallGateway {
+            override fun registerApp() = Unit
+            override suspend fun addCall(
+                attributes: CallAttributesCompat,
+                callbacks: TelecomCallCallbacks,
+                onReady: (CallControlScope) -> Unit,
+            ) {
+                val index = next++
+                onReady(scopes[index])
+                closures[index].await()
+            }
+        }
+        val controller = CoreTelecomSystemCallController(
+            callGateway = gateway,
+            attributesFactory = TelecomCallAttributesFactory(),
+            interruptionDispatcher = SystemCallInterruptionDispatcher().apply {
+                register(RecordingInterruptionHandler())
+            },
+            logger = NoOpPurrLogger,
+            applicationScope = backgroundScope,
+        )
+        controller.startCall(descriptor(CallDirection.Outgoing))
+        runCurrent()
+        controller.disconnectCall("call-1")
+        controller.startCall(descriptor(CallDirection.Outgoing).copy(callId = "call-2"))
+        runCurrent()
+        controller.selectRoute(AudioRoute.Speaker)
+        assertThat(controller.activeRoute.value).isEqualTo(AudioRoute.Speaker)
+        closures[0].complete(Unit)
+        runCurrent()
+        assertThat(controller.activeRoute.value).isEqualTo(AudioRoute.Speaker)
+        controller.disconnectCall("call-2")
+        closures[1].complete(Unit)
+    }
+
     private fun TestScope.harness(
         initialRoute: AudioRoute = AudioRoute.Earpiece,
         behavior: FakeTelecomCallGateway.Behavior = FakeTelecomCallGateway.Behavior.HoldOpen,

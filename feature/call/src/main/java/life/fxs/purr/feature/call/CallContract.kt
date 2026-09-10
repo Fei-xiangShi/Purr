@@ -76,6 +76,8 @@ data class CallScreenShareState(
     val sourcePickerVisible: Boolean = false,
     val obsSetupVisible: Boolean = false,
     val obsPublishing: ScreenSharePublishing? = null,
+    val isCreating: Boolean = false,
+    val remoteAspectRatio: Float = 16f / 9f,
 )
 
 data class CallState(

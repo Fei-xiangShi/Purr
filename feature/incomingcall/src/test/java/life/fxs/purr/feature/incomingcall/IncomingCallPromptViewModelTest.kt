@@ -90,6 +90,22 @@ class IncomingCallPromptViewModelTest {
         }
     }
 
+    @Test
+    fun `actions from an old prompt never accept or decline its replacement`() = runTest(dispatcher) {
+        presentableCalls.value = incomingCall().copy(callId = "call-2")
+        withViewModel { viewModel ->
+            viewModel.state.first { it.call != null }
+            val effect = async { viewModel.effects.first() }
+            runCurrent()
+            viewModel.onIntent(IncomingCallPromptIntent.Accept, expectedCallId = "call-1")
+            viewModel.onIntent(IncomingCallPromptIntent.Decline, expectedCallId = "call-1")
+            runCurrent()
+            assertThat(effect.isCompleted).isFalse()
+            coVerify(exactly = 0) { declineIncomingCall.invoke(any()) }
+            effect.cancel()
+        }
+    }
+
     private suspend inline fun withViewModel(block: suspend (IncomingCallPromptViewModel) -> Unit) {
         val viewModel = IncomingCallPromptViewModel(
             observePresentableIncomingCall = observePresentableIncomingCall,

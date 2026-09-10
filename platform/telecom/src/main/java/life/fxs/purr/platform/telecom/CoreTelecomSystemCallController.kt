@@ -70,9 +70,11 @@ class CoreTelecomSystemCallController @Inject internal constructor(
         logger.d(LOG_TAG, "callId=${descriptor.callId} phase=telecom.start event=begin direction=${descriptor.direction}")
         val pending = synchronized(lock) {
             activeSession?.let { current ->
+                check(current.descriptor.callId == descriptor.callId) { "Another system call is still active" }
                 return
             }
             pendingSession?.let { current ->
+                check(current.descriptor.callId == descriptor.callId) { "Another system call is still preparing" }
                 return@synchronized current
             }
 
@@ -112,6 +114,9 @@ class CoreTelecomSystemCallController @Inject internal constructor(
         val session = synchronized(lock) {
             activeSession?.takeIf { it.descriptor.callId == callId }
         } ?: run {
+            synchronized(lock) {
+                pendingSession?.takeIf { it.descriptor.callId == callId }
+            }?.let(::cancelPendingSession)
             logger.d(LOG_TAG, "callId=$callId phase=telecom.disconnect event=no_active_session")
             return
         }
@@ -157,10 +162,12 @@ class CoreTelecomSystemCallController @Inject internal constructor(
 
     private fun detachActiveSession(session: ActiveSession) {
         synchronized(lock) {
-            if (activeSession === session) activeSession = null
+            if (activeSession === session) {
+                activeSession = null
+                mutableAvailableRoutes.value = DEFAULT_ROUTES
+                mutableActiveRoute.value = AudioRoute.Earpiece
+            }
         }
-        mutableAvailableRoutes.value = DEFAULT_ROUTES
-        mutableActiveRoute.value = AudioRoute.Earpiece
     }
 
     override suspend fun selectRoute(route: AudioRoute) {
@@ -244,11 +251,14 @@ class CoreTelecomSystemCallController @Inject internal constructor(
             endedSession?.let(::markInterruptionTerminal)
             pending.closed.complete(Unit)
             synchronized(lock) {
+                val ownsCurrentSession = pendingSession === pending || activeSession?.owner === pending
                 if (pendingSession === pending) pendingSession = null
                 if (activeSession?.owner === pending) activeSession = null
+                if (ownsCurrentSession) {
+                    mutableAvailableRoutes.value = DEFAULT_ROUTES
+                    mutableActiveRoute.value = AudioRoute.Earpiece
+                }
             }
-            mutableAvailableRoutes.value = DEFAULT_ROUTES
-            mutableActiveRoute.value = AudioRoute.Earpiece
             if (shouldEmitUnexpectedDisconnect) {
                 withContext(NonCancellable) {
                     mutableEvents.emit(SystemCallEvent.DisconnectRequested(pending.descriptor.callId))
@@ -272,7 +282,9 @@ class CoreTelecomSystemCallController @Inject internal constructor(
                             else -> false
                         }
                     }
-                    if (shouldPublish) mutableActiveRoute.value = route
+                    if (shouldPublish) synchronized(lock) {
+                        if (activeSession === session) mutableActiveRoute.value = route
+                    }
                 }
             }
         }
@@ -282,7 +294,10 @@ class CoreTelecomSystemCallController @Inject internal constructor(
                     endpoint.toAudioRoute()?.let { route -> route to endpoint }
                 }.toMap()
                 session.endpointsByRoute = mapped
-                mutableAvailableRoutes.value = mapped.keys.toList().ifEmpty { DEFAULT_ROUTES }
+                synchronized(lock) {
+                    if (activeSession !== session) return@collect
+                    mutableAvailableRoutes.value = mapped.keys.toList().ifEmpty { DEFAULT_ROUTES }
+                }
                 applyDefaultRoute(session)
             }
         }
@@ -321,7 +336,9 @@ class CoreTelecomSystemCallController @Inject internal constructor(
             // delivering a follow-up currentCallEndpoint emission. The pending
             // route remains recorded until Telecom confirms it, allowing stale
             // callbacks from an older request to be ignored above.
-            mutableActiveRoute.value = route
+            synchronized(lock) {
+                if (activeSession === session) mutableActiveRoute.value = route
+            }
         } catch (error: Throwable) {
             synchronized(session.routeStateLock) {
                 if (session.requestedRoute == route) session.requestedRoute = null

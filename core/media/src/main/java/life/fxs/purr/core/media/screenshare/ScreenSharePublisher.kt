@@ -57,7 +57,9 @@ class ScreenSharePublisherStateStore @Inject constructor() {
     }
 
     fun live(request: ScreenSharePublishRequest) {
-        if (mutableStatus.value.requestOrNull()?.shareId == request.shareId) {
+        if (mutableStatus.value is ScreenSharePublisherStatus.Connecting &&
+            mutableStatus.value.requestOrNull() == request
+        ) {
             mutableStatus.value = ScreenSharePublisherStatus.Live(request)
         }
     }
@@ -74,7 +76,8 @@ class ScreenSharePublisherStateStore @Inject constructor() {
         mutableStatus.value = ScreenSharePublisherStatus.Failed(callId, shareId, message)
     }
 
-    fun idle(callId: String? = null) {
+    fun idle(callId: String? = null, shareId: String? = null) {
+        if (shareId != null && mutableStatus.value.requestOrNull()?.shareId != shareId) return
         val activeCallId = mutableStatus.value.callIdOrNull()
         if (callId == null || activeCallId == null || activeCallId == callId) {
             mutableStatus.value = ScreenSharePublisherStatus.Idle

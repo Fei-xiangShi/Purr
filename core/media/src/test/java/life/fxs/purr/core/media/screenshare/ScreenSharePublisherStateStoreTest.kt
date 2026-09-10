@@ -14,6 +14,18 @@ class ScreenSharePublisherStateStoreTest {
     )
 
     @Test
+    fun `late success cannot revive stopping publisher and old share cannot clear replacement`() {
+        store.connecting(request)
+        store.stopping(request)
+        store.live(request)
+        assertThat(store.status.value).isEqualTo(ScreenSharePublisherStatus.Stopping(request))
+        val next = request.copy(shareId = "next")
+        store.connecting(next)
+        store.idle(request.callId, request.shareId)
+        assertThat(store.status.value).isEqualTo(ScreenSharePublisherStatus.Connecting(next))
+    }
+
+    @Test
     fun `publisher lifecycle keeps the active request`() {
         store.requestingPermission(request)
         assertThat(store.status.value)

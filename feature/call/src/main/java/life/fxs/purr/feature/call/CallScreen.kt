@@ -19,14 +19,18 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.NetworkCheck
+import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.runtime.Composable
+import life.fxs.purr.domain.call.model.canShowLocalAudioActivity
+import life.fxs.purr.domain.call.model.canShowRemoteAudioActivity
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -153,7 +157,9 @@ fun CallScreenRoute(
         state = state,
         callDurationSeconds = callDurationSeconds,
         localAudioLevel = localAudioLevel,
-        remoteAudioLevel = remoteAudioLevel,
+        remoteAudioLevel = remoteAudioLevel.takeIf {
+            !state.screenState.isTerminalPresentation() && state.session?.canShowRemoteAudioActivity == true
+        } ?: 0f,
         partnerName = partnerName,
         partnerAvatarUrl = partnerAvatarUrl,
         partnerAvatarModifier = partnerAvatarModifier,
@@ -194,6 +200,10 @@ fun CallScreen(
     onShowDiagnostics: () -> Unit,
     onEndCall: () -> Unit,
 ) {
+    var toolsVisible by remember(state.session?.callId) { mutableStateOf(false) }
+    LaunchedEffect(state.screenState) {
+        if (state.screenState.isTerminalPresentation()) toolsVisible = false
+    }
     val canManageActiveCall = !state.isLoading &&
         (state.screenState == CallScreenState.Waiting || state.screenState == CallScreenState.Active)
     val microphoneMuted = state.localAudioState.isEffectivelyMuted
@@ -228,7 +238,13 @@ fun CallScreen(
     VoiceCallScaffold(
         partnerName = partnerName,
         partnerAvatarUrl = partnerAvatarUrl,
-        status = state.screenState.title(),
+        status = if (state.screenState == CallScreenState.Waiting &&
+            state.session?.timing?.startedAtEpochMillis != null
+        ) {
+            "对方已离开，等待重新加入"
+        } else {
+            state.screenState.title()
+        },
         detail = detail,
         avatarModifier = partnerAvatarModifier,
         remoteAudioLevel = remoteAudioLevel,
@@ -242,7 +258,9 @@ fun CallScreen(
                 MicrophoneLevelButton(
                     label = if (microphoneMuted) "取消静音" else "静音",
                     muted = microphoneMuted,
-                    level = localAudioLevel,
+                    level = localAudioLevel.takeIf {
+                        !state.screenState.isTerminalPresentation() && state.session?.canShowLocalAudioActivity == true
+                    } ?: 0f,
                     onClick = onMuteToggle,
                     enabled = canManageActiveCall && state.localAudioState.canToggleMute,
                 )
@@ -252,15 +270,9 @@ fun CallScreen(
                     enabled = canManageActiveCall && state.availableRoutes.isNotEmpty(),
                     onRouteSelect = onRouteSelect,
                 )
-                ScreenShareButton(
-                    state = state.screenShare,
-                    canStart = state.screenState == CallScreenState.Active && !state.isLoading,
-                    onOpenPicker = onOpenScreenSharePicker,
-                    onStop = onStopScreenShare,
-                )
-                DiagnosticsButton(
-                    onClick = onShowDiagnostics,
-                    enabled = state.session != null,
+                CallToolsButton(
+                    onClick = { toolsVisible = true },
+                    enabled = state.session != null && !state.screenState.isTerminalPresentation(),
                 )
                 EndCallButton(onClick = onEndCall, enabled = canEndCall)
             }
@@ -278,6 +290,26 @@ fun CallScreen(
         },
     )
 
+    if (toolsVisible && !state.screenState.isTerminalPresentation()) {
+        CallToolsSheet(
+            state = state.screenShare,
+            canStartScreenShare = state.screenState == CallScreenState.Active && !state.isLoading,
+            onDismiss = { toolsVisible = false },
+            onScreenShare = {
+                toolsVisible = false
+                onOpenScreenSharePicker()
+            },
+            onStopScreenShare = {
+                toolsVisible = false
+                onStopScreenShare()
+            },
+            onDiagnostics = {
+                toolsVisible = false
+                onShowDiagnostics()
+            },
+        )
+    }
+
     if (state.screenShare.sourcePickerVisible) {
         ScreenShareSourceSheet(
             onDismiss = onDismissScreenSharePicker,
@@ -293,7 +325,7 @@ fun CallScreen(
 }
 
 @Composable
-private fun DiagnosticsButton(onClick: () -> Unit, enabled: Boolean) {
+private fun CallToolsButton(onClick: () -> Unit, enabled: Boolean) {
     FilledIconButton(
         onClick = onClick,
         enabled = enabled,
@@ -306,8 +338,8 @@ private fun DiagnosticsButton(onClick: () -> Unit, enabled: Boolean) {
         ),
     ) {
         Icon(
-            imageVector = Icons.Rounded.NetworkCheck,
-            contentDescription = "通话质量检测",
+            imageVector = Icons.Rounded.MoreHoriz,
+            contentDescription = "投屏与网络检测",
             modifier = Modifier.size(30.dp),
         )
     }
@@ -369,6 +401,9 @@ private fun CallScreenState.isSystemCallInterruptionState(): Boolean = when (thi
     -> true
     else -> false
 }
+
+private fun CallScreenState.isTerminalPresentation(): Boolean =
+    this == CallScreenState.Ending || this == CallScreenState.Ended || this == CallScreenState.Failed
 
 internal fun Long.toCallDuration(): String {
     val hours = this / 3_600

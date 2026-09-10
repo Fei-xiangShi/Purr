@@ -5,6 +5,19 @@ import org.junit.Test
 
 class CallTimingTest {
     @Test
+    fun `local departure freezes duration without declaring the shared room ended`() {
+        val timing = CallTiming(
+            startedAtEpochMillis = 10_000L,
+            synchronizedDurationMillis = 8_000L,
+            synchronizedAtMonotonicMillis = 100_000L,
+            isRunning = true,
+        ).stoppedLocally(102_500L)
+        assertThat(timing.durationAtMonotonicMillis(999_000L)).isEqualTo(10_500L)
+        assertThat(timing.isRunning).isFalse()
+        assertThat(timing.endedAtEpochMillis).isNull()
+    }
+
+    @Test
     fun `running timing interpolates from the server synchronized duration`() {
         val timing = CallTiming(
             startedAtEpochMillis = 10_000L,

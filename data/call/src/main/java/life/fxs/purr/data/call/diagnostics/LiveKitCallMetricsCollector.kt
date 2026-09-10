@@ -28,9 +28,14 @@ class LiveKitCallMetricsCollector @Inject constructor() {
         val localReport = runCatching { localTrack?.getRTCStats() }.getOrNull()
         val remoteReport = runCatching { remoteTrack?.getRTCStats() }.getOrNull()
         val allStats = localReport.stats() + remoteReport.stats()
+        val selectedPairIds = allStats.filter { it.type == "transport" }
+            .mapNotNull { it.members["selectedCandidatePairId"] as? String }.toSet()
         val candidatePair = allStats.firstOrNull {
-            it.type == "candidate-pair" && it.members["nominated"] == true
-        } ?: allStats.firstOrNull { it.type == "candidate-pair" }
+            it.type == "candidate-pair" && it.id in selectedPairIds
+        } ?: allStats.firstOrNull {
+            it.type == "candidate-pair" && it.members["nominated"] == true &&
+                it.members["state"] == "succeeded"
+        }
         val outboundStats = localReport.stats("outbound-rtp")
         val inboundStats = remoteReport.stats("inbound-rtp")
         val remoteInboundStats = localReport.stats("remote-inbound-rtp")
@@ -52,9 +57,9 @@ class LiveKitCallMetricsCollector @Inject constructor() {
                     ?: remoteInboundStats.firstDouble("roundTripTime")?.times(1_000.0),
                 uplinkBitrateKbps = currentSample.calculateBitrate(previousSample) { it.bytesSent },
                 downlinkBitrateKbps = currentSample.calculateBitrate(previousSample) { it.bytesReceived },
-                uplinkPacketLossPercent = packetLossPercent(
+                uplinkPacketLossPercent = sentPacketLossPercent(
                     lost = remoteInboundStats.sumMember("packetsLost"),
-                    delivered = outboundStats.sumMember("packetsSent"),
+                    sent = outboundStats.sumMember("packetsSent"),
                 ),
                 downlinkPacketLossPercent = packetLossPercent(
                     lost = inboundStats.sumMember("packetsLost"),
@@ -107,10 +112,14 @@ private fun RtpByteSample.calculateBitrate(
     return (currentBytes - previousBytes) * 8.0 / elapsedSeconds / 1_000.0
 }
 
-private fun packetLossPercent(lost: Double?, delivered: Double?): Double? {
+internal fun packetLossPercent(lost: Double?, delivered: Double?): Double? {
     if (lost == null || delivered == null) return null
-    val total = lost + delivered
-    return if (total > 0.0) lost.coerceAtLeast(0.0) / total * 100.0 else 0.0
+    return sentPacketLossPercent(lost, lost.coerceAtLeast(0.0) + delivered.coerceAtLeast(0.0))
+}
+
+internal fun sentPacketLossPercent(lost: Double?, sent: Double?): Double? {
+    if (lost == null || sent == null || !lost.isFinite() || !sent.isFinite()) return null
+    return if (sent > 0.0) (lost.coerceAtLeast(0.0) / sent * 100.0).coerceIn(0.0, 100.0) else 0.0
 }
 
 private fun RTCStatsReport?.codecFor(rtpStats: RTCStats?): String? {

@@ -27,6 +27,8 @@ internal class IncomingCallActivity : ComponentActivity() {
 
     private var request: IncomingCallActivityRequest by mutableStateOf(IncomingCallActivityRequest.Invalid)
     private var recoveryJob: Job? = null
+    private var recoveryGeneration = 0L
+    private var recoveryInProgress by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,6 +46,7 @@ internal class IncomingCallActivity : ComponentActivity() {
                         partnerAvatarUrl = currentRequest.callerAvatarUrl,
                         callId = currentRequest.callId,
                         acceptImmediately = currentRequest.acceptImmediately,
+                        recoveryInProgress = recoveryInProgress,
                         onOpenCall = ::openActiveCall,
                         onDismiss = ::finishSafely,
                     )
@@ -60,9 +63,17 @@ internal class IncomingCallActivity : ComponentActivity() {
 
     private fun updateRequest(intent: Intent?) {
         request = IncomingCallActivityRequest.from(intent)
+        val generation = ++recoveryGeneration
         recoveryJob?.cancel()
+        recoveryInProgress = request is IncomingCallActivityRequest.Valid
         if (request is IncomingCallActivityRequest.Valid) {
-            recoveryJob = lifecycleScope.launch { recoverIncomingCall() }
+            recoveryJob = lifecycleScope.launch {
+                try {
+                    recoverIncomingCall()
+                } finally {
+                    if (generation == recoveryGeneration) recoveryInProgress = false
+                }
+            }
         }
     }
 
