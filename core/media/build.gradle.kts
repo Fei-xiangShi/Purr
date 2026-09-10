@@ -39,6 +39,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.livedata.core)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.javax.inject)
+    implementation(libs.okhttp.core)
+    implementation(libs.webrtc.prefixed)
 
     testImplementation(libs.junit4)
     testImplementation(libs.truth)

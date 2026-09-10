@@ -164,6 +164,7 @@ dependencies {
     implementation(projects.core.model)
     implementation(projects.core.network)
     implementation(projects.core.media)
+    implementation(projects.core.screenpublisher)
     implementation(projects.core.designsystem)
     implementation(projects.data.account)
     implementation(projects.data.call)

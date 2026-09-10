@@ -6,10 +6,12 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
+import android.view.View
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -88,6 +90,16 @@ fun CallScreenRoute(
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { requestMicrophonePermission() }
+    val screenCaptureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        viewModel.onIntent(
+            CallIntent.ScreenCapturePermissionResult(
+                resultCode = result.resultCode,
+                data = result.data,
+            ),
+        )
+    }
 
     LaunchedEffect(request, partnerName) {
         when (request) {
@@ -112,6 +124,11 @@ fun CallScreenRoute(
             when (effect) {
                 CallEffect.OpenAppSettings -> context.openAppSettings()
                 CallEffect.NavigateHome -> onCallEnded()
+                is CallEffect.RequestScreenCapturePermission -> {
+                    val manager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
+                        as MediaProjectionManager
+                    screenCaptureLauncher.launch(manager.createScreenCaptureIntent())
+                }
                 CallEffect.RequestMicrophonePermission -> {
                     if (
                         Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -143,6 +160,14 @@ fun CallScreenRoute(
         onCallSurfaceVisibilityChanged = onCallSurfaceVisibilityChanged,
         onMuteToggle = { viewModel.onIntent(CallIntent.MuteToggle) },
         onRouteSelect = { route -> viewModel.onIntent(CallIntent.RouteSelect(route)) },
+        onOpenScreenSharePicker = { viewModel.onIntent(CallIntent.OpenScreenSharePicker) },
+        onDismissScreenSharePicker = { viewModel.onIntent(CallIntent.DismissScreenSharePicker) },
+        onStartMobileScreenShare = { viewModel.onIntent(CallIntent.StartMobileScreenShare) },
+        onStartObsScreenShare = { viewModel.onIntent(CallIntent.StartObsScreenShare) },
+        onStopScreenShare = { viewModel.onIntent(CallIntent.StopScreenShare) },
+        onDismissObsSetup = { viewModel.onIntent(CallIntent.DismissObsSetup) },
+        createRemoteScreenRenderer = viewModel::createRemoteScreenRenderer,
+        releaseRemoteScreenRenderer = viewModel::releaseRemoteScreenRenderer,
         onEndCall = { viewModel.onIntent(CallIntent.EndCall) },
     )
 }
@@ -158,6 +183,14 @@ fun CallScreen(
     partnerAvatarModifier: Modifier = Modifier,
     onMuteToggle: () -> Unit,
     onRouteSelect: (AudioRoute) -> Unit,
+    onOpenScreenSharePicker: () -> Unit,
+    onDismissScreenSharePicker: () -> Unit,
+    onStartMobileScreenShare: () -> Unit,
+    onStartObsScreenShare: () -> Unit,
+    onStopScreenShare: () -> Unit,
+    onDismissObsSetup: () -> Unit,
+    createRemoteScreenRenderer: (Context) -> View,
+    releaseRemoteScreenRenderer: (View) -> Unit,
     onShowDiagnostics: () -> Unit,
     onEndCall: () -> Unit,
 ) {
@@ -187,30 +220,62 @@ fun CallScreen(
         detail = detail,
         avatarModifier = partnerAvatarModifier,
         remoteAudioLevel = remoteAudioLevel,
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            MicrophoneLevelButton(
-                label = if (microphoneMuted) "取消静音" else "静音",
-                muted = microphoneMuted,
-                level = localAudioLevel,
-                onClick = onMuteToggle,
-                enabled = canManageActiveCall && state.localAudioState.canToggleMute,
-            )
-            AudioRoutePicker(
-                routes = state.availableRoutes,
-                activeRoute = state.activeRoute,
-                enabled = canManageActiveCall && state.availableRoutes.isNotEmpty(),
-                onRouteSelect = onRouteSelect,
-            )
-            DiagnosticsButton(
-                onClick = onShowDiagnostics,
-                enabled = state.session != null,
-            )
-            EndCallButton(onClick = onEndCall, enabled = canEndCall)
+        bottomContent = {
+            LocalScreenShareStatus(state.screenShare)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                MicrophoneLevelButton(
+                    label = if (microphoneMuted) "取消静音" else "静音",
+                    muted = microphoneMuted,
+                    level = localAudioLevel,
+                    onClick = onMuteToggle,
+                    enabled = canManageActiveCall && state.localAudioState.canToggleMute,
+                )
+                AudioRoutePicker(
+                    routes = state.availableRoutes,
+                    activeRoute = state.activeRoute,
+                    enabled = canManageActiveCall && state.availableRoutes.isNotEmpty(),
+                    onRouteSelect = onRouteSelect,
+                )
+                ScreenShareButton(
+                    state = state.screenShare,
+                    canStart = state.screenState == CallScreenState.Active && !state.isLoading,
+                    onOpenPicker = onOpenScreenSharePicker,
+                    onStop = onStopScreenShare,
+                )
+                DiagnosticsButton(
+                    onClick = onShowDiagnostics,
+                    enabled = state.session != null,
+                )
+                EndCallButton(onClick = onEndCall, enabled = canEndCall)
+            }
+        },
+        centerContent = if (state.screenShare.shouldShowRemotePanel) {
+            {
+                RemoteScreenSharePanel(
+                    state = state.screenShare,
+                    createRenderer = createRemoteScreenRenderer,
+                    releaseRenderer = releaseRemoteScreenRenderer,
+                )
+            }
+        } else {
+            null
+        },
+    )
+
+    if (state.screenShare.sourcePickerVisible) {
+        ScreenShareSourceSheet(
+            onDismiss = onDismissScreenSharePicker,
+            onMobile = onStartMobileScreenShare,
+            onObs = onStartObsScreenShare,
+        )
+    }
+    if (state.screenShare.obsSetupVisible) {
+        state.screenShare.obsPublishing?.let { publishing ->
+            ObsSetupDialog(publishing = publishing, onDismiss = onDismissObsSetup)
         }
     }
 }

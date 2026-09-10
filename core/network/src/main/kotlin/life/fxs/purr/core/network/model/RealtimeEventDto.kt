@@ -10,4 +10,8 @@ data class RealtimeEventDto(
     val pairId: String? = null,
     val callerUserId: String? = null,
     val startedAtEpochMillis: Long? = null,
+    val screenShareId: String? = null,
+    val screenShareStatus: String? = null,
+    val screenShareSource: String? = null,
+    val screenShareOwnerUserId: String? = null,
 )

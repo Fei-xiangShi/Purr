@@ -19,6 +19,8 @@ import life.fxs.purr.core.network.asAppError
 import life.fxs.purr.core.network.api.PurrCallApi
 import life.fxs.purr.core.network.model.ActiveCallDto
 import life.fxs.purr.core.network.model.RealtimeEventDto
+import life.fxs.purr.core.network.realtime.ScreenShareRealtimeInvalidation
+import life.fxs.purr.core.network.realtime.ScreenShareRealtimeInvalidations
 import life.fxs.purr.data.account.network.SessionTokenHolder
 import life.fxs.purr.domain.account.model.IncomingCall
 import life.fxs.purr.domain.account.model.RealtimeState
@@ -33,6 +35,7 @@ private const val SNAPSHOT_EVENT = "snapshot"
 private const val PRESENCE_EVENT = "presence_changed"
 private const val CALL_STARTED_EVENT = "call_started"
 private const val CALL_ENDED_EVENT = "call_ended"
+private const val SCREEN_SHARE_CHANGED_EVENT = "screen_share_changed"
 
 @Singleton
 class ApiRealtimeRepository @Inject constructor(
@@ -42,6 +45,8 @@ class ApiRealtimeRepository @Inject constructor(
     private val api: PurrCallApi,
     @RealtimeEndpoint private val realtimeUrl: String,
     @ApplicationScope private val applicationScope: CoroutineScope,
+    private val screenShareInvalidations: ScreenShareRealtimeInvalidations =
+        ScreenShareRealtimeInvalidations(),
 ) : RealtimeRepository {
     private val scope = applicationScope
     private val state = MutableStateFlow(RealtimeState())
@@ -149,6 +154,19 @@ class ApiRealtimeRepository @Inject constructor(
     private fun handleMessage(webSocket: WebSocket, text: String) {
         if (socket !== webSocket) return
         val event = runCatching { json.decodeFromString<RealtimeEventDto>(text) }.getOrNull() ?: return
+        if (event.type == SCREEN_SHARE_CHANGED_EVENT) {
+            event.callId?.let { callId ->
+                screenShareInvalidations.publish(
+                    ScreenShareRealtimeInvalidation(
+                        callId = callId,
+                        shareId = event.screenShareId,
+                        status = event.screenShareStatus,
+                        source = event.screenShareSource,
+                        ownerUserId = event.screenShareOwnerUserId,
+                    ),
+                )
+            }
+        }
         state.update { current ->
             current.applyRealtimeEvent(
                 event = event,

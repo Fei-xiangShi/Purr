@@ -1,11 +1,15 @@
 package life.fxs.purr.feature.call
 
+import android.app.Activity
 import com.google.common.truth.Truth.assertThat
 import app.cash.turbine.test
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
+import io.mockk.Runs
+import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
@@ -20,6 +24,11 @@ import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.core.model.CallDirection
+import life.fxs.purr.core.media.screenshare.ScreenSharePublisherController
+import life.fxs.purr.core.media.screenshare.ScreenSharePublisherStatus
+import life.fxs.purr.core.media.screenshare.WhepPlaybackController
+import life.fxs.purr.core.media.screenshare.WhepPlaybackRequest
+import life.fxs.purr.core.media.screenshare.WhepPlaybackStatus
 import life.fxs.purr.domain.call.repository.CallAudioLevelProvider
 import life.fxs.purr.domain.call.model.CallConnectionState
 import life.fxs.purr.domain.call.model.CallSession
@@ -27,12 +36,21 @@ import life.fxs.purr.domain.call.model.CallUiSnapshot
 import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.ParticipantIdentity
 import life.fxs.purr.domain.call.model.RecordingState
+import life.fxs.purr.domain.call.model.ScreenShareMediaEndpoint
+import life.fxs.purr.domain.call.model.ScreenSharePublishing
+import life.fxs.purr.domain.call.model.ScreenShareSession
+import life.fxs.purr.domain.call.model.ScreenShareSnapshot
+import life.fxs.purr.domain.call.model.ScreenShareSource
+import life.fxs.purr.domain.call.model.ScreenShareStatus
+import life.fxs.purr.domain.call.usecase.CreateScreenShareUseCase
 import life.fxs.purr.domain.call.usecase.ConnectCallUseCase
 import life.fxs.purr.domain.call.usecase.CancelCallPreparationUseCase
 import life.fxs.purr.domain.call.usecase.DisconnectCallUseCase
 import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
+import life.fxs.purr.domain.call.usecase.ObserveScreenShareUseCase
 import life.fxs.purr.domain.call.usecase.PrepareCallSessionUseCase
 import life.fxs.purr.domain.call.usecase.SelectAudioRouteUseCase
+import life.fxs.purr.domain.call.usecase.StopScreenShareUseCase
 import life.fxs.purr.domain.call.usecase.ToggleMuteUseCase
 import life.fxs.purr.domain.incomingcall.PrepareIncomingCallUseCase
 import org.junit.After
@@ -52,6 +70,16 @@ class CallViewModelTest {
     private val toggleMuteUseCase = mockk<ToggleMuteUseCase>()
     private val selectAudioRouteUseCase = mockk<SelectAudioRouteUseCase>()
     private val disconnectCallUseCase = mockk<DisconnectCallUseCase>()
+    private val observeScreenShareUseCase = mockk<ObserveScreenShareUseCase>()
+    private val createScreenShareUseCase = mockk<CreateScreenShareUseCase>()
+    private val stopScreenShareUseCase = mockk<StopScreenShareUseCase>()
+    private val screenSharePublisherController = mockk<ScreenSharePublisherController>()
+    private val whepPlaybackController = mockk<WhepPlaybackController>()
+    private val screenShareFlow = MutableStateFlow(ScreenShareSnapshot(callId = "call-1"))
+    private val publisherStatusFlow = MutableStateFlow<ScreenSharePublisherStatus>(
+        ScreenSharePublisherStatus.Idle,
+    )
+    private val whepStatusFlow = MutableStateFlow<WhepPlaybackStatus>(WhepPlaybackStatus.Idle)
     private val audioLevelProvider = object : CallAudioLevelProvider {
         override val localAudioLevel = MutableStateFlow(0f)
         override val remoteAudioLevel = MutableStateFlow(0f)
@@ -66,6 +94,16 @@ class CallViewModelTest {
         coEvery { selectAudioRouteUseCase.invoke(any()) } returns AppResult.Success(Unit)
         coEvery { disconnectCallUseCase.invoke(any()) } returns AppResult.Success(Unit)
         coEvery { cancelCallPreparationUseCase.invoke() } returns Unit
+        every { observeScreenShareUseCase.invoke(any()) } returns screenShareFlow
+        coEvery { stopScreenShareUseCase.invoke(any()) } returns AppResult.Success(null)
+        every { screenSharePublisherController.status } returns publisherStatusFlow
+        every { screenSharePublisherController.prepare(any()) } just Runs
+        every { screenSharePublisherController.start(any(), any()) } just Runs
+        every { screenSharePublisherController.permissionDenied(any()) } just Runs
+        every { screenSharePublisherController.stop(any()) } just Runs
+        every { whepPlaybackController.status } returns whepStatusFlow
+        every { whepPlaybackController.start(any()) } just Runs
+        every { whepPlaybackController.stop(any()) } just Runs
     }
 
     @After
@@ -625,6 +663,242 @@ class CallViewModelTest {
         assertThat(viewModel.state.value.isLoading).isFalse()
     }
 
+    @Test
+    fun `mobile screen share requests projection permission before publishing`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.Recording,
+        )
+        val share = sampleScreenShare(source = ScreenShareSource.Mobile)
+        coEvery {
+            createScreenShareUseCase.invoke("call-1", ScreenShareSource.Mobile)
+        } returns AppResult.Success(share)
+        val viewModel = createViewModel()
+        viewModel.onIntent(
+            CallIntent.OpenExistingCall(
+                pairId = "pair-1",
+                callId = "call-1",
+                direction = CallDirection.Outgoing,
+            ),
+        )
+        runCurrent()
+
+        viewModel.effects.test {
+            viewModel.onIntent(CallIntent.StartMobileScreenShare)
+            advanceUntilIdle()
+
+            val effect = awaitItem() as CallEffect.RequestScreenCapturePermission
+            assertThat(effect.request.shareId).isEqualTo("share-1")
+            verify(exactly = 1) {
+                screenSharePublisherController.prepare(
+                    match { it.shareId == "share-1" && it.whipUrl == "https://media.test/whip" },
+                )
+            }
+            verify(exactly = 0) { screenSharePublisherController.start(any(), any()) }
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `screen capture denial stops only screen share and keeps voice call active`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.Recording,
+        )
+        coEvery {
+            createScreenShareUseCase.invoke("call-1", ScreenShareSource.Mobile)
+        } returns AppResult.Success(sampleScreenShare(source = ScreenShareSource.Mobile))
+        val viewModel = createViewModel()
+        viewModel.onIntent(
+            CallIntent.OpenExistingCall(
+                pairId = "pair-1",
+                callId = "call-1",
+                direction = CallDirection.Outgoing,
+            ),
+        )
+        runCurrent()
+
+        viewModel.effects.test {
+            viewModel.onIntent(CallIntent.StartMobileScreenShare)
+            advanceUntilIdle()
+            awaitItem() as CallEffect.RequestScreenCapturePermission
+
+            viewModel.onIntent(
+                CallIntent.ScreenCapturePermissionResult(
+                    resultCode = Activity.RESULT_CANCELED,
+                    data = null,
+                ),
+            )
+            advanceUntilIdle()
+
+            assertThat(awaitItem()).isEqualTo(
+                CallEffect.ShowMessage("未授予屏幕录制权限，语音通话不受影响"),
+            )
+            verify(exactly = 2) {
+                screenSharePublisherController.permissionDenied(match { it.shareId == "share-1" })
+            }
+            coVerify(exactly = 1) { stopScreenShareUseCase.invoke("call-1") }
+            coVerify(exactly = 0) { disconnectCallUseCase.invoke(any()) }
+            assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Active)
+            expectNoEvents()
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `obs screen share exposes publishing credentials without starting mobile publisher`() =
+        runTest(dispatcher) {
+            sessionFlow.value = sampleSession(
+                connectionState = CallConnectionState.Connected,
+                localAudioState = LocalAudioState.Enabled,
+                recordingState = RecordingState.Recording,
+            )
+            val share = sampleScreenShare(source = ScreenShareSource.Obs)
+            coEvery {
+                createScreenShareUseCase.invoke("call-1", ScreenShareSource.Obs)
+            } returns AppResult.Success(share)
+            val viewModel = createViewModel()
+            viewModel.onIntent(
+                CallIntent.OpenExistingCall(
+                    pairId = "pair-1",
+                    callId = "call-1",
+                    direction = CallDirection.Outgoing,
+                ),
+            )
+            runCurrent()
+
+            viewModel.onIntent(CallIntent.StartObsScreenShare)
+            advanceUntilIdle()
+
+            assertThat(viewModel.state.value.screenShare.obsSetupVisible).isTrue()
+            assertThat(viewModel.state.value.screenShare.obsPublishing).isEqualTo(share.publishing)
+            verify(exactly = 0) { screenSharePublisherController.prepare(any()) }
+            verify(exactly = 0) { screenSharePublisherController.start(any(), any()) }
+        }
+
+    @Test
+    fun `remote live screen share starts WHEP playback`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.Recording,
+        )
+        val viewModel = createViewModel()
+        viewModel.onIntent(
+            CallIntent.OpenExistingCall(
+                pairId = "pair-1",
+                callId = "call-1",
+                direction = CallDirection.Outgoing,
+            ),
+        )
+        runCurrent()
+
+        screenShareFlow.value = ScreenShareSnapshot(
+            callId = "call-1",
+            session = sampleScreenShare(
+                source = ScreenShareSource.Mobile,
+                status = ScreenShareStatus.Live,
+                publishing = null,
+                playback = sampleMediaEndpoint("https://media.test/whep"),
+            ),
+            isOwnedByCurrentUser = false,
+        )
+        advanceUntilIdle()
+
+        verify(exactly = 1) {
+            whepPlaybackController.start(
+                match { it.callId == "call-1" && it.shareId == "share-1" },
+            )
+        }
+        assertThat(viewModel.state.value.screenShare.remoteState)
+            .isEqualTo(RemoteScreenShareUiState.Connecting)
+    }
+
+    @Test
+    fun `WHEP failure leaves LiveKit voice call active`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.Recording,
+        )
+        val endpoint = sampleMediaEndpoint("https://media.test/whep")
+        val viewModel = createViewModel()
+        viewModel.onIntent(
+            CallIntent.OpenExistingCall(
+                pairId = "pair-1",
+                callId = "call-1",
+                direction = CallDirection.Outgoing,
+            ),
+        )
+        runCurrent()
+        screenShareFlow.value = ScreenShareSnapshot(
+            callId = "call-1",
+            session = sampleScreenShare(
+                source = ScreenShareSource.Mobile,
+                status = ScreenShareStatus.Live,
+                publishing = null,
+                playback = endpoint,
+            ),
+            isOwnedByCurrentUser = false,
+        )
+        advanceUntilIdle()
+        val request = WhepPlaybackRequest(
+            callId = "call-1",
+            shareId = "share-1",
+            url = endpoint.url,
+            bearerToken = endpoint.bearerToken,
+            expiresAtEpochMillis = endpoint.expiresAtEpochMillis,
+        )
+
+        whepStatusFlow.value = WhepPlaybackStatus.Failed(request, "ICE failed")
+        advanceUntilIdle()
+
+        assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Active)
+        assertThat(viewModel.state.value.screenShare.remoteState)
+            .isEqualTo(RemoteScreenShareUiState.Failed)
+        assertThat(viewModel.state.value.screenShare.errorMessage).isEqualTo("ICE failed")
+        coVerify(exactly = 0) { disconnectCallUseCase.invoke(any()) }
+    }
+
+    @Test
+    fun `ending call cleans up screen media and LiveKit session`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.Recording,
+        )
+        val viewModel = createViewModel()
+        viewModel.onIntent(
+            CallIntent.OpenExistingCall(
+                pairId = "pair-1",
+                callId = "call-1",
+                direction = CallDirection.Outgoing,
+            ),
+        )
+        runCurrent()
+        screenShareFlow.value = ScreenShareSnapshot(
+            callId = "call-1",
+            session = sampleScreenShare(
+                source = ScreenShareSource.Mobile,
+                status = ScreenShareStatus.Live,
+                publishing = null,
+                playback = sampleMediaEndpoint("https://media.test/whep"),
+            ),
+            isOwnedByCurrentUser = false,
+        )
+        advanceUntilIdle()
+
+        viewModel.onIntent(CallIntent.EndCall)
+        advanceUntilIdle()
+
+        verify(exactly = 1) { screenSharePublisherController.stop("call-1") }
+        verify(exactly = 1) { whepPlaybackController.stop("share-1") }
+        coVerify(exactly = 1) { stopScreenShareUseCase.invoke("call-1") }
+        coVerify(exactly = 1) { disconnectCallUseCase.invoke("call-1") }
+        assertThat(viewModel.state.value.screenState).isEqualTo(CallScreenState.Ended)
+    }
     private fun createViewModel(): CallViewModel = CallViewModel(
         prepareCallSessionUseCase = prepareCallSessionUseCase,
         cancelCallPreparationUseCase = cancelCallPreparationUseCase,
@@ -634,6 +908,11 @@ class CallViewModelTest {
         toggleMuteUseCase = toggleMuteUseCase,
         selectAudioRouteUseCase = selectAudioRouteUseCase,
         disconnectCallUseCase = disconnectCallUseCase,
+        observeScreenShareUseCase = observeScreenShareUseCase,
+        createScreenShareUseCase = createScreenShareUseCase,
+        stopScreenShareUseCase = stopScreenShareUseCase,
+        screenSharePublisherController = screenSharePublisherController,
+        whepPlaybackController = whepPlaybackController,
         audioLevelProvider = audioLevelProvider,
     )
 
@@ -657,5 +936,31 @@ class CallViewModelTest {
             isForegroundServiceActive = true,
             remoteParticipantConnected = remoteParticipantConnected,
         ),
+    )
+
+    private fun sampleScreenShare(
+        source: ScreenShareSource,
+        status: ScreenShareStatus = ScreenShareStatus.Authorized,
+        publishing: ScreenSharePublishing? = ScreenSharePublishing(
+            whip = sampleMediaEndpoint("https://media.test/whip"),
+        ),
+        playback: ScreenShareMediaEndpoint? = null,
+    ) = ScreenShareSession(
+        shareId = "share-1",
+        callId = "call-1",
+        ownerUserId = "self",
+        source = source,
+        status = status,
+        mediaPath = "calls/call-1/share-1",
+        createdAtEpochMillis = 1_000L,
+        expiresAtEpochMillis = 61_000L,
+        publishing = publishing,
+        playback = playback,
+    )
+
+    private fun sampleMediaEndpoint(url: String) = ScreenShareMediaEndpoint(
+        url = url,
+        bearerToken = "screen-token",
+        expiresAtEpochMillis = Long.MAX_VALUE,
     )
 }

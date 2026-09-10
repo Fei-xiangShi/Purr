@@ -12,6 +12,7 @@ import life.fxs.purr.platform.push.PushPlatformCoordinator
 import life.fxs.purr.telecom.IncomingSystemCallLifecycleCoordinator
 import life.fxs.purr.telecom.SystemCallEventCoordinator
 
+import life.fxs.purr.screenshare.ScreenShareCallLifecycleCoordinator
 @HiltAndroidApp
 class PurrApplication : Application(), Configuration.Provider {
     @Inject
@@ -34,6 +35,9 @@ class PurrApplication : Application(), Configuration.Provider {
 
     @Inject
     lateinit var incomingSystemCallLifecycleCoordinator: IncomingSystemCallLifecycleCoordinator
+
+    @Inject
+    lateinit var screenShareCallLifecycleCoordinator: ScreenShareCallLifecycleCoordinator
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder().apply {
@@ -61,6 +65,9 @@ class PurrApplication : Application(), Configuration.Provider {
         }
         if (::incomingSystemCallLifecycleCoordinator.isInitialized) {
             incomingSystemCallLifecycleCoordinator.start()
+        }
+        if (::screenShareCallLifecycleCoordinator.isInitialized) {
+            screenShareCallLifecycleCoordinator.start()
         }
     }
 }

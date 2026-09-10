@@ -43,6 +43,7 @@ dependencies {
     implementation(projects.core.model)
     implementation(projects.core.presentation)
     implementation(projects.core.designsystem)
+    implementation(projects.core.media)
     implementation(projects.domain.call)
     implementation(projects.domain.incomingcall)
     implementation(libs.androidx.activity.compose)

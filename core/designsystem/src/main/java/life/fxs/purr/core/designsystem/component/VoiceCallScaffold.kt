@@ -62,6 +62,7 @@ fun VoiceCallScaffold(
     avatarModifier: Modifier = Modifier,
     remoteAudioLevel: Float = 0f,
     modifier: Modifier = Modifier,
+    centerContent: (@Composable ColumnScope.() -> Unit)? = null,
     bottomContent: @Composable ColumnScope.() -> Unit,
 ) {
     Box(modifier = modifier.fillMaxSize()) {
@@ -80,29 +81,37 @@ fun VoiceCallScaffold(
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.weight(0.72f))
-            VoiceActivityAvatar(
-                avatarUrl = partnerAvatarUrl,
-                contentDescription = "$partnerName 的头像",
-                audioLevel = remoteAudioLevel,
-                avatarModifier = avatarModifier,
-            )
-            Spacer(Modifier.height(28.dp))
-            Text(
-                text = partnerName,
-                modifier = Modifier.widthIn(max = 320.dp),
-                style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.SemiBold),
-                color = Color.White,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-            )
-            if (detail.isNotBlank()) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = detail,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = Color.White.copy(alpha = 0.72f),
-                    textAlign = TextAlign.Center,
+            if (centerContent != null) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    content = centerContent,
                 )
+            } else {
+                VoiceActivityAvatar(
+                    avatarUrl = partnerAvatarUrl,
+                    contentDescription = "$partnerName 的头像",
+                    audioLevel = remoteAudioLevel,
+                    avatarModifier = avatarModifier,
+                )
+                Spacer(Modifier.height(28.dp))
+                Text(
+                    text = partnerName,
+                    modifier = Modifier.widthIn(max = 320.dp),
+                    style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.SemiBold),
+                    color = Color.White,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                )
+                if (detail.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = detail,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = Color.White.copy(alpha = 0.72f),
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
             Spacer(Modifier.weight(1f))
             Column(

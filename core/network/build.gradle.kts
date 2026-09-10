@@ -20,6 +20,8 @@ dependencies {
     implementation(projects.core.common)
     implementation(projects.core.model)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.javax.inject)
     implementation(libs.retrofit.core)
     implementation(libs.retrofit.kotlinx.serialization)
     implementation(libs.okhttp.core)

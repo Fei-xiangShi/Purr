@@ -28,6 +28,7 @@ include(
     ":core:network",
     ":core:presentation",
     ":core:media",
+    ":core:screenpublisher",
     ":core:designsystem",
     ":domain:account",
     ":domain:call",

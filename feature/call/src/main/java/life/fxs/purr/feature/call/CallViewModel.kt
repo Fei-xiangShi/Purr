@@ -1,5 +1,8 @@
 package life.fxs.purr.feature.call
 
+import android.app.Activity
+import android.content.Context
+import android.view.View
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -13,6 +16,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -20,11 +24,20 @@ import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.core.model.CallDirection
+import life.fxs.purr.core.media.screenshare.ScreenCapturePermission
+import life.fxs.purr.core.media.screenshare.ScreenSharePublishRequest
+import life.fxs.purr.core.media.screenshare.ScreenSharePublisherController
+import life.fxs.purr.core.media.screenshare.WhepPlaybackController
+import life.fxs.purr.core.media.screenshare.WhepPlaybackRequest
+import life.fxs.purr.core.media.screenshare.WhepPlaybackStatus
 import life.fxs.purr.core.presentation.toUserMessage
 import life.fxs.purr.domain.call.model.CallConnectionState
 import life.fxs.purr.domain.call.model.CallPreparationRequest
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.LocalAudioState
+import life.fxs.purr.domain.call.model.ScreenShareSnapshot
+import life.fxs.purr.domain.call.model.ScreenShareSource
+import life.fxs.purr.domain.call.model.ScreenShareStatus
 import life.fxs.purr.domain.call.model.isEffectivelyMuted
 import life.fxs.purr.domain.call.usecase.ConnectCallUseCase
 import life.fxs.purr.domain.call.usecase.CancelCallPreparationUseCase
@@ -33,6 +46,9 @@ import life.fxs.purr.domain.call.usecase.ObserveCallStateUseCase
 import life.fxs.purr.domain.call.usecase.PrepareCallSessionUseCase
 import life.fxs.purr.domain.call.usecase.SelectAudioRouteUseCase
 import life.fxs.purr.domain.call.usecase.ToggleMuteUseCase
+import life.fxs.purr.domain.call.usecase.CreateScreenShareUseCase
+import life.fxs.purr.domain.call.usecase.ObserveScreenShareUseCase
+import life.fxs.purr.domain.call.usecase.StopScreenShareUseCase
 import life.fxs.purr.domain.call.repository.CallAudioLevelProvider
 import life.fxs.purr.domain.incomingcall.PrepareIncomingCallUseCase
 
@@ -46,6 +62,11 @@ class CallViewModel @Inject constructor(
     private val toggleMuteUseCase: ToggleMuteUseCase,
     private val selectAudioRouteUseCase: SelectAudioRouteUseCase,
     private val disconnectCallUseCase: DisconnectCallUseCase,
+    private val observeScreenShareUseCase: ObserveScreenShareUseCase,
+    private val createScreenShareUseCase: CreateScreenShareUseCase,
+    private val stopScreenShareUseCase: StopScreenShareUseCase,
+    private val screenSharePublisherController: ScreenSharePublisherController,
+    private val whepPlaybackController: WhepPlaybackController,
     audioLevelProvider: CallAudioLevelProvider,
 ) : ViewModel() {
     private val _state = MutableStateFlow(CallState())
@@ -61,6 +82,10 @@ class CallViewModel @Inject constructor(
 
     private var prepareJob: Job? = null
     private var connectJob: Job? = null
+    private var screenShareJob: Job? = null
+    private var observedScreenShareCallId: String? = null
+    private var pendingPublishRequest: ScreenSharePublishRequest? = null
+    private var currentWhepRequest: WhepPlaybackRequest? = null
     private var endRequested: Boolean = false
     private var currentCallId: String? = null
     private var hasStartedCurrentCall: Boolean = false
@@ -72,6 +97,9 @@ class CallViewModel @Inject constructor(
             observeCallStateUseCase().collect { session ->
                 if (session != null) onSessionChanged(session)
             }
+        }
+        viewModelScope.launch {
+            whepPlaybackController.status.collect(::onWhepStatusChanged)
         }
     }
 
@@ -90,6 +118,13 @@ class CallViewModel @Inject constructor(
             is CallIntent.MicrophonePermissionResult -> handleMicrophonePermissionResult(intent)
             CallIntent.MuteToggle -> toggleMute()
             is CallIntent.RouteSelect -> updateRoute(intent.route)
+            CallIntent.OpenScreenSharePicker -> openScreenSharePicker()
+            CallIntent.DismissScreenSharePicker -> dismissScreenSharePicker()
+            CallIntent.StartMobileScreenShare -> createScreenShare(ScreenShareSource.Mobile)
+            CallIntent.StartObsScreenShare -> createScreenShare(ScreenShareSource.Obs)
+            is CallIntent.ScreenCapturePermissionResult -> handleScreenCapturePermission(intent)
+            CallIntent.StopScreenShare -> stopScreenShare()
+            CallIntent.DismissObsSetup -> dismissObsSetup()
             CallIntent.EndCall -> endCall()
         }
     }
@@ -231,6 +266,122 @@ class CallViewModel @Inject constructor(
         }
     }
 
+    fun createRemoteScreenRenderer(context: Context): View =
+        whepPlaybackController.createVideoRenderer(context)
+
+    fun releaseRemoteScreenRenderer(view: View) {
+        whepPlaybackController.releaseVideoRenderer(view)
+    }
+
+    private fun openScreenSharePicker() {
+        if (_state.value.screenState != CallScreenState.Active) return
+        _state.update { current ->
+            current.copy(
+                screenShare = current.screenShare.copy(sourcePickerVisible = true),
+            )
+        }
+    }
+
+    private fun dismissScreenSharePicker() {
+        _state.update { current ->
+            current.copy(
+                screenShare = current.screenShare.copy(sourcePickerVisible = false),
+            )
+        }
+    }
+
+    private fun dismissObsSetup() {
+        _state.update { current ->
+            current.copy(
+                screenShare = current.screenShare.copy(obsSetupVisible = false),
+            )
+        }
+    }
+
+    private fun createScreenShare(source: ScreenShareSource) {
+        val callId = currentCallId ?: return
+        if (_state.value.screenState != CallScreenState.Active) return
+        if (_state.value.screenShare.session?.status in ACTIVE_SCREEN_SHARE_STATUSES) return
+        viewModelScope.launch {
+            dismissScreenSharePicker()
+            when (val result = createScreenShareUseCase(callId, source)) {
+                is AppResult.Success -> {
+                    val publishing = result.value.publishing
+                    if (publishing == null) {
+                        _effects.emit(CallEffect.ShowMessage("服务器未返回投屏发布凭证"))
+                        stopScreenShareUseCase(callId)
+                        return@launch
+                    }
+                    if (source == ScreenShareSource.Obs) {
+                        _state.update { current ->
+                            current.copy(
+                                screenShare = current.screenShare.copy(
+                                    session = result.value,
+                                    isOwnedByCurrentUser = true,
+                                    obsPublishing = publishing,
+                                    obsSetupVisible = true,
+                                ),
+                            )
+                        }
+                        return@launch
+                    }
+                    val request = ScreenSharePublishRequest(
+                        callId = result.value.callId,
+                        shareId = result.value.shareId,
+                        whipUrl = publishing.whip.url,
+                        bearerToken = publishing.whip.bearerToken,
+                        expiresAtEpochMillis = publishing.whip.expiresAtEpochMillis,
+                    )
+                    pendingPublishRequest = request
+                    screenSharePublisherController.prepare(request)
+                    _effects.emit(CallEffect.RequestScreenCapturePermission(request))
+                }
+                is AppResult.Failure -> {
+                    _effects.emit(
+                        CallEffect.ShowMessage(
+                            result.error.toCallUserMessage("无法开始屏幕共享，请稍后重试"),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun handleScreenCapturePermission(result: CallIntent.ScreenCapturePermissionResult) {
+        val request = pendingPublishRequest ?: return
+        pendingPublishRequest = null
+        if (result.resultCode != Activity.RESULT_OK || result.data == null) {
+            screenSharePublisherController.permissionDenied(request)
+            viewModelScope.launch {
+                stopScreenShareUseCase(request.callId)
+                screenSharePublisherController.permissionDenied(request)
+                _effects.emit(CallEffect.ShowMessage("未授予屏幕录制权限，语音通话不受影响"))
+            }
+            return
+        }
+        screenSharePublisherController.start(
+            request,
+            ScreenCapturePermission(result.resultCode, result.data),
+        )
+    }
+
+    private fun stopScreenShare() {
+        val callId = currentCallId ?: return
+        pendingPublishRequest = null
+        screenSharePublisherController.stop(callId)
+        stopRemoteScreenPlayback()
+        viewModelScope.launch {
+            when (val result = stopScreenShareUseCase(callId)) {
+                is AppResult.Success -> Unit
+                is AppResult.Failure -> _effects.emit(
+                    CallEffect.ShowMessage(
+                        result.error.toCallUserMessage("本地投屏已停止，但服务器状态同步失败"),
+                    ),
+                )
+            }
+        }
+    }
+
     private fun endCall() {
         if (endRequested) return
         endRequested = true
@@ -240,11 +391,24 @@ class CallViewModel @Inject constructor(
         prepareJob = null
         connectJob?.cancel()
         connectJob = null
+        screenShareJob?.cancel()
+        screenShareJob = null
+        observedScreenShareCallId = null
+        pendingPublishRequest = null
+        stopRemoteScreenPlayback()
         _state.value = _state.value.copy(
             screenState = CallScreenState.Ended,
             isLoading = false,
             failureMessage = null,
         )
+        endedCallId?.let { callId ->
+            screenSharePublisherController.stop(callId)
+            viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                withContext(NonCancellable) {
+                    stopScreenShareUseCase(callId)
+                }
+            }
+        }
         viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
             // Navigation destroys this ViewModel, but termination is application-owned.
             // Commit the presentation boundary and the callId handoff in one
@@ -286,6 +450,7 @@ class CallViewModel @Inject constructor(
         val isTerminal = session.connectionState.isTerminal
         if (!isTerminal) {
             currentCallId = session.callId
+            observeScreenShare(session.callId)
             updateState(session)
             return
         }
@@ -293,6 +458,7 @@ class CallViewModel @Inject constructor(
         // A singleton repository intentionally retains the last terminal snapshot.
         // A newly-created screen must not navigate away because of that stale snapshot.
         if (session.callId != currentCallId) return
+        stopRemoteScreenPlayback()
         updateState(session)
         if (!endRequested && hasStartedCurrentCall && session.connectionState.isTerminal) {
             navigateHomeOnce()
@@ -325,15 +491,140 @@ class CallViewModel @Inject constructor(
             } else {
                 null
             },
+            screenShare = _state.value.screenShare,
         )
+    }
+
+    private fun observeScreenShare(callId: String) {
+        if (screenShareJob?.isActive == true && observedScreenShareCallId == callId) return
+        screenShareJob?.cancel()
+        observedScreenShareCallId = callId
+        screenShareJob = viewModelScope.launch {
+            observeScreenShareUseCase(callId).collect(::onScreenShareChanged)
+        }
+    }
+
+    private fun onScreenShareChanged(snapshot: ScreenShareSnapshot) {
+        if (snapshot.callId != currentCallId || endRequested) return
+        val share = snapshot.session
+        val isRemote = share != null && !snapshot.isOwnedByCurrentUser
+        val baseRemoteState = when {
+            !isRemote -> RemoteScreenShareUiState.None
+            share.status == ScreenShareStatus.Authorized -> RemoteScreenShareUiState.Preparing
+            share.status == ScreenShareStatus.Live && currentWhepRequest?.shareId == share.shareId ->
+                _state.value.screenShare.remoteState.takeIf {
+                    it in setOf(
+                        RemoteScreenShareUiState.Connecting,
+                        RemoteScreenShareUiState.Buffering,
+                        RemoteScreenShareUiState.Live,
+                    )
+                } ?: RemoteScreenShareUiState.Connecting
+            share.status == ScreenShareStatus.Live -> RemoteScreenShareUiState.Connecting
+            share.status == ScreenShareStatus.Stopping || share.status == ScreenShareStatus.Stopped ->
+                RemoteScreenShareUiState.Stopped
+            share.status == ScreenShareStatus.Failed || share.status == ScreenShareStatus.Expired ->
+                RemoteScreenShareUiState.Failed
+            else -> RemoteScreenShareUiState.None
+        }
+        _state.update { current ->
+            current.copy(
+                screenShare = current.screenShare.copy(
+                    session = share,
+                    isOwnedByCurrentUser = snapshot.isOwnedByCurrentUser,
+                    localState = snapshot.localState,
+                    remoteState = baseRemoteState,
+                    errorMessage = share?.errorMessage ?: snapshot.syncErrorMessage,
+                    obsPublishing = if (share?.source == ScreenShareSource.Obs && snapshot.isOwnedByCurrentUser) {
+                        share.publishing ?: current.screenShare.obsPublishing
+                    } else {
+                        null
+                    },
+                ),
+            )
+        }
+
+        val endpoint = share?.playback
+        if (isRemote && share.status == ScreenShareStatus.Live && endpoint != null) {
+            val playbackRequest = WhepPlaybackRequest(
+                callId = share.callId,
+                shareId = share.shareId,
+                url = endpoint.url,
+                bearerToken = endpoint.bearerToken,
+                expiresAtEpochMillis = endpoint.expiresAtEpochMillis,
+            )
+            if (currentWhepRequest.shouldReplaceWith(playbackRequest)) {
+                currentWhepRequest = playbackRequest
+                whepPlaybackController.start(playbackRequest)
+            }
+        } else if (currentWhepRequest != null) {
+            stopRemoteScreenPlayback()
+        }
+    }
+
+    private fun stopRemoteScreenPlayback() {
+        val shareId = currentWhepRequest?.shareId
+        currentWhepRequest = null
+        whepPlaybackController.stop(shareId)
+    }
+
+    override fun onCleared() {
+        stopRemoteScreenPlayback()
+        super.onCleared()
+    }
+
+    private fun onWhepStatusChanged(status: WhepPlaybackStatus) {
+        val request = when (status) {
+            is WhepPlaybackStatus.Connecting -> status.request
+            is WhepPlaybackStatus.Buffering -> status.request
+            is WhepPlaybackStatus.Live -> status.request
+            is WhepPlaybackStatus.Failed -> status.request
+            is WhepPlaybackStatus.Idle,
+            is WhepPlaybackStatus.Stopped,
+            -> null
+        }
+        if (request != null && (request.callId != currentCallId || request.shareId != currentWhepRequest?.shareId)) {
+            return
+        }
+        val remoteState = when (status) {
+            WhepPlaybackStatus.Idle -> RemoteScreenShareUiState.None
+            is WhepPlaybackStatus.Connecting -> RemoteScreenShareUiState.Connecting
+            is WhepPlaybackStatus.Buffering -> RemoteScreenShareUiState.Buffering
+            is WhepPlaybackStatus.Live -> RemoteScreenShareUiState.Live
+            is WhepPlaybackStatus.Failed -> RemoteScreenShareUiState.Failed
+            is WhepPlaybackStatus.Stopped -> RemoteScreenShareUiState.Stopped
+        }
+        _state.update { current ->
+            current.copy(
+                screenShare = current.screenShare.copy(
+                    remoteState = remoteState,
+                    errorMessage = (status as? WhepPlaybackStatus.Failed)?.message
+                        ?: current.screenShare.errorMessage,
+                ),
+            )
+        }
     }
 
     private companion object {
         const val CALL_PREPARATION_FAILED_MESSAGE = "通话准备失败，请稍后重试"
         const val CALL_CONNECTION_FAILED_MESSAGE = "通话连接失败，请稍后重试"
         const val CALL_ACTION_FAILED_MESSAGE = "通话操作失败，请稍后重试"
+        val ACTIVE_SCREEN_SHARE_STATUSES = setOf(
+            ScreenShareStatus.Authorized,
+            ScreenShareStatus.Live,
+            ScreenShareStatus.Stopping,
+        )
     }
 }
+
+private fun WhepPlaybackRequest?.shouldReplaceWith(next: WhepPlaybackRequest): Boolean {
+    val current = this ?: return true
+    if (current.callId != next.callId || current.shareId != next.shareId || current.url != next.url) return true
+    val refreshThreshold = System.currentTimeMillis() + WHEP_TOKEN_REFRESH_WINDOW_MILLIS
+    return current.expiresAtEpochMillis <= refreshThreshold &&
+        next.expiresAtEpochMillis > current.expiresAtEpochMillis
+}
+
+private const val WHEP_TOKEN_REFRESH_WINDOW_MILLIS = 30_000L
 
 private fun AppError.toCallUserMessage(fallbackMessage: String): String = when (this) {
     is AppError.Network -> "网络连接失败，请检查网络后重试"

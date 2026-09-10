@@ -38,6 +38,7 @@ dependencies {
     implementation(projects.core.network)
     implementation(projects.core.media)
     implementation(projects.domain.call)
+    implementation(projects.domain.account)
     implementation(libs.androidx.lifecycle.viewmodel)
     implementation(libs.androidx.lifecycle.livedata.core)
     implementation(libs.hilt.android)

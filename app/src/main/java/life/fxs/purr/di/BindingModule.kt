@@ -6,6 +6,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 import life.fxs.purr.core.media.service.CallServiceController
+import life.fxs.purr.core.media.screenshare.ScreenSharePublisherController
 import life.fxs.purr.data.account.repository.ApiAccountSecurityRepository
 import life.fxs.purr.data.account.repository.ApiAuthRepository
 import life.fxs.purr.data.account.repository.ApiProfileRepository
@@ -25,6 +26,7 @@ import life.fxs.purr.data.call.repository.UnavailableTranscriptionRepository
 import life.fxs.purr.data.call.repository.ApiCallTelemetryRepository
 import life.fxs.purr.data.call.repository.CallDiagnosticsRepositoryImpl
 import life.fxs.purr.data.call.repository.RecordingRepositoryImpl
+import life.fxs.purr.data.call.repository.ScreenShareRepositoryImpl
 import life.fxs.purr.data.call.remote.ApiCallStatusRemoteDataSource
 import life.fxs.purr.data.call.remote.CallStatusRemoteDataSource
 import life.fxs.purr.data.call.preferences.SharedPreferencesCallOverlayStyleRepository
@@ -43,6 +45,8 @@ import life.fxs.purr.domain.call.repository.CallTelemetryRepository
 import life.fxs.purr.domain.call.repository.CallDiagnosticsRepository
 import life.fxs.purr.domain.call.repository.RecordingRepository
 import life.fxs.purr.domain.call.repository.CallOverlayStyleRepository
+import life.fxs.purr.domain.call.repository.ScreenShareRepository
+import life.fxs.purr.service.AndroidScreenSharePublisherController
 import life.fxs.purr.service.AndroidCallServiceController
 import life.fxs.purr.incomingcall.AppIncomingCallUiPendingIntentFactory
 import life.fxs.purr.incomingcall.IncomingCallUiLauncher
@@ -114,6 +118,16 @@ abstract class BindingModule {
     @Binds
     @Singleton
     abstract fun bindCallRepository(impl: CallRepositoryImpl): CallRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindScreenShareRepository(impl: ScreenShareRepositoryImpl): ScreenShareRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindScreenSharePublisherController(
+        impl: AndroidScreenSharePublisherController,
+    ): ScreenSharePublisherController
 
     @Binds
     @Singleton

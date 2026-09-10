@@ -1,5 +1,7 @@
 package life.fxs.purr.feature.call
 
+import android.content.Context
+import android.view.View
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -28,6 +30,14 @@ internal fun CallNavHost(
     onCallSurfaceVisibilityChanged: (Boolean) -> Unit,
     onMuteToggle: () -> Unit,
     onRouteSelect: (AudioRoute) -> Unit,
+    onOpenScreenSharePicker: () -> Unit,
+    onDismissScreenSharePicker: () -> Unit,
+    onStartMobileScreenShare: () -> Unit,
+    onStartObsScreenShare: () -> Unit,
+    onStopScreenShare: () -> Unit,
+    onDismissObsSetup: () -> Unit,
+    createRemoteScreenRenderer: (Context) -> View,
+    releaseRemoteScreenRenderer: (View) -> Unit,
     onEndCall: () -> Unit,
 ) {
     val navController = rememberNavController()
@@ -54,6 +64,14 @@ internal fun CallNavHost(
                 partnerAvatarModifier = partnerAvatarModifier,
                 onMuteToggle = onMuteToggle,
                 onRouteSelect = onRouteSelect,
+                onOpenScreenSharePicker = onOpenScreenSharePicker,
+                onDismissScreenSharePicker = onDismissScreenSharePicker,
+                onStartMobileScreenShare = onStartMobileScreenShare,
+                onStartObsScreenShare = onStartObsScreenShare,
+                onStopScreenShare = onStopScreenShare,
+                onDismissObsSetup = onDismissObsSetup,
+                createRemoteScreenRenderer = createRemoteScreenRenderer,
+                releaseRemoteScreenRenderer = releaseRemoteScreenRenderer,
                 onShowDiagnostics = {
                     navController.navigate(CALL_DIAGNOSTICS_ROUTE) {
                         launchSingleTop = true
