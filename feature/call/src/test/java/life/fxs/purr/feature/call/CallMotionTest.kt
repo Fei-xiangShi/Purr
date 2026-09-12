@@ -19,18 +19,18 @@ class CallMotionTest {
 
     @Test
     fun `chart visibility is bounded by timestamp window`() {
-        val cursor = 10_000.0
+        val cursor = 62_500.0
 
         assertThat(isChartSampleVisible(2_500L, cursor)).isTrue()
         assertThat(isChartSampleVisible(2_499L, cursor)).isFalse()
-        assertThat(isChartSampleVisible(10_001L, cursor)).isFalse()
+        assertThat(isChartSampleVisible(62_501L, cursor)).isFalse()
     }
 
     @Test
     fun `chart path breaks across missing samples`() {
         assertThat(shouldBreakChartPath(previousTimeMillis = 1_000L, currentTimeMillis = 1_050L))
             .isFalse()
-        assertThat(shouldBreakChartPath(previousTimeMillis = 1_000L, currentTimeMillis = 1_151L))
+        assertThat(shouldBreakChartPath(previousTimeMillis = 1_000L, currentTimeMillis = 4_001L))
             .isTrue()
         assertThat(shouldBreakChartPath(previousTimeMillis = 1_050L, currentTimeMillis = 1_000L))
             .isTrue()

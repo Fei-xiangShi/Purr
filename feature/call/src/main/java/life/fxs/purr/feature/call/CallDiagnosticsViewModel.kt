@@ -6,42 +6,44 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.runningFold
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import life.fxs.purr.domain.call.model.CallQualityMetrics
 import life.fxs.purr.domain.call.repository.CallDiagnosticsRepository
+import life.fxs.purr.core.media.screenshare.ScreenShareDiagnosticsStore
 
 @HiltViewModel
 class CallDiagnosticsViewModel @Inject constructor(
     repository: CallDiagnosticsRepository,
+    diagnostics: ScreenShareDiagnosticsStore = ScreenShareDiagnosticsStore(),
 ) : ViewModel() {
+    val publishing = diagnostics.publishing
+    val receiving = diagnostics.receiving
     val metrics = repository.observeMetrics().stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(stopTimeoutMillis = 5_000L),
         initialValue = CallQualityMetrics(),
     )
 
-    val networkHistory = metrics.runningFold(emptyList<NetworkGraphSample>()) { history, current ->
-        val transport = current.transport
-        val sampledAtMillis = transport.sampledAtMillis ?: return@runningFold history
-        if (history.lastOrNull()?.sampledAtMillis == sampledAtMillis) {
-            return@runningFold history
-        }
-        appendNetworkGraphSample(
-            history = history,
-            sample = NetworkGraphSample(
-                sampledAtMillis = sampledAtMillis,
-                roundTripTimeMs = transport.roundTripTimeMs,
-                jitterMs = transport.jitterMs,
-                packetLossPercent = listOfNotNull(
-                    transport.uplinkPacketLossPercent,
-                    transport.downlinkPacketLossPercent,
-                ).maxOrNull(),
-                uplinkBitrateKbps = transport.uplinkBitrateKbps,
-                downlinkBitrateKbps = transport.downlinkBitrateKbps,
-                estimatedUpstreamKbps = current.device.estimatedUpstreamKbps,
-                estimatedDownstreamKbps = current.device.estimatedDownstreamKbps,
-            ),
-        )
+    val networkHistory = metrics.map { it.transport }.distinctUntilChanged()
+        .runningFold(emptyList<NetworkGraphSample>()) { history, transport ->
+            val sampledAtMillis = transport.sampledAtMillis ?: return@runningFold emptyList()
+            if (history.lastOrNull()?.sampledAtMillis == sampledAtMillis) {
+                return@runningFold history
+            }
+            appendNetworkGraphSample(
+                history = history,
+                sample = NetworkGraphSample(
+                    sampledAtMillis = sampledAtMillis,
+                    roundTripTimeMs = transport.roundTripTimeMs,
+                    jitterMs = transport.jitterMs,
+                    uplinkPacketLossPercent = transport.uplinkPacketLossPercent,
+                    downlinkPacketLossPercent = transport.downlinkPacketLossPercent,
+                    uplinkBitrateKbps = transport.uplinkBitrateKbps,
+                    downlinkBitrateKbps = transport.downlinkBitrateKbps,
+                ),
+            )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(stopTimeoutMillis = 5_000L),
@@ -53,11 +55,10 @@ data class NetworkGraphSample(
     val sampledAtMillis: Long,
     val roundTripTimeMs: Double?,
     val jitterMs: Double?,
-    val packetLossPercent: Double?,
+    val uplinkPacketLossPercent: Double?,
+    val downlinkPacketLossPercent: Double?,
     val uplinkBitrateKbps: Double?,
     val downlinkBitrateKbps: Double?,
-    val estimatedUpstreamKbps: Double?,
-    val estimatedDownstreamKbps: Double?,
 )
 
 internal fun appendNetworkGraphSample(

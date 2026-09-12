@@ -17,6 +17,12 @@ import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import life.fxs.purr.R
 import life.fxs.purr.core.media.screenshare.ScreenCapturePermission
+import life.fxs.purr.core.media.screenshare.ScreenShareQuality
+import life.fxs.purr.core.media.screenshare.ScreenShareDiagnosticsStore
+import life.fxs.purr.core.media.screenshare.ScreenShareQualitySample
+import life.fxs.purr.core.media.screenshare.ScreenShareFailureReporter
+import life.fxs.purr.core.media.screenshare.ScreenShareFailureCode
+import life.fxs.purr.core.media.screenshare.ScreenShareFailureException
 import life.fxs.purr.core.media.screenshare.ScreenSharePublishRequest
 import life.fxs.purr.core.media.screenshare.ScreenSharePublisherStateStore
 import life.fxs.purr.core.media.screenshare.ScreenSharePublisherStatus
@@ -27,6 +33,9 @@ import life.fxs.purr.core.screenpublisher.RootEncoderWhipScreenPublisher
 class ScreenShareForegroundService : Service() {
     @Inject
     lateinit var stateStore: ScreenSharePublisherStateStore
+    @Inject lateinit var diagnostics: ScreenShareDiagnosticsStore
+    @Inject lateinit var failures: ScreenShareFailureReporter
+    private var diagnosticsEpoch = 0L
 
     private var publisher: RootEncoderWhipScreenPublisher? = null
     private var activeRequest: ScreenSharePublishRequest? = null
@@ -62,11 +71,11 @@ class ScreenShareForegroundService : Service() {
         val permissionData = intent.permissionData()
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
         if (request == null || permissionData == null || resultCode != Activity.RESULT_OK) {
-            fail(request, "屏幕录制授权已失效")
+            fail(request, "屏幕录制授权已失效", ScreenShareFailureCode.PermissionEnded)
             return
         }
         if (System.currentTimeMillis() >= request.expiresAtEpochMillis) {
-            fail(request, "投屏凭证已过期，请重新发起")
+            fail(request, "投屏凭证已过期，请重新发起", ScreenShareFailureCode.CredentialsExpired)
             return
         }
 
@@ -75,7 +84,7 @@ class ScreenShareForegroundService : Service() {
         try {
             startProjectionForeground(request)
         } catch (error: RuntimeException) {
-            fail(request, "无法启动屏幕录制前台服务")
+            fail(request, "无法启动屏幕录制前台服务", ScreenShareFailureCode.ServiceStart)
             return
         }
 
@@ -84,10 +93,10 @@ class ScreenShareForegroundService : Service() {
             manager.getMediaProjection(resultCode, permissionData)
                 ?: error("MediaProjection unavailable")
         } catch (error: SecurityException) {
-            fail(request, "屏幕录制授权已失效或已被使用")
+            fail(request, "屏幕录制授权已失效或已被使用", ScreenShareFailureCode.PermissionEnded)
             return
         } catch (error: RuntimeException) {
-            fail(request, "无法获取屏幕录制权限")
+            fail(request, "无法获取屏幕录制权限", ScreenShareFailureCode.ServiceStart)
             return
         }
 
@@ -97,12 +106,32 @@ class ScreenShareForegroundService : Service() {
         explicitStop = false
         terminalFailure = false
         stateStore.connecting(request)
+        val epoch = diagnostics.beginPublishing(request.callId, request.shareId)
+        diagnosticsEpoch = epoch
         try {
             publisher = RootEncoderWhipScreenPublisher(
                 applicationContext,
                 projection,
                 request,
                 object : RootEncoderWhipScreenPublisher.Listener {
+                    override fun onCleanupFailed(request: ScreenSharePublishRequest) {
+                        failures.report(request.callId, request.shareId, ScreenShareFailureCode.Cleanup)
+                    }
+                    override fun onQuality(request: ScreenSharePublishRequest, width: Int, height: Int,
+                        fps: Double, bitrate: Long, targetBitrate: Int, queued: Int, capacity: Int,
+                        videoDrops: Long, audioDrops: Long,
+                    ) {
+                        diagnostics.publish(epoch, ScreenShareQualitySample(
+                            sampledAtMillis = android.os.SystemClock.elapsedRealtime(),
+                            width = width, height = height,
+                            framesPerSecond = fps.takeIf(Double::isFinite),
+                            bitrateKbps = bitrate.takeIf { it >= 0 }?.div(1_000.0),
+                            targetBitrateKbps = targetBitrate / 1_000.0,
+                            queuedFrames = queued, queueCapacity = capacity,
+                            droppedVideoFrames = videoDrops, droppedAudioFrames = audioDrops,
+                            codec = "H.265 / HEVC Main（硬件）",
+                        ))
+                    }
                     override fun onLive(request: ScreenSharePublishRequest) {
                         mainExecutor.execute {
                             if (activeRequest == request && !terminalFailure && !explicitStop) stateStore.live(request)
@@ -117,10 +146,11 @@ class ScreenShareForegroundService : Service() {
                         }
                     }
 
-                    override fun onFailed(request: ScreenSharePublishRequest, message: String) {
+                    override fun onFailed(request: ScreenSharePublishRequest, message: String, code: ScreenShareFailureCode) {
                         mainExecutor.execute {
                             if (activeRequest != request) return@execute
                             terminalFailure = true
+                            failures.report(request.callId, request.shareId, code)
                             stateStore.failed(request.callId, request.shareId, message)
                             stopSelf()
                         }
@@ -129,7 +159,8 @@ class ScreenShareForegroundService : Service() {
             )
             publisher?.start()
         } catch (error: Throwable) {
-            fail(request, error.message ?: "设备无法启动屏幕和系统音频编码")
+            fail(request, error.message ?: "设备无法启动屏幕和系统音频编码",
+                (error as? ScreenShareFailureException)?.code ?: ScreenShareFailureCode.EncoderStart)
         }
     }
 
@@ -188,7 +219,8 @@ class ScreenShareForegroundService : Service() {
         stopSelf()
     }
 
-    private fun fail(request: ScreenSharePublishRequest?, message: String) {
+    private fun fail(request: ScreenSharePublishRequest?, message: String, code: ScreenShareFailureCode) {
+        if (!terminalFailure) failures.report(request?.callId, request?.shareId, code)
         terminalFailure = true
         stateStore.failed(request?.callId, request?.shareId, message)
         stopPublisherSafely()
@@ -201,6 +233,7 @@ class ScreenShareForegroundService : Service() {
         val request = activeRequest
         if (publisher != null && !explicitStop && !terminalFailure) {
             terminalFailure = true
+            failures.report(request?.callId, request?.shareId, ScreenShareFailureCode.ServiceStart)
             stateStore.failed(request?.callId, request?.shareId, "投屏服务被系统终止")
         }
         stopPublisherSafely()
@@ -209,13 +242,16 @@ class ScreenShareForegroundService : Service() {
     }
 
     private fun stopPublisherSafely() {
+        diagnostics.stopPublishing(diagnosticsEpoch)
         val current = publisher
         publisher = null
         try {
             current?.stop()
         } catch (_: RuntimeException) {
+            failures.report(activeRequest?.callId, activeRequest?.shareId, ScreenShareFailureCode.Cleanup)
             // A screen-publisher failure must never terminate the LiveKit call process.
         } catch (_: LinkageError) {
+            failures.report(activeRequest?.callId, activeRequest?.shareId, ScreenShareFailureCode.Cleanup)
             // Third-party binary mismatches are contained to screen sharing.
         }
     }
@@ -227,6 +263,7 @@ class ScreenShareForegroundService : Service() {
         private const val EXTRA_SHARE_ID = "share_id"
         private const val EXTRA_WHIP_URL = "whip_url"
         private const val EXTRA_BEARER_TOKEN = "bearer_token"
+        private const val EXTRA_QUALITY = "video_quality"
         private const val EXTRA_EXPIRES_AT = "expires_at"
         private const val EXTRA_RESULT_CODE = "projection_result_code"
         private const val EXTRA_PERMISSION_DATA = "projection_permission_data"
@@ -245,6 +282,7 @@ class ScreenShareForegroundService : Service() {
             .putExtra(EXTRA_WHIP_URL, request.whipUrl)
             .putExtra(EXTRA_BEARER_TOKEN, request.bearerToken)
             .putExtra(EXTRA_EXPIRES_AT, request.expiresAtEpochMillis)
+            .putExtra(EXTRA_QUALITY, request.quality.name)
             .putExtra(EXTRA_RESULT_CODE, permission.resultCode)
             .putExtra(EXTRA_PERMISSION_DATA, permission.data)
 
@@ -261,7 +299,10 @@ class ScreenShareForegroundService : Service() {
         val url = getStringExtra(EXTRA_WHIP_URL)?.takeIf(String::isNotBlank) ?: return null
         val token = getStringExtra(EXTRA_BEARER_TOKEN)?.takeIf(String::isNotBlank) ?: return null
         val expiresAt = getLongExtra(EXTRA_EXPIRES_AT, 0L).takeIf { it > 0L } ?: return null
-        return ScreenSharePublishRequest(callId, shareId, url, token, expiresAt)
+        val qualityName = getStringExtra(EXTRA_QUALITY)
+        val quality = ScreenShareQuality.entries.firstOrNull { it.name == qualityName }
+            ?: ScreenShareQuality.FULL_HD60
+        return ScreenSharePublishRequest(callId, shareId, url, token, expiresAt, quality)
     }
 
     @Suppress("DEPRECATION")

@@ -4,7 +4,7 @@ package life.fxs.purr.data.call.audio
 internal const val AUDIO_LEVEL_SAMPLE_INTERVAL_MILLIS = 16L
 
 /** RTC stats are slower than display frames because each read crosses the WebRTC stats API. */
-internal const val WEBRTC_STATS_SAMPLE_INTERVAL_MILLIS = 50L
+internal const val WEBRTC_STATS_SAMPLE_INTERVAL_MILLIS = 1_000L
 
 /**
  * Returns the next monotonic deadline without replaying missed ticks.

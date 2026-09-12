@@ -1,5 +1,6 @@
 package life.fxs.purr.navigation
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
@@ -11,6 +12,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -30,21 +34,7 @@ import life.fxs.purr.feature.incomingcall.IncomingCallPromptRoute
 import life.fxs.purr.feature.settings.SettingsScreenRoute
 import life.fxs.purr.core.model.CallDirection
 import life.fxs.purr.domain.call.model.CallPreparationRequest
-import life.fxs.purr.feature.home.HomeCallTarget
 
-private const val AUTH_ROUTE = "auth"
-private const val HOME_ROUTE = "home"
-private const val SETTINGS_ROUTE = "settings"
-private const val INCOMING_CALL_ROUTE = "incoming-call"
-private const val NEW_CALL_ROUTE = "new-call"
-private const val EXISTING_CALL_ROUTE = "existing-call"
-private const val CALL_HISTORY_ROUTE = "call-history"
-private const val PAIR_ID_ARG = "pairId"
-private const val DIRECTION_ARG = "direction"
-private const val CALL_ID_ARG = "callId"
-private const val NEW_CALL_DESTINATION = "$NEW_CALL_ROUTE/{$PAIR_ID_ARG}"
-private const val EXISTING_CALL_DESTINATION =
-    "$EXISTING_CALL_ROUTE/{$PAIR_ID_ARG}/{$CALL_ID_ARG}?$DIRECTION_ARG={$DIRECTION_ARG}"
 private const val PARTNER_AVATAR_SHARED_KEY = "partner-avatar"
 
 @OptIn(ExperimentalSharedTransitionApi::class)
@@ -68,7 +58,9 @@ internal fun PurrNavHost(
         return
     }
 
-    val startDestination = if (gateState.isAuthenticated) HOME_ROUTE else AUTH_ROUTE
+    // Graph identity must remain stable when authentication changes.
+    val startDestination = rememberSaveable { if (gateState.isAuthenticated) HOME_ROUTE else AUTH_ROUTE }
+    var presentedIncomingCallId by rememberSaveable { mutableStateOf<String?>(null) }
     SharedTransitionLayout {
         val transitionScope = this
         NavHost(
@@ -77,30 +69,36 @@ internal fun PurrNavHost(
         ) {
             composable(AUTH_ROUTE) {
                 AuthScreenRoute(
-                    onLoginSuccess = {
-                        navController.navigate(HOME_ROUTE) {
-                            popUpTo(AUTH_ROUTE) { inclusive = true }
-                        }
-                    },
+                    onLoginSuccess = {}, // The authenticated session owns the root transition.
                 )
             }
-            composable(HOME_ROUTE) {
+            composable(HOME_ROUTE) { entry ->
                 HomeScreenRoute(
                     onOpenCall = { target ->
-                        navController.navigate(target.route()) {
-                            launchSingleTop = true
+                        if (navController.currentBackStackEntry == entry) navController.openCall(target.route())
+                    },
+                    onOpenCallHistory = {
+                        if (navController.currentBackStackEntry == entry) {
+                            navController.navigate(CALL_HISTORY_ROUTE) { launchSingleTop = true }
                         }
                     },
-                    onOpenCallHistory = { navController.navigate(CALL_HISTORY_ROUTE) },
-                    onOpenSettings = { navController.navigate(SETTINGS_ROUTE) },
+                    onOpenSettings = {
+                        if (navController.currentBackStackEntry == entry) {
+                            navController.navigate(SETTINGS_ROUTE) { launchSingleTop = true }
+                        }
+                    },
                     partnerAvatarModifier = Modifier.partnerAvatarElement(transitionScope, this),
                 )
             }
-            composable(INCOMING_CALL_ROUTE) {
+            composable(INCOMING_CALL_ROUTE) { entry ->
+                BackHandler {
+                    presentedIncomingCallId = gateState.incomingCall?.callId
+                    navController.returnHomeFrom(entry)
+                }
                 val incomingCall = gateState.incomingCall
                 if (incomingCall == null) {
                     LaunchedEffect(Unit) {
-                        navController.navigate(HOME_ROUTE) { launchSingleTop = true }
+                        navController.returnHomeFrom(entry)
                     }
                 } else {
                     IncomingCallPromptRoute(
@@ -109,15 +107,12 @@ internal fun PurrNavHost(
                         callId = incomingCall.callId,
                         avatarModifier = Modifier.partnerAvatarElement(transitionScope, this),
                         onOpenCall = { pairId, callId ->
-                            navController.navigate(existingCallRoute(pairId, CallDirection.Incoming, callId)) {
-                                popUpTo(INCOMING_CALL_ROUTE) { inclusive = true }
-                                launchSingleTop = true
+                            if (navController.currentBackStackEntry == entry) {
+                                navController.openCall(existingCallRoute(pairId, CallDirection.Incoming, callId))
                             }
                         },
                         onDismiss = {
-                            if (!navController.popBackStack()) {
-                                navController.navigate(HOME_ROUTE) { launchSingleTop = true }
-                            }
+                            navController.returnHomeFrom(entry)
                         },
                     )
                 }
@@ -128,7 +123,7 @@ internal fun PurrNavHost(
             ) { backStackEntry ->
                 val pairId = backStackEntry.arguments?.getString(PAIR_ID_ARG).orEmpty()
                 if (pairId.isBlank()) {
-                    LaunchedEffect(Unit) { navController.navigate(HOME_ROUTE) { launchSingleTop = true } }
+                    LaunchedEffect(Unit) { navController.returnHomeFrom(backStackEntry) }
                 } else {
                     CallScreenRoute(
                         request = CallPreparationRequest.NewOutgoing(pairId = pairId, recordingConsent = true),
@@ -137,9 +132,7 @@ internal fun PurrNavHost(
                         partnerAvatarModifier = Modifier.partnerAvatarElement(transitionScope, this),
                         onCallSurfaceVisibilityChanged = onCallSurfaceVisibilityChanged,
                         onCallEnded = {
-                            if (!navController.popBackStack()) {
-                                navController.navigate(HOME_ROUTE) { launchSingleTop = true }
-                            }
+                            navController.returnHomeFrom(backStackEntry)
                         },
                     )
                 }
@@ -156,7 +149,7 @@ internal fun PurrNavHost(
                 val direction = backStackEntry.arguments?.getString(DIRECTION_ARG)
                     ?.let { runCatching { CallDirection.valueOf(it) }.getOrNull() }
                 if (pairId.isBlank() || callId.isBlank() || direction == null) {
-                    LaunchedEffect(Unit) { navController.navigate(HOME_ROUTE) { launchSingleTop = true } }
+                    LaunchedEffect(Unit) { navController.returnHomeFrom(backStackEntry) }
                 } else {
                     CallScreenRoute(
                         request = CallPreparationRequest.Existing(
@@ -170,7 +163,7 @@ internal fun PurrNavHost(
                         partnerAvatarModifier = Modifier.partnerAvatarElement(transitionScope, this),
                         onCallSurfaceVisibilityChanged = onCallSurfaceVisibilityChanged,
                         onCallEnded = {
-                            if (!navController.popBackStack()) navController.navigate(HOME_ROUTE) { launchSingleTop = true }
+                            navController.returnHomeFrom(backStackEntry)
                         },
                     )
                 }
@@ -180,53 +173,52 @@ internal fun PurrNavHost(
             }
             composable(SETTINGS_ROUTE) {
                 SettingsScreenRoute(
-                    onLoggedOut = {
-                        navController.navigate(AUTH_ROUTE) {
-                            popUpTo(HOME_ROUTE) { inclusive = true }
-                        }
-                    },
+                    onLoggedOut = {}, // Root cleanup follows session state, including token expiry.
                 )
             }
         }
     }
 
+    LaunchedEffect(gateState.isAuthenticated) {
+        if (!gateState.isAuthenticated) {
+            presentedIncomingCallId = null
+            navController.resetRoot(AUTH_ROUTE)
+        } else if (navController.currentDestination?.route == AUTH_ROUTE) {
+            navController.resetRoot(HOME_ROUTE)
+        }
+    }
+
     val incomingCall = gateState.incomingCall
     val currentRoute = currentEntry?.destination?.route
-    LaunchedEffect(incomingCall?.callId, currentRoute, gateState.isAuthenticated) {
+    LaunchedEffect(incomingCall?.callId, currentRoute, gateState.isAuthenticated, initialCallRequest) {
         val isCallSurface = currentRoute == INCOMING_CALL_ROUTE ||
             currentRoute?.startsWith("$NEW_CALL_ROUTE/") == true ||
             currentRoute?.startsWith("$EXISTING_CALL_ROUTE/") == true
         if (
             gateState.isAuthenticated &&
             incomingCall != null &&
+            incomingCall.callId != presentedIncomingCallId &&
+            initialCallRequest == null &&
+            currentRoute != null && currentRoute != AUTH_ROUTE &&
             !isCallSurface
         ) {
+            presentedIncomingCallId = incomingCall.callId
+            navController.returnHome()
             navController.navigate(INCOMING_CALL_ROUTE) { launchSingleTop = true }
         }
     }
 
     LaunchedEffect(gateState.isReady, gateState.isAuthenticated, initialCallRequest) {
         if (gateState.isReady && gateState.isAuthenticated && initialCallRequest != null) {
-            navController.navigate(existingCallRoute(
+            presentedIncomingCallId = initialCallRequest.callId
+            navController.openCall(existingCallRoute(
                 initialCallRequest.pairId,
                 initialCallRequest.direction,
                 initialCallRequest.callId,
-            )) {
-                launchSingleTop = true
-            }
+            ))
             currentOnCallRequestConsumed(initialCallRequest.requestId)
         }
     }
-}
-
-private fun newCallRoute(pairId: String) = "$NEW_CALL_ROUTE/${android.net.Uri.encode(pairId)}"
-
-private fun existingCallRoute(pairId: String, direction: CallDirection, callId: String) =
-    "$EXISTING_CALL_ROUTE/${android.net.Uri.encode(pairId)}/${android.net.Uri.encode(callId)}?$DIRECTION_ARG=${direction.name}"
-
-private fun HomeCallTarget.route(): String = when (this) {
-    is HomeCallTarget.NewOutgoing -> newCallRoute(pairId)
-    is HomeCallTarget.Existing -> existingCallRoute(pairId, direction, callId)
 }
 
 @OptIn(ExperimentalSharedTransitionApi::class)

@@ -13,6 +13,7 @@ data class ScreenSharePublishRequest(
     val whipUrl: String,
     val bearerToken: String,
     val expiresAtEpochMillis: Long,
+    val quality: ScreenShareQuality = ScreenShareQuality.FULL_HD60,
 )
 
 data class ScreenCapturePermission(

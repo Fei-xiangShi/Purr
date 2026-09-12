@@ -1,9 +1,10 @@
 package life.fxs.purr.feature.call
 
 import android.content.Intent
+import life.fxs.purr.core.media.screenshare.ScreenSharePublishRequest
+import life.fxs.purr.core.media.screenshare.ScreenShareQuality
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.core.model.CallDirection
-import life.fxs.purr.core.media.screenshare.ScreenSharePublishRequest
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.LocalAudioState
 import life.fxs.purr.domain.call.model.LocalScreenShareState
@@ -46,12 +47,14 @@ sealed interface CallIntent {
     data class RouteSelect(val route: AudioRoute) : CallIntent
     data object OpenScreenSharePicker : CallIntent
     data object DismissScreenSharePicker : CallIntent
+    data class SelectPublishQuality(val quality: ScreenShareQuality) : CallIntent
     data object StartMobileScreenShare : CallIntent
     data object StartObsScreenShare : CallIntent
     data class ScreenCapturePermissionResult(
         val resultCode: Int,
         val data: Intent?,
     ) : CallIntent
+    data object RetryRemoteScreenShare : CallIntent
     data object StopScreenShare : CallIntent
     data object DismissObsSetup : CallIntent
     data object EndCall : CallIntent
@@ -78,6 +81,7 @@ data class CallScreenShareState(
     val obsPublishing: ScreenSharePublishing? = null,
     val isCreating: Boolean = false,
     val remoteAspectRatio: Float = 16f / 9f,
+    val publishQuality: ScreenShareQuality = ScreenShareQuality.FULL_HD60,
 )
 
 data class CallState(

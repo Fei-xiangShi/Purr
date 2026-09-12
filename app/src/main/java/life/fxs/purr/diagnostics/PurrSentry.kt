@@ -16,15 +16,17 @@ import life.fxs.purr.core.media.telemetry.CallInterruptionTelemetryOperation
 import life.fxs.purr.core.media.telemetry.CallInterruptionTransitionContext
 import life.fxs.purr.core.media.telemetry.CallInterruptionTransitionPhase
 import life.fxs.purr.core.media.telemetry.NoOpCallInterruptionTelemetryOperation
+import life.fxs.purr.core.media.screenshare.ScreenShareFailureReporter
+import life.fxs.purr.core.media.screenshare.ScreenShareFailureCode
 
 /** Optional crash and call-chain reporting, enabled only when a DSN is supplied. */
-object PurrSentry : CallInterruptionTelemetry {
+object PurrSentry : CallInterruptionTelemetry, ScreenShareFailureReporter {
     private const val LOG_TAG = "PurrSentry"
     private const val REDACTED = "<redacted>"
     private val callIdPattern = Regex("(?i)\\b(callId|call_id)\\s*[:=]\\s*\\\"?([^\\\"\\s,}]+)")
     private val callRefPattern = Regex("\\bcall_ref=([^\\s]+)")
     private val secretPattern = Regex(
-        "(?i)\\b(accessToken|refreshToken|token|authorization|apiKey|apiSecret|secret|password)" +
+        "(?i)\\b(accessToken|refreshToken|bearerToken|token|authorization|apiKey|apiSecret|secret|password|passphrase|streamid)" +
             "\\s*[:=]\\s*\\\"?([^\\\"\\s,}]+)",
     )
     private val bearerPattern = Regex("(?i)\\bBearer\\s+[A-Za-z0-9._~+/-]+=*")
@@ -39,12 +41,14 @@ object PurrSentry : CallInterruptionTelemetry {
         "(?i)(life\\.fxs\\.purr\\.call\\.interruption)\\s*[:=]\\s*.+",
     )
     private val sensitiveKeyPattern = Regex(
-        "(?i)(authorization|token|secret|password|sdp|ice|phone|mobile|contact|call_id|callId|" +
+        "(?i)(authorization|token|secret|password|passphrase|streamid|sdp|ice|phone|mobile|contact|call_id|callId|" +
             "life\\.fxs\\.purr\\.call\\.interruption)",
     )
 
     @Volatile
     private var enabled = false
+    private val mediaFailures = linkedMapOf<String, Long>()
+    private val transportUrlPattern = Regex("(?i)\\b(?:https?|wss?|srt)://[^\\s\\\"<>]+")
 
     fun initialize(application: Application) {
         val dsn = BuildConfig.PURR_SENTRY_DSN.trim()
@@ -76,6 +80,7 @@ object PurrSentry : CallInterruptionTelemetry {
 
     fun breadcrumb(tag: String, message: String) {
         if (!enabled) return
+        if (tag == "CallTelemetry" && "event=sample" in message) return
         runCatching {
             Sentry.addBreadcrumb(
                 Breadcrumb().apply {
@@ -88,11 +93,15 @@ object PurrSentry : CallInterruptionTelemetry {
     }
 
     fun error(tag: String, throwable: Throwable?, message: String) {
-        if (!enabled) return
+        if (!enabled || !shouldReportHandledError(tag, throwable, message)) return
         val sanitized = sanitizeForSentry(message)
         runCatching {
             Sentry.withScope { scope ->
                 scope.setTag("log_tag", sanitizeForSentry(tag))
+                val phase = Regex("\\bphase=([^\\s]+)").find(message)?.groupValues?.get(1)
+                if (tag.startsWith("Call")) {
+                    scope.fingerprint = listOf("purr-call", tag, phase ?: "unknown", throwable?.javaClass?.simpleName ?: "failure")
+                }
                 callRefPattern.find(sanitized)?.groupValues?.getOrNull(1)?.let { callRef ->
                     scope.setTag("call_ref", callRef)
                 }
@@ -102,6 +111,27 @@ object PurrSentry : CallInterruptionTelemetry {
                 } else {
                     Sentry.captureMessage(sanitized, SentryLevel.ERROR)
                 }
+            }
+        }
+    }
+
+    override fun report(callId: String?, shareId: String?, code: ScreenShareFailureCode) {
+        if (!enabled || !code.reportable) return
+        val key = "${shareId ?: callId}:$code"
+        val now = android.os.SystemClock.elapsedRealtime()
+        synchronized(mediaFailures) {
+            if (mediaFailures[key]?.let { now - it < 30_000L } == true) return
+            mediaFailures[key] = now
+            while (mediaFailures.size > 128) mediaFailures.remove(mediaFailures.keys.first())
+        }
+        runCatching {
+            Sentry.withScope { scope ->
+                scope.setTag("media", "screen-share")
+                scope.setTag("failure_code", code.name)
+                callId?.let { scope.setTag("call_ref", callReference(it)) }
+                shareId?.let { scope.setTag("share_ref", callReference(it)) }
+                scope.fingerprint = listOf("purr-screen-share", code.name)
+                Sentry.captureMessage("Screen share failed: ${code.name}", SentryLevel.ERROR)
             }
         }
     }
@@ -165,7 +195,7 @@ object PurrSentry : CallInterruptionTelemetry {
     }
 
     internal fun sanitizeForSentry(value: String): String {
-        var sanitized = callIdPattern.replace(value) { match ->
+        var sanitized = callIdPattern.replace(transportUrlPattern.replace(value, REDACTED)) { match ->
             "call_ref=${callReference(match.groupValues[2])}"
         }
         sanitized = secretPattern.replace(sanitized) { match ->
@@ -260,18 +290,12 @@ object PurrSentry : CallInterruptionTelemetry {
             reasonCode: String?,
         ) {
             runCatching {
-                val operation = if (phase == CallInterruptionTransitionPhase.Suspend) {
-                    "media.cutoff"
-                } else {
-                    "media.resume_attempt"
-                }
-                transaction.startChild(operation).apply {
-                    setData("attempt", attempt)
-                    setData("retries_remaining", retriesRemaining)
-                    setTag("result", result)
-                    reasonCode?.let { setData("reason_code", sanitizeForSentry(it)) }
-                    finish(if (result == "applied") SpanStatus.OK else SpanStatus.UNAVAILABLE)
-                }
+                // Called after an attempt completes, so a span started here would
+                // invent a zero-duration timing measurement. Keep actual outcome data.
+                transaction.setData("last_attempt", attempt)
+                transaction.setData("retries_remaining", retriesRemaining)
+                transaction.setData("last_attempt_result", result)
+                reasonCode?.let { transaction.setData("last_attempt_reason", sanitizeForSentry(it)) }
             }
         }
 
@@ -286,7 +310,7 @@ object PurrSentry : CallInterruptionTelemetry {
                 transaction.setTag("result", result)
                 reasonCode?.let { transaction.setData("reason_code", sanitizeForSentry(it)) }
                 transaction.finish(
-                    if (result == "applied" || result == "degraded") SpanStatus.OK else SpanStatus.INTERNAL_ERROR,
+                    interruptionSpanStatus(result),
                 )
                 if (finalFailure) {
                     error(

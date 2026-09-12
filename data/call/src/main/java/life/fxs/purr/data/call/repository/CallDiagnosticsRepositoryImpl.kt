@@ -78,7 +78,8 @@ class CallDiagnosticsRepositoryImpl @Inject constructor(
     }
 
     private companion object {
-        // High-frequency collection only runs while the diagnostics screen is subscribed.
+        // RTP/RTCP counters do not justify 20 native stats queries per second.
+        // Audio meters retain their independent fast level stream.
         const val WEBRTC_STATS_INTERVAL_MILLIS = WEBRTC_STATS_SAMPLE_INTERVAL_MILLIS
         const val LOCAL_SPEAKING_LEVEL = 0.035f
         const val REMOTE_SPEAKING_LEVEL = 0.035f

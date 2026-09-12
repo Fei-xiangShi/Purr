@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.common.ApplicationScope
@@ -23,6 +25,7 @@ import life.fxs.purr.core.network.realtime.ScreenShareRealtimeInvalidation
 import life.fxs.purr.core.network.realtime.ScreenShareRealtimeInvalidations
 import life.fxs.purr.data.account.network.SessionTokenHolder
 import life.fxs.purr.domain.account.model.IncomingCall
+import life.fxs.purr.domain.account.model.ActiveCall
 import life.fxs.purr.domain.account.model.RealtimeState
 import life.fxs.purr.domain.account.repository.RealtimeRepository
 import okhttp3.OkHttpClient
@@ -59,6 +62,8 @@ class ApiRealtimeRepository @Inject constructor(
     private var callStateRevision = 0L
     private var refreshSequence = 0L
     private val consumedIncomingCalls = ConsumedIncomingCallRegistry()
+    private val endedCalls = ConsumedIncomingCallRegistry()
+    private val activeCallRefreshMutex = Mutex()
 
     override fun observeState(): Flow<RealtimeState> = state.asStateFlow()
 
@@ -82,10 +87,11 @@ class ApiRealtimeRepository @Inject constructor(
         socket = null
         reconnectAttempt = 0
         consumedIncomingCalls.clear()
+        endedCalls.clear()
         state.value = RealtimeState()
     }
 
-    override suspend fun refreshActiveCall(): AppResult<Unit> = appResult {
+    override suspend fun refreshActiveCall(): AppResult<Unit> = activeCallRefreshMutex.withLock { appResult {
         val requestIdentity = synchronized(this@ApiRealtimeRepository) {
             if (shouldRun) Triple(lifecycleGeneration, callStateRevision, ++refreshSequence) else null
         } ?: return@appResult
@@ -95,9 +101,13 @@ class ApiRealtimeRepository @Inject constructor(
                 return@synchronized
             }
             val candidate = activeCall.toIncomingCallOrNull(consumedIncomingCalls::contains)
-            state.update { current -> current.copy(incomingCallCandidate = candidate) }
+            state.update { current -> current.copy(
+                incomingCallCandidate = candidate,
+                activeCall = activeCall?.takeUnless { endedCalls.contains(it.callId) }
+                    ?.let { ActiveCall(it.callId, it.pairId, it.isIncoming) },
+            ) }
         }
-    }
+    } }
 
     override suspend fun declineIncomingCall(callId: String): AppResult<Unit> = appResult {
         api.endCall(callId)
@@ -164,6 +174,7 @@ class ApiRealtimeRepository @Inject constructor(
         }
         if (event.type == CALL_ENDED_EVENT) {
             event.callId?.let(consumedIncomingCalls::markConsumed)
+            event.callId?.let(endedCalls::markConsumed)
         }
         if (event.type == SCREEN_SHARE_CHANGED_EVENT) {
             event.callId?.let { callId ->
@@ -183,6 +194,7 @@ class ApiRealtimeRepository @Inject constructor(
                 event = event,
                 currentUserId = sessionTokenHolder.userId(),
                 isConsumed = consumedIncomingCalls::contains,
+                isEnded = endedCalls::contains,
             )
         }
     }
@@ -246,23 +258,33 @@ internal fun RealtimeState.applyRealtimeEvent(
     event: RealtimeEventDto,
     currentUserId: String?,
     isConsumed: (String) -> Boolean = { false },
+    isEnded: (String) -> Boolean = { false },
 ): RealtimeState = when (event.type) {
     SNAPSHOT_EVENT -> copy(
+        activeCall = event.toActiveCallOrNull(currentUserId)?.takeUnless { isEnded(it.callId) },
         partnerOnline = event.partnerOnline,
         incomingCallCandidate = event.toIncomingCallOrNull(currentUserId)
             ?.takeUnless { isConsumed(it.callId) },
     )
     PRESENCE_EVENT -> copy(partnerOnline = event.partnerOnline)
     CALL_STARTED_EVENT -> copy(
+        activeCall = event.toActiveCallOrNull(currentUserId)?.takeUnless { isEnded(it.callId) },
         incomingCallCandidate = event.toIncomingCallOrNull(currentUserId)
             ?.takeUnless { isConsumed(it.callId) },
     )
-    CALL_ENDED_EVENT -> if (incomingCallCandidate?.callId == event.callId) {
-        copy(incomingCallCandidate = null)
-    } else {
-        this
-    }
+    CALL_ENDED_EVENT -> copy(
+        incomingCallCandidate = incomingCallCandidate?.takeUnless { it.callId == event.callId },
+        activeCall = activeCall?.takeUnless { it.callId == event.callId },
+    )
     else -> this
+}
+
+private fun RealtimeEventDto.toActiveCallOrNull(currentUserId: String?): ActiveCall? {
+    return ActiveCall(
+        callId = callId ?: return null,
+        pairId = pairId ?: return null,
+        isIncoming = (callerUserId ?: return null) != (currentUserId ?: return null),
+    )
 }
 
 internal fun RealtimeEventDto.toIncomingCallOrNull(currentUserId: String?): IncomingCall? {

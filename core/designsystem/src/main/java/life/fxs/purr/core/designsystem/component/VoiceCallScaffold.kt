@@ -63,6 +63,7 @@ fun VoiceCallScaffold(
     remoteAudioLevel: Float = 0f,
     modifier: Modifier = Modifier,
     centerContent: (@Composable ColumnScope.() -> Unit)? = null,
+    chromeVisible: Boolean = true,
     bottomContent: @Composable ColumnScope.() -> Unit,
 ) {
     Box(modifier = modifier.fillMaxSize()) {
@@ -74,7 +75,7 @@ fun VoiceCallScaffold(
                 .padding(horizontal = 24.dp, vertical = 22.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(
+            if (chromeVisible) Text(
                 text = status,
                 style = MaterialTheme.typography.titleMedium,
                 color = Color.White.copy(alpha = 0.78f),
@@ -104,7 +105,7 @@ fun VoiceCallScaffold(
                     textAlign = TextAlign.Center,
                     maxLines = 1,
                 )
-                if (detail.isNotBlank()) {
+                if (chromeVisible && detail.isNotBlank()) {
                     Spacer(Modifier.height(8.dp))
                     Text(
                         text = detail,
@@ -115,7 +116,7 @@ fun VoiceCallScaffold(
                 }
                 Spacer(Modifier.weight(1f))
             }
-            Column(
+            if (chromeVisible) Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(14.dp),

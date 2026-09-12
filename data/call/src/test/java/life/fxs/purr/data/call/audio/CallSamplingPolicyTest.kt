@@ -12,19 +12,19 @@ class CallSamplingPolicyTest {
                 nowMillis = 1_005L,
                 intervalMillis = WEBRTC_STATS_SAMPLE_INTERVAL_MILLIS,
             ),
-        ).isEqualTo(1_050L)
+        ).isEqualTo(2_000L)
     }
 
     @Test
-    fun `rtc stats keep their fifty millisecond deadline independently of audio ticks`() {
-        assertThat(WEBRTC_STATS_SAMPLE_INTERVAL_MILLIS).isEqualTo(50L)
+    fun `rtc stats use one second intervals independently of audio ticks`() {
+        assertThat(WEBRTC_STATS_SAMPLE_INTERVAL_MILLIS).isEqualTo(1_000L)
         assertThat(
             nextSampleAtMillis(
                 scheduledAtMillis = 1_000L,
                 nowMillis = 1_048L,
                 intervalMillis = WEBRTC_STATS_SAMPLE_INTERVAL_MILLIS,
             ),
-        ).isEqualTo(1_050L)
+        ).isEqualTo(2_000L)
     }
 
     @Test
@@ -32,9 +32,9 @@ class CallSamplingPolicyTest {
         assertThat(
             nextSampleAtMillis(
                 scheduledAtMillis = 1_000L,
-                nowMillis = 1_100L,
+                nowMillis = 2_100L,
                 intervalMillis = WEBRTC_STATS_SAMPLE_INTERVAL_MILLIS,
             ),
-        ).isEqualTo(1_150L)
+        ).isEqualTo(3_100L)
     }
 }

@@ -57,11 +57,10 @@ class CallDiagnosticsViewModelTest {
                     sampledAtMillis = 1_000L,
                     roundTripTimeMs = 42.0,
                     jitterMs = null,
-                    packetLossPercent = null,
+                    uplinkPacketLossPercent = null,
+        downlinkPacketLossPercent = null,
                     uplinkBitrateKbps = null,
                     downlinkBitrateKbps = null,
-                    estimatedUpstreamKbps = null,
-                    estimatedDownstreamKbps = null,
                 ),
             )
         }
@@ -123,9 +122,9 @@ class CallDiagnosticsViewModelTest {
     fun `network history prunes samples outside timestamp window`() {
         val history = listOf(graphSampleAt(1_000L), graphSampleAt(2_000L))
 
-        val updated = appendNetworkGraphSample(history, graphSampleAt(8_501L))
+        val updated = appendNetworkGraphSample(history, graphSampleAt(61_001L))
 
-        assertThat(updated.map { it.sampledAtMillis }).containsExactly(2_000L, 8_501L).inOrder()
+        assertThat(updated.map { it.sampledAtMillis }).containsExactly(2_000L, 61_001L).inOrder()
     }
 
     @Test
@@ -148,10 +147,9 @@ class CallDiagnosticsViewModelTest {
         sampledAtMillis = sampledAtMillis,
         roundTripTimeMs = null,
         jitterMs = null,
-        packetLossPercent = null,
+        uplinkPacketLossPercent = null,
+        downlinkPacketLossPercent = null,
         uplinkBitrateKbps = null,
         downlinkBitrateKbps = null,
-        estimatedUpstreamKbps = null,
-        estimatedDownstreamKbps = null,
     )
 }

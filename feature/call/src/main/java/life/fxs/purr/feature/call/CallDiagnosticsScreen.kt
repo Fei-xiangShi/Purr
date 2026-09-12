@@ -25,6 +25,8 @@ import life.fxs.purr.core.designsystem.component.PurrSectionTitle
 import life.fxs.purr.core.designsystem.component.PurrStatusChip
 import life.fxs.purr.domain.call.model.CallQualityMetrics
 import life.fxs.purr.domain.call.model.NetworkTransport
+import life.fxs.purr.core.media.screenshare.ScreenShareDiagnostics
+import life.fxs.purr.core.media.screenshare.ScreenShareQualitySample
 
 @Composable
 internal fun CallDiagnosticsScreen(
@@ -34,11 +36,15 @@ internal fun CallDiagnosticsScreen(
 ) {
     val metrics by viewModel.metrics.collectAsStateWithLifecycle()
     val networkHistory by viewModel.networkHistory.collectAsStateWithLifecycle()
+    val publishing by viewModel.publishing.collectAsStateWithLifecycle()
+    val receiving by viewModel.receiving.collectAsStateWithLifecycle()
     CallDiagnosticsContent(
         context = context,
         metrics = metrics,
         networkHistory = networkHistory,
         callDurationSeconds = callDurationSeconds,
+        publishing = publishing?.takeIf { it.callId == context.callId && it.shareId == context.shareId },
+        receiving = receiving?.takeIf { it.callId == context.callId && it.shareId == context.shareId },
     )
 }
 
@@ -48,14 +54,16 @@ private fun CallDiagnosticsContent(
     metrics: CallQualityMetrics,
     networkHistory: List<NetworkGraphSample>,
     callDurationSeconds: Long,
+    publishing: ScreenShareDiagnostics?,
+    receiving: ScreenShareDiagnostics?,
 ) {
     val networkCharts = rememberNetworkChartModel(networkHistory)
     val chartFrameTimeMillis = rememberChartFrameTimeMillis(
-        active = networkCharts.sampleTimesMillis.isNotEmpty(),
+        active = networkCharts.sampleTimesMillis.isNotEmpty() || publishing != null || receiving != null,
     )
     PurrScreen {
         PurrSectionTitle(
-            eyebrow = "通话诊断",
+            eyebrow = "通话与直播诊断",
             title = "实时质量",
             subtitle = "",
             modifier = Modifier.fillMaxWidth(),
@@ -67,12 +75,6 @@ private fun CallDiagnosticsContent(
             DiagnosticMetricRow("计费网络", if (metrics.device.networkMetered) "是" else "否")
             DiagnosticMetricRow("系统通话音量", metrics.device.callVolumePercent.asPercent())
             DiagnosticMetricRow("音频输出", context.activeRoute.displayLabel)
-            DiagnosticMetricRow("系统估算上行", metrics.device.estimatedUpstreamKbps.asBitrate())
-            DiagnosticMetricRow(
-                "系统估算下行",
-                metrics.device.estimatedDownstreamKbps.asBitrate(),
-                showDivider = false,
-            )
         }
 
         PurrPanel(title = "连接概览") {
@@ -120,20 +122,22 @@ private fun CallDiagnosticsContent(
             )
         }
 
+        StreamDiagnosticsPanel(context, publishing?.sample, receiving?.sample, chartFrameTimeMillis)
+
         NetworkTrendPanel(
             model = networkCharts,
             chartFrameTimeMillis = chartFrameTimeMillis,
         )
 
-        PurrPanel(title = "WebRTC 实时统计") {
+        PurrPanel(title = "语音 WebRTC 实时统计") {
             DiagnosticMetricRow("往返延迟", metrics.transport.roundTripTimeMs.asMillis())
             DiagnosticMetricRow("上行实际码率", metrics.transport.uplinkBitrateKbps.asBitrate())
             DiagnosticMetricRow("下行实际码率", metrics.transport.downlinkBitrateKbps.asBitrate())
-            DiagnosticMetricRow("上行丢包", metrics.transport.uplinkPacketLossPercent.asPercent())
-            DiagnosticMetricRow("下行丢包", metrics.transport.downlinkPacketLossPercent.asPercent())
+            DiagnosticMetricRow("上行丢包（RTCP 反馈区间）", metrics.transport.uplinkPacketLossPercent.asPercent())
+            DiagnosticMetricRow("下行丢包（采样区间）", metrics.transport.downlinkPacketLossPercent.asPercent())
             DiagnosticMetricRow("接收抖动", metrics.transport.jitterMs.asMillis())
-            DiagnosticMetricRow("可用上行带宽", metrics.transport.availableOutgoingKbps.asBitrate())
-            DiagnosticMetricRow("可用下行带宽", metrics.transport.availableIncomingKbps.asBitrate())
+            DiagnosticMetricRow("WebRTC 估计可用上行", metrics.transport.availableOutgoingKbps.asBitrate())
+            DiagnosticMetricRow("WebRTC 估计可用下行", metrics.transport.availableIncomingKbps.asBitrate())
             DiagnosticMetricRow(
                 "传输路径",
                 metrics.transport.path ?: NO_DATA,
@@ -143,6 +147,72 @@ private fun CallDiagnosticsContent(
 
     }
 }
+
+@Composable
+private fun StreamDiagnosticsPanel(
+    context: CallDiagnosticsContext,
+    publishing: ScreenShareQualitySample?,
+    receiving: ScreenShareQualitySample?,
+    clock: State<Long>,
+) {
+    PurrPanel(title = "直播实时质量") {
+        DiagnosticMetricRow("直播来源", when (context.shareSource) {
+            "obs" -> "OBS"
+            "mobile" -> "手机屏幕"
+            else -> "未开启直播"
+        })
+        DiagnosticMetricRow("服务端状态", when (context.shareStatus) {
+            "authorized" -> "等待推流"
+            "live" -> "直播中"
+            "stopping" -> "停止中"
+            "stopped" -> "已停止"
+            "expired" -> "已过期"
+            "failed" -> "失败"
+            else -> NO_DATA
+        })
+        publishing?.let { sample ->
+            val fresh = clock.value - sample.sampledAtMillis <= 3_000L
+            DiagnosticMetricRow("发送采样", if (fresh) "实时 · 每秒更新" else "数据已过期")
+            if (fresh) {
+                DiagnosticMetricRow("发送编码", sample.codec ?: NO_DATA)
+                DiagnosticMetricRow("编码尺寸", "${sample.width} × ${sample.height}")
+                DiagnosticMetricRow("实际编码帧率", sample.framesPerSecond.asFps())
+                DiagnosticMetricRow("实际发送码率（音视频）", sample.bitrateKbps.asBitrate())
+                DiagnosticMetricRow("视频编码目标", sample.targetBitrateKbps.asBitrate())
+                DiagnosticMetricRow("发送队列（音视频帧）", "${sample.queuedFrames} / ${sample.queueCapacity}")
+                DiagnosticMetricRow("本次连接本地视频丢帧", sample.droppedVideoFrames?.toString() ?: NO_DATA)
+                DiagnosticMetricRow("本次连接本地音频丢帧", sample.droppedAudioFrames?.toString() ?: NO_DATA)
+                Text("静止画面会主动降低帧率。发送码率和队列不能证明远端收到了数据；当前推流库未提供远端丢包及带宽反馈。",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        receiving?.let { sample ->
+            val fresh = clock.value - sample.sampledAtMillis <= 3_000L
+            DiagnosticMetricRow("观看采样", if (fresh) "实时 · 每秒更新" else "数据已过期")
+            if (fresh) {
+                DiagnosticMetricRow("接收编码", sample.codec ?: NO_DATA)
+                DiagnosticMetricRow("解码器", sample.decoder ?: "硬件解码 · 名称未报告")
+                DiagnosticMetricRow("解码尺寸", if (sample.width != null && sample.height != null) "${sample.width} × ${sample.height}" else NO_DATA)
+                DiagnosticMetricRow("实际解码帧率", sample.framesPerSecond.asFps())
+                DiagnosticMetricRow("视频接收码率", sample.bitrateKbps.asBitrate())
+                DiagnosticMetricRow("视频区间丢包", sample.packetLossPercent.asPercent())
+                DiagnosticMetricRow("网络往返（非播放延迟）", sample.roundTripTimeMs.asMillis())
+                DiagnosticMetricRow("视频抖动", sample.jitterMs.asMillis())
+                DiagnosticMetricRow("每帧解码耗时", sample.decodeTimeMs.asMillis())
+                DiagnosticMetricRow("每帧抖动缓冲等待", sample.jitterBufferMs.asMillis())
+                DiagnosticMetricRow("本次连接卡顿次数", sample.freezeCount?.toString() ?: NO_DATA)
+                DiagnosticMetricRow("本次连接视频丢帧", sample.droppedVideoFrames?.toString() ?: NO_DATA)
+            }
+        }
+        if (publishing == null && receiving == null && context.shareId != null) {
+            Text(if (context.shareSource == "obs") "OBS 的编码帧率、码率和发送丢帧请查看 OBS 统计；手机无法读取另一台设备的编码器。观看端会显示实际接收质量。"
+                else "媒体连接尚未产生可用采样。", style = MaterialTheme.typography.bodySmall)
+        }
+        Text("端到端播放延迟：未测量。暂无数据表示当前阶段或设备未提供该指标。", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+private fun Double?.asFps(): String = this?.let { "%.1f fps".format(it) } ?: NO_DATA
 
 @Composable
 private fun NetworkTrendPanel(
@@ -171,14 +241,7 @@ private fun NetworkTrendPanel(
             chartFrameTimeMillis = chartFrameTimeMillis,
             series = model.throughputSeries,
             valueSuffix = "Mbps",
-        )
-        RealtimeLineChart(
-            title = "本地链路估算",
-            sampleTimesMillis = model.sampleTimesMillis,
-            chartFrameTimeMillis = chartFrameTimeMillis,
-            series = model.linkEstimateSeries,
-            valueSuffix = "Mbps",
-            showDivider = false,
+            minimumScale = 0.1,
         )
     }
 }
@@ -203,9 +266,14 @@ private fun rememberNetworkChartModel(history: List<NetworkGraphSample>): Networ
             ),
             packetLossSeries = listOf(
                 ChartSeries(
-                    label = "丢包率",
+                    label = "上行（RTCP 反馈区间）",
                     color = colors.error,
-                    values = history.map { it.packetLossPercent },
+                    values = history.map { it.uplinkPacketLossPercent },
+                ),
+                ChartSeries(
+                    label = "下行（采样区间）",
+                    color = colors.secondary,
+                    values = history.map { it.downlinkPacketLossPercent },
                 ),
             ),
             throughputSeries = listOf(
@@ -220,18 +288,7 @@ private fun rememberNetworkChartModel(history: List<NetworkGraphSample>): Networ
                     values = history.map { it.downlinkBitrateKbps.toMbpsOrNull() },
                 ),
             ),
-            linkEstimateSeries = listOf(
-                ChartSeries(
-                    label = "估算上行",
-                    color = colors.primary,
-                    values = history.map { it.estimatedUpstreamKbps.toMbpsOrNull() },
-                ),
-                ChartSeries(
-                    label = "估算下行",
-                    color = colors.secondary,
-                    values = history.map { it.estimatedDownstreamKbps.toMbpsOrNull() },
-                ),
-            ),
+
         )
     }
 }
@@ -242,7 +299,6 @@ private data class NetworkChartModel(
     val latencySeries: List<ChartSeries>,
     val packetLossSeries: List<ChartSeries>,
     val throughputSeries: List<ChartSeries>,
-    val linkEstimateSeries: List<ChartSeries>,
 )
 
 @Composable

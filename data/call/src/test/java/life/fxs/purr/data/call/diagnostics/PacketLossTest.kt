@@ -14,7 +14,7 @@ class PacketLossTest {
     fun `reordered and inconsistent counters stay bounded and missing stats stay unknown`() {
         assertThat(sentPacketLossPercent(-1.0, 100.0)).isEqualTo(0.0)
         assertThat(sentPacketLossPercent(120.0, 100.0)).isEqualTo(100.0)
-        assertThat(packetLossPercent(-2.0, 0.0)).isEqualTo(0.0)
+        assertThat(packetLossPercent(-2.0, 0.0)).isNull()
         assertThat(sentPacketLossPercent(null, 100.0)).isNull()
         assertThat(sentPacketLossPercent(Double.NaN, 100.0)).isNull()
     }

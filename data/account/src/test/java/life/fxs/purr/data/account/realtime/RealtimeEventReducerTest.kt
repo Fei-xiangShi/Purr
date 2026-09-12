@@ -27,6 +27,8 @@ class RealtimeEventReducerTest {
         )
 
         assertThat(result.incomingCallCandidate).isNull()
+        assertThat(result.activeCall?.isIncoming).isFalse()
+        assertThat(result.activeCall?.callId).isEqualTo("call-1")
     }
 
     @Test

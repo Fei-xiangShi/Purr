@@ -31,6 +31,7 @@ class CallDiagnosticsContractTest {
                 screenState = CallScreenState.Active,
                 activeRoute = AudioRoute.Bluetooth,
                 networkQualityScore = 4,
+                callId = "call-1",
             ),
         )
     }

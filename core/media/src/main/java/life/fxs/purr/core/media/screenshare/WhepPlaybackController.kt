@@ -10,13 +10,18 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import livekit.org.webrtc.AudioTrack
 import livekit.org.webrtc.DataChannel
-import livekit.org.webrtc.DefaultVideoDecoderFactory
+import livekit.org.webrtc.HardwareVideoDecoderFactory
 import livekit.org.webrtc.DefaultVideoEncoderFactory
 import livekit.org.webrtc.EglBase
 import livekit.org.webrtc.IceCandidate
@@ -76,6 +81,8 @@ class NativeWhepPlaybackController(
     context: Context,
     private val okHttpClient: OkHttpClient,
     private val applicationScope: CoroutineScope,
+    diagnostics: ScreenShareDiagnosticsStore = ScreenShareDiagnosticsStore(),
+    failures: ScreenShareFailureReporter = NoOpScreenShareFailureReporter,
 ) : WhepPlaybackController {
     private val appContext = context.applicationContext
     private val eglBase = EglBase.create()
@@ -90,8 +97,12 @@ class NativeWhepPlaybackController(
                 request = request,
                 videoSink = videoSink,
                 listener = listener,
+                scope = applicationScope,
+                failures = failures,
             )
         },
+        diagnostics = diagnostics,
+        failures = failures,
     )
     override val status: StateFlow<WhepPlaybackStatus> = lifecycle.status
 
@@ -102,7 +113,7 @@ class NativeWhepPlaybackController(
     override fun createVideoRenderer(context: Context): View = SurfaceViewRenderer(context).apply {
         init(eglBase.eglBaseContext, null)
         setEnableHardwareScaler(true)
-        setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+        setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
         setMirror(false)
         videoSink.target.set(this)
     }
@@ -130,6 +141,8 @@ private class NativeWhepSession(
     private val request: WhepPlaybackRequest,
     private val videoSink: SwitchableVideoSink,
     private val listener: WhepSessionListener,
+    private val scope: CoroutineScope,
+    private val failures: ScreenShareFailureReporter,
 ) : WhepSession {
 
     private val closed = AtomicBoolean(false)
@@ -140,6 +153,7 @@ private class NativeWhepSession(
     private var peerConnection: PeerConnection? = null
     private var peerConnectionFactory: PeerConnectionFactory? = null
     private var audioDeviceModule: JavaAudioDeviceModule? = null
+    private var metricsJob: Job? = null
     private val frameSink = VideoSink { frame ->
         if (!closed.get() && listener.onFrame(frame.rotatedWidth, frame.rotatedHeight)) {
             firstFrame.complete(Unit)
@@ -167,6 +181,8 @@ private class NativeWhepSession(
 
         logStage("offer_create_start")
         val offer = connection.createOfferAwait()
+        if (!offer.description.contains(" H265/90000", ignoreCase = true)) throw ScreenShareFailureException(
+            ScreenShareFailureCode.UnsupportedCodec, "当前设备无法协商 H.265 硬件解码，语音通话仍然可用")
         logStage("offer_create_complete")
         connection.setLocalDescriptionAwait(offer)
         logStage("local_description_set")
@@ -195,10 +211,38 @@ private class NativeWhepSession(
         logStage("remote_description_set")
         withTimeout(CONNECTION_TIMEOUT_MILLIS) { connectionReady.await() }
         logStage("peer_connection_ready")
-        withTimeout(CONNECTION_TIMEOUT_MILLIS) { firstFrame.await() }
+        if (withTimeoutOrNull(CONNECTION_TIMEOUT_MILLIS) { firstFrame.await(); true } != true) {
+            throw ScreenShareFailureException(ScreenShareFailureCode.FirstFrameTimeout, "媒体已连接但没有收到可解码画面")
+        }
+        metricsJob = scope.launch(Dispatchers.IO) {
+            val collector = WhepQualityCollector()
+            while (isActive && !closed.get()) {
+                val report = try { withTimeoutOrNull(2_000L) {
+                    suspendCancellableCoroutine<livekit.org.webrtc.RTCStatsReport> { continuation ->
+                        synchronized(this@NativeWhepSession) {
+                            if (!closed.get()) connection.getStats { stats ->
+                                if (continuation.isActive) continuation.resume(stats)
+                            }
+                        }
+                    }
+                } } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    null
+                }
+                if (report != null && !closed.get()) listener.onQuality(collector.collect(report))
+                delay(1_000L)
+            }
+        }
     }
 
     private fun createPeerConnection(iceServers: List<PeerConnection.IceServer>) {
+        val videoDecoderFactory = HevcHardwareDecoderFactory(
+            HardwareVideoDecoderFactory(eglContext) { codec ->
+                codec.isHardwareAccelerated && !codec.isSoftwareOnly
+            },
+        )
+        if (videoDecoderFactory.supportedCodecs.isEmpty()) throw ScreenShareFailureException(
+            ScreenShareFailureCode.UnsupportedCodec, "当前设备不支持 H.265 硬件解码，无法观看直播；语音通话仍然可用")
         val mediaAudioAttributes = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_MEDIA)
             .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
@@ -215,12 +259,17 @@ private class NativeWhepSession(
         // prefixed runtime version and deliberately never calls initialize()/shutdownInternalTracer().
         val factory = PeerConnectionFactory.builder()
             .setAudioDeviceModule(audioModule)
-            .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglContext))
+            .setVideoDecoderFactory(videoDecoderFactory)
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglContext, true, true))
             .createPeerConnectionFactory()
         peerConnectionFactory = factory
 
         val configuration = PeerConnection.RTCConfiguration(iceServers).apply {
+            // Native video jitter buffering stays adaptive. NetEq buffers program audio;
+            // cap it at 50 packets (~1 s for 20 ms Opus), and catch up after bursts.
+            // Never retain decoded hardware textures in an application frame queue.
+            audioJitterBufferMaxPackets = 50
+            audioJitterBufferFastAccelerate = true
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
         }
@@ -240,10 +289,10 @@ private class NativeWhepSession(
             .build()
         return okHttpClient.newCall(options).awaitResponse().use { response ->
             if (response.code == 401 || response.code == 403) {
-                error("WHEP 播放凭证无效或已过期")
+                throw ScreenShareFailureException(ScreenShareFailureCode.CredentialsExpired, "WHEP 播放凭证无效或已过期")
             }
             if (!response.isSuccessful && response.code != 404 && response.code != 405) {
-                error("WHEP ICE 配置请求失败（${response.code}）")
+                throw ScreenShareFailureException(ScreenShareFailureCode.Signaling, "WHEP ICE 配置请求失败（${response.code}）")
             }
             response.headers.toIceServers()
         }
@@ -258,21 +307,30 @@ private class NativeWhepSession(
             .build()
         return okHttpClient.newCall(post).awaitResponse().use { response ->
             if (!response.isSuccessful) {
+                if (response.code == 404) throw ScreenShareFailureException(ScreenShareFailureCode.StreamEnded, "直播已停止或尚未开始")
                 if (response.code == 401 || response.code == 403) {
-                    error("WHEP 播放凭证无效或已过期")
+                    throw ScreenShareFailureException(ScreenShareFailureCode.CredentialsExpired, "WHEP 播放凭证无效或已过期")
                 }
-                error("WHEP 协商失败（${response.code}）")
+                throw ScreenShareFailureException(ScreenShareFailureCode.Signaling, "WHEP 协商失败（${response.code}）")
             }
             response.header("Location")?.let { location ->
-                resourceUrl = response.request.url.resolve(location)
+                val endpoint = response.request.url
+                val resource = endpoint.resolve(location)
+                if (resource == null || resource.scheme != endpoint.scheme || resource.host != endpoint.host ||
+                    resource.port != endpoint.port || !resource.encodedPath.startsWith(endpoint.encodedPath + "/")) {
+                    throw ScreenShareFailureException(ScreenShareFailureCode.Signaling, "WHEP 会话地址无效")
+                }
+                resourceUrl = resource
             }
             response.body?.string()?.takeIf(String::isNotBlank)
                 ?: error("WHEP 服务未返回 SDP answer")
         }
     }
 
-    override fun close() {
+    @Synchronized override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        metricsJob?.cancel()
+        metricsJob = null
         logStage("close")
         resourceUrl?.let { url ->
             okHttpClient.newCall(
@@ -290,15 +348,17 @@ private class NativeWhepSession(
             })
         }
         resourceUrl = null
-        videoTracks.forEach { track -> runCatching { track.removeSink(frameSink) } }
+        var cleanupFailed = false
+        videoTracks.forEach { track -> runCatching { track.removeSink(frameSink) }.onFailure { cleanupFailed = true } }
         videoTracks.clear()
-        runCatching { peerConnection?.close() }
-        runCatching { peerConnection?.dispose() }
+        runCatching { peerConnection?.close() }.onFailure { cleanupFailed = true }
+        runCatching { peerConnection?.dispose() }.onFailure { cleanupFailed = true }
         peerConnection = null
-        runCatching { peerConnectionFactory?.dispose() }
+        runCatching { peerConnectionFactory?.dispose() }.onFailure { cleanupFailed = true }
         peerConnectionFactory = null
-        runCatching { audioDeviceModule?.release() }
+        runCatching { audioDeviceModule?.release() }.onFailure { cleanupFailed = true }
         audioDeviceModule = null
+        if (cleanupFailed) runCatching { failures.report(request.callId, request.shareId, ScreenShareFailureCode.Cleanup) }
     }
 
     private fun attachRemoteTrack(track: MediaStreamTrack?) {
@@ -374,7 +434,7 @@ private class NativeWhepSession(
         private fun fail(message: String) {
             if (closed.get()) return
             connectionReady.completeExceptionally(IllegalStateException(message))
-            listener.onFailed(message)
+            listener.onFailed(message, ScreenShareFailureCode.IceConnection)
         }
     }
 

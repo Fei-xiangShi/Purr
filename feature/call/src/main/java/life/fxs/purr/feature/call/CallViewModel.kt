@@ -125,10 +125,18 @@ class CallViewModel @Inject constructor(
             is CallIntent.RouteSelect -> updateRoute(intent.route)
             CallIntent.OpenScreenSharePicker -> openScreenSharePicker()
             CallIntent.DismissScreenSharePicker -> dismissScreenSharePicker()
+            is CallIntent.SelectPublishQuality -> {
+                if (_state.value.screenShare.session?.status !in ACTIVE_SCREEN_SHARE_STATUSES &&
+                    !_state.value.screenShare.isCreating && pendingPublishRequest == null
+                ) {
+                    _state.update { it.copy(screenShare = it.screenShare.copy(publishQuality = intent.quality)) }
+                }
+            }
             CallIntent.StartMobileScreenShare -> createScreenShare(ScreenShareSource.Mobile)
             CallIntent.StartObsScreenShare -> createScreenShare(ScreenShareSource.Obs)
             is CallIntent.ScreenCapturePermissionResult -> handleScreenCapturePermission(intent)
             CallIntent.StopScreenShare -> stopScreenShare()
+            CallIntent.RetryRemoteScreenShare -> retryRemoteScreenShare()
             CallIntent.DismissObsSetup -> dismissObsSetup()
             CallIntent.EndCall -> endCall()
         }
@@ -306,6 +314,7 @@ class CallViewModel @Inject constructor(
         if (_state.value.screenState != CallScreenState.Active) return
         if (_state.value.screenShare.session?.status in ACTIVE_SCREEN_SHARE_STATUSES) return
         if (screenShareCreationJob?.isActive == true) return
+        val quality = _state.value.screenShare.publishQuality
         _state.update { it.copy(screenShare = it.screenShare.copy(isCreating = true)) }
         screenShareCreationJob = viewModelScope.launch {
             try {
@@ -346,6 +355,7 @@ class CallViewModel @Inject constructor(
                                 whipUrl = publishing.whip.url,
                                 bearerToken = publishing.whip.bearerToken,
                                 expiresAtEpochMillis = publishing.whip.expiresAtEpochMillis,
+                                quality = quality,
                             )
                             pendingPublishRequest = request
                             screenSharePublisherController.prepare(request)
@@ -616,6 +626,19 @@ class CallViewModel @Inject constructor(
                 whepPlaybackController.start(playbackRequest)
             }
         }
+    }
+
+    private fun retryRemoteScreenShare() {
+        if (endRequested || cleared || _state.value.screenShare.remoteState != RemoteScreenShareUiState.Failed) return
+        val request = currentWhepRequest ?: return
+        if (request.callId != currentCallId || _state.value.screenShare.session?.shareId != request.shareId) return
+        if (request.expiresAtEpochMillis <= System.currentTimeMillis()) {
+            viewModelScope.launch { _effects.emit(CallEffect.ShowMessage("播放凭证已过期，请返回首页后继续通话以刷新")) }
+            return
+        }
+        _state.update { it.copy(screenShare = it.screenShare.copy(
+            remoteState = RemoteScreenShareUiState.Connecting, errorMessage = null)) }
+        whepPlaybackController.start(request)
     }
 
     private fun stopRemoteScreenPlayback() {

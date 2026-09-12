@@ -88,6 +88,7 @@ class ApiRealtimeRepositoryLifecycleTest {
         assertThat(repository.observeState().first().incomingCallCandidate).isNull()
         listener.captured.onMessage(socket, snapshot)
         assertThat(repository.observeState().first().incomingCallCandidate).isNull()
+        assertThat(repository.observeState().first().activeCall).isNull()
         repository.stop()
     }
 

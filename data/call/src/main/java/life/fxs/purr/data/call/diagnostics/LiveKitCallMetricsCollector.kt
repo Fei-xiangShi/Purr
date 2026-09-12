@@ -5,6 +5,7 @@ import io.livekit.android.room.Room
 import io.livekit.android.room.track.Track
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import life.fxs.purr.domain.call.model.AudioQualityMetrics
 import life.fxs.purr.domain.call.model.TransportQualityMetrics
 import livekit.org.webrtc.RTCStats
@@ -25,8 +26,14 @@ class LiveKitCallMetricsCollector @Inject constructor() {
         val remoteTrack = remoteParticipant?.audioTrackPublications
             ?.firstOrNull { (publication, _) -> publication.source == Track.Source.MICROPHONE }
             ?.second
-        val localReport = runCatching { localTrack?.getRTCStats() }.getOrNull()
-        val remoteReport = runCatching { remoteTrack?.getRTCStats() }.getOrNull()
+        val localReport = try { localTrack?.getRTCStats() } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            null
+        }
+        val remoteReport = try { remoteTrack?.getRTCStats() } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            null
+        }
         val allStats = localReport.stats() + remoteReport.stats()
         val selectedPairIds = allStats.filter { it.type == "transport" }
             .mapNotNull { it.members["selectedCandidatePairId"] as? String }.toSet()
@@ -43,7 +50,11 @@ class LiveKitCallMetricsCollector @Inject constructor() {
             capturedAtMillis = SystemClock.elapsedRealtime(),
             bytesSent = outboundStats.sumMember("bytesSent"),
             bytesReceived = inboundStats.sumMember("bytesReceived"),
+            packetsReceived = inboundStats.sumMember("packetsReceived"),
+            packetsLost = inboundStats.sumMember("packetsLost"),
+            streamIds = (outboundStats + inboundStats).map { it.id }.toSet(),
         )
+        val previous = previousSample?.takeIf { it.streamIds == currentSample.streamIds }
 
         return LiveKitMetricsResult(
             remoteConnected = remoteParticipant != null,
@@ -52,18 +63,18 @@ class LiveKitCallMetricsCollector @Inject constructor() {
                 receiveCodec = remoteReport.codecFor(inboundStats.firstOrNull()),
             ),
             transport = TransportQualityMetrics(
-                sampledAtMillis = currentSample.capturedAtMillis,
+                sampledAtMillis = currentSample.capturedAtMillis.takeIf { room != null },
                 roundTripTimeMs = candidatePair.memberDouble("currentRoundTripTime")?.times(1_000.0)
                     ?: remoteInboundStats.firstDouble("roundTripTime")?.times(1_000.0),
-                uplinkBitrateKbps = currentSample.calculateBitrate(previousSample) { it.bytesSent },
-                downlinkBitrateKbps = currentSample.calculateBitrate(previousSample) { it.bytesReceived },
-                uplinkPacketLossPercent = sentPacketLossPercent(
-                    lost = remoteInboundStats.sumMember("packetsLost"),
-                    sent = outboundStats.sumMember("packetsSent"),
-                ),
+                uplinkBitrateKbps = currentSample.calculateBitrate(previous) { it.bytesSent },
+                downlinkBitrateKbps = currentSample.calculateBitrate(previous) { it.bytesReceived },
+                // Receiver RTCP fractionLost describes a feedback interval. Dividing its
+                // delayed cumulative loss by our current packetsSent mixes two time bases.
+                uplinkPacketLossPercent = remoteInboundStats.firstDouble("fractionLost")
+                    ?.takeIf { it.isFinite() && it in 0.0..1.0 }?.times(100),
                 downlinkPacketLossPercent = packetLossPercent(
-                    lost = inboundStats.sumMember("packetsLost"),
-                    delivered = inboundStats.sumMember("packetsReceived"),
+                    lost = intervalCounterDelta(currentSample.packetsLost, previous?.packetsLost),
+                    delivered = intervalCounterDelta(currentSample.packetsReceived, previous?.packetsReceived),
                 ),
                 jitterMs = inboundStats.firstDouble("jitter")?.times(1_000.0),
                 availableOutgoingKbps = candidatePair.memberDouble("availableOutgoingBitrate")?.div(1_000.0),
@@ -86,7 +97,14 @@ data class RtpByteSample(
     val capturedAtMillis: Long,
     val bytesSent: Double?,
     val bytesReceived: Double?,
+    val packetsReceived: Double? = null,
+    val packetsLost: Double? = null,
+    val streamIds: Set<String> = emptySet(),
 )
+
+internal fun intervalCounterDelta(current: Double?, previous: Double?): Double? =
+    if (current == null || previous == null || !current.isFinite() || !previous.isFinite() || current < previous) null
+    else current - previous
 
 private fun RTCStatsReport?.stats(type: String? = null): List<RTCStats> =
     this?.statsMap?.values?.filter { type == null || it.type == type }.orEmpty()
@@ -119,7 +137,7 @@ internal fun packetLossPercent(lost: Double?, delivered: Double?): Double? {
 
 internal fun sentPacketLossPercent(lost: Double?, sent: Double?): Double? {
     if (lost == null || sent == null || !lost.isFinite() || !sent.isFinite()) return null
-    return if (sent > 0.0) (lost.coerceAtLeast(0.0) / sent * 100.0).coerceIn(0.0, 100.0) else 0.0
+    return if (sent > 0.0) (lost.coerceAtLeast(0.0) / sent * 100.0).coerceIn(0.0, 100.0) else null
 }
 
 private fun RTCStatsReport?.codecFor(rtpStats: RTCStats?): String? {

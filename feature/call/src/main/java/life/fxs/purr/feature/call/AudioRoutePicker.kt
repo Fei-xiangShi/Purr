@@ -3,6 +3,7 @@ package life.fxs.purr.feature.call
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -20,6 +21,7 @@ internal fun AudioRoutePicker(
     activeRoute: AudioRoute,
     enabled: Boolean,
     onRouteSelect: (AudioRoute) -> Unit,
+    onVisibilityChanged: (Boolean) -> Unit = {},
 ) {
     val availableRoutes = routes.distinct()
     val pickerEnabled = enabled && availableRoutes.isNotEmpty()
@@ -27,6 +29,11 @@ internal fun AudioRoutePicker(
     var isDismissing by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val coroutineScope = rememberCoroutineScope()
+
+    DisposableEffect(isSheetVisible) {
+        onVisibilityChanged(isSheetVisible)
+        onDispose { onVisibilityChanged(false) }
+    }
 
     fun dismissSheet() {
         if (isDismissing) return

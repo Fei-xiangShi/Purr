@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.delay
@@ -17,12 +18,15 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.model.PairBond
+import life.fxs.purr.core.model.CallDirection
 import life.fxs.purr.core.presentation.toUserMessage
 import life.fxs.purr.domain.account.model.AuthSession
 import life.fxs.purr.domain.account.model.RealtimeState
 import life.fxs.purr.domain.account.usecase.ObserveAuthSessionUseCase
 import life.fxs.purr.domain.account.usecase.ObservePairBondUseCase
 import life.fxs.purr.domain.account.usecase.RefreshPairBondUseCase
+import life.fxs.purr.domain.account.usecase.RefreshActiveCallUseCase
+import life.fxs.purr.domain.account.usecase.StartRealtimeUpdatesUseCase
 import life.fxs.purr.domain.account.usecase.ObserveRealtimeStateUseCase
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.CallLifecycleState
@@ -35,7 +39,10 @@ class HomeViewModel @Inject constructor(
     private val refreshPairBondUseCase: RefreshPairBondUseCase,
     observeRealtimeStateUseCase: ObserveRealtimeStateUseCase,
     observeCallLifecycleUseCase: ObserveCallLifecycleUseCase,
+    private val refreshActiveCallUseCase: RefreshActiveCallUseCase,
+    private val startRealtimeUpdatesUseCase: StartRealtimeUpdatesUseCase,
 ) : ViewModel() {
+    private var navigating = false
     private val _effects = MutableSharedFlow<HomeEffect>()
     val effects = _effects.asSharedFlow()
 
@@ -53,7 +60,8 @@ class HomeViewModel @Inject constructor(
             initialValue = null,
         )
 
-    private val realtimeState = observeRealtimeStateUseCase()
+    private val realtimeSource = observeRealtimeStateUseCase()
+    private val realtimeState = realtimeSource
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
@@ -87,12 +95,14 @@ class HomeViewModel @Inject constructor(
                 val realtimePartnerOnline = realtime.partnerOnline
                 val partnerOnline = realtimePartnerOnline ?: bond?.partner?.isOnline ?: false
                 val isCallable = bond?.pairId != null &&
+                    realtime.activeCall == null &&
                     callLifecycle.resumableSession == null &&
                     !callLifecycle.isNewCallBlocked && realtime.incomingCallCandidate == null
                 _uiState.value = _uiState.value.copy(
                     self = session?.self,
                     pairId = bond?.pairId,
-                    activeCallTarget = callLifecycle.resumableSession?.toHomeCallTarget(),
+                    activeCallTarget = if (callLifecycle.isTerminationInProgress) null else
+                        callLifecycle.resumableSession?.toHomeCallTarget() ?: realtime.serverCallTarget(),
                     isEndingCall = callLifecycle.isTerminationInProgress,
                     partner = bond?.partner?.copy(
                         isOnline = partnerOnline == true,
@@ -121,21 +131,38 @@ class HomeViewModel @Inject constructor(
             }
 
             HomeIntent.StartCall -> {
+                if (navigating) return
+                navigating = true
                 viewModelScope.launch {
-                    // Re-read source snapshots so a just-emitted call state cannot be bypassed by stale UI state.
-                    val latestPair = pairBondState.value
-                    val latestCallLifecycle = callLifecycleState.value
-                    val resumeTarget = latestCallLifecycle.resumableSession?.toHomeCallTarget()
-                    if (resumeTarget != null) {
-                        _effects.emit(HomeEffect.NavigateToCall(resumeTarget))
-                    } else if (latestCallLifecycle.isNewCallBlocked) {
-                        _effects.emit(HomeEffect.ShowError("上一通电话正在结束，请稍候"))
-                    } else if (realtimeState.value.incomingCallCandidate != null) {
-                        _effects.emit(HomeEffect.ShowError("请先接听或拒绝当前来电"))
-                    } else if (latestPair?.pairId != null) {
-                        _effects.emit(HomeEffect.NavigateToCall(HomeCallTarget.NewOutgoing(latestPair.pairId)))
-                    } else {
-                        _effects.emit(HomeEffect.ShowError("当前无法发起通话"))
+                    try {
+                        if (callLifecycleState.value.resumableSession == null &&
+                            !callLifecycleState.value.isNewCallBlocked) {
+                            startRealtimeUpdatesUseCase()
+                            val result = refreshActiveCallUseCase()
+                            if (result is AppResult.Failure) {
+                                _effects.emit(HomeEffect.ShowError(result.error.toUserMessage()))
+                                return@launch
+                            }
+                        }
+                        // Re-read source snapshots so a just-emitted call state cannot be bypassed by stale UI state.
+                        val latestPair = pairBondState.value
+                        val latestCallLifecycle = callLifecycleState.value
+                        val latestRealtime = realtimeSource.first()
+                        val resumeTarget = latestCallLifecycle.resumableSession?.toHomeCallTarget()
+                            ?: latestRealtime.serverCallTarget()
+                        if (latestCallLifecycle.isNewCallBlocked && latestCallLifecycle.resumableSession == null) {
+                            _effects.emit(HomeEffect.ShowError("上一通电话正在结束，请稍候"))
+                        } else if (resumeTarget != null) {
+                            _effects.emit(HomeEffect.NavigateToCall(resumeTarget))
+                        } else if (latestRealtime.incomingCallCandidate != null) {
+                            _effects.emit(HomeEffect.ShowError("请先接听或拒绝当前来电"))
+                        } else if (latestPair?.pairId != null) {
+                            _effects.emit(HomeEffect.NavigateToCall(HomeCallTarget.NewOutgoing(latestPair.pairId)))
+                        } else {
+                            _effects.emit(HomeEffect.ShowError("当前无法发起通话"))
+                        }
+                    } finally {
+                        navigating = false
                     }
                 }
             }
@@ -146,6 +173,11 @@ class HomeViewModel @Inject constructor(
     private suspend fun refresh(showError: Boolean = true) {
         if (showError) {
             _uiState.value = _uiState.value.copy(isLoading = true)
+        }
+        startRealtimeUpdatesUseCase()
+        val roomResult = refreshActiveCallUseCase()
+        if (roomResult is AppResult.Failure && showError) {
+            _effects.emit(HomeEffect.ShowError(roomResult.error.toUserMessage()))
         }
         when (val result = refreshPairBondUseCase()) {
             is AppResult.Success -> Unit
@@ -161,6 +193,10 @@ class HomeViewModel @Inject constructor(
     private companion object {
         const val STATUS_RECOVERY_INTERVAL_MILLIS = 10_000L
     }
+}
+
+private fun RealtimeState.serverCallTarget() = activeCall?.let {
+    HomeCallTarget.Existing(it.pairId, it.callId, if (it.isIncoming) CallDirection.Incoming else CallDirection.Outgoing)
 }
 
 private fun CallSession.toHomeCallTarget() = HomeCallTarget.Existing(

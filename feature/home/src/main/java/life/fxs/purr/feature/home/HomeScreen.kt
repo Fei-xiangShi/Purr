@@ -16,6 +16,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.Lifecycle
 import kotlinx.coroutines.flow.collect
 import life.fxs.purr.core.designsystem.component.PurrPanel
 import life.fxs.purr.core.designsystem.component.PurrAvatar
@@ -36,6 +38,9 @@ fun HomeScreenRoute(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        viewModel.onIntent(HomeIntent.RefreshStatus)
+    }
 
     LaunchedEffect(viewModel, context) {
         viewModel.effects.collect { effect ->
@@ -107,6 +112,7 @@ fun HomeScreen(
                 },
                 detail = when {
                     state.isEndingCall -> "正在结束通话"
+                    state.hasActiveCall -> "可继续通话"
                     state.isCallable -> "可发起通话"
                     else -> "暂不可通话"
                 },
@@ -127,7 +133,7 @@ fun HomeScreen(
         PurrPanel(title = "操作") {
             PurrPrimaryButton(
                 text = when {
-                    state.hasActiveCall -> "回到通话"
+                    state.hasActiveCall -> "继续通话"
                     state.isEndingCall -> "正在结束通话"
                     state.isCallable -> "发起通话"
                     else -> "暂不可通话"

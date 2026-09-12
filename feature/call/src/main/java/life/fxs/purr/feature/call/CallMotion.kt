@@ -9,15 +9,17 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.withFrameNanos
+import kotlinx.coroutines.delay
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 
 /** Shared display timing. Compose drives these transitions from its frame clock. */
 internal const val CALL_UI_FRAME_INTERVAL_MILLIS = 16
 internal const val AUDIO_LEVEL_TRANSITION_MILLIS = CALL_UI_FRAME_INTERVAL_MILLIS * 3
-internal const val CHART_TRANSITION_MILLIS = CALL_UI_FRAME_INTERVAL_MILLIS * 3
 internal const val NETWORK_CHART_SAMPLE_CAPACITY = 150
-internal const val NETWORK_CHART_WINDOW_MILLIS = 7_500L
-internal const val NETWORK_CHART_MAX_CONTIGUOUS_GAP_MILLIS = 150L
+internal const val NETWORK_CHART_WINDOW_MILLIS = 60_000L
+internal const val NETWORK_CHART_MAX_CONTIGUOUS_GAP_MILLIS = 3_000L
 
 @Composable
 internal fun animateAudioLevel(level: Float): Float {
@@ -33,23 +35,15 @@ internal fun animateAudioLevel(level: Float): Float {
 }
 
 @Composable
-internal fun animateChartScale(maxValue: Double): State<Float> = animateFloatAsState(
-    targetValue = maxValue.toFloat(),
-    animationSpec = tween(
-        durationMillis = CHART_TRANSITION_MILLIS,
-        easing = LinearEasing,
-    ),
-    label = "chart-scale",
-)
-
-@Composable
 internal fun rememberChartFrameTimeMillis(active: Boolean): State<Long> {
     val frameTimeMillis = remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
-    LaunchedEffect(active) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(active, lifecycle) {
         if (!active) return@LaunchedEffect
-        while (true) {
-            withFrameNanos {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
                 frameTimeMillis.longValue = SystemClock.elapsedRealtime()
+                delay(250L)
             }
         }
     }

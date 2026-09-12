@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -50,7 +51,7 @@ internal fun RealtimeAudioMeter(
                 color = if (speaking) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "${normalizedLevel.toInt()}%",
+                text = "${levelPercent.coerceIn(0, 100)}%",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurface,
             )
@@ -94,17 +95,19 @@ internal fun RealtimeLineChart(
     minimumScale: Double = 10.0,
     showDivider: Boolean = true,
 ) {
-    val targetMaxValue = max(
+    val targetMaxValue = remember(series, minimumScale) { max(
         minimumScale,
         maxVisibleChartValue(
             series = series,
         )?.times(1.15) ?: minimumScale,
-    )
-    val animatedMaxValue = animateChartScale(targetMaxValue)
+    ) }
+    val animatedMaxValue = rememberUpdatedState(targetMaxValue)
     val reusablePaths = remember(series.size) { List(series.size) { Path() } }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
         ChartLegend(series = series, valueSuffix = valueSuffix)
+        Text("最近 60 秒 · 纵轴 0–${targetMaxValue.formatChartValue()} $valueSuffix",
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         val gridColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
         val backgroundColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
         Canvas(
@@ -168,7 +171,7 @@ private fun ChartLegend(series: List<ChartSeries>, valueSuffix: String) {
                     )
                 }
                 Text(
-                    item.values.lastOrNull { it != null }?.let { "${it.formatChartValue()} $valueSuffix" } ?: NO_DATA,
+                    item.values.lastOrNull()?.let { "${it.formatChartValue()} $valueSuffix" } ?: NO_DATA,
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface,

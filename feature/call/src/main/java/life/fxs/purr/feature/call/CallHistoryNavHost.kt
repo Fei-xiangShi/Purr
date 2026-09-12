@@ -47,26 +47,34 @@ fun CallHistoryNavHost(
                 fadeOut(tween(NAV_MOTION_MILLIS))
         },
     ) {
-        composable(CALENDAR_ROUTE) {
+        composable(CALENDAR_ROUTE) { entry ->
             CallHistoryScreenRoute(
-                onOpenDay = { date -> navController.navigate("day/${date}") },
+                onOpenDay = { date ->
+                    if (navController.currentBackStackEntry == entry) {
+                        navController.navigate("day/${date}") { launchSingleTop = true }
+                    }
+                },
             )
         }
         composable(
             route = DAY_ROUTE,
             arguments = listOf(navArgument(CALL_HISTORY_DATE_ARG) { type = NavType.StringType }),
-        ) {
+        ) { entry ->
             CallDayScreenRoute(
-                onBack = navController::popBackStack,
-                onOpenCall = { callId -> navController.navigate("detail/${Uri.encode(callId)}") },
+                onBack = { if (navController.currentBackStackEntry == entry) navController.popBackStack() },
+                onOpenCall = { callId ->
+                    if (navController.currentBackStackEntry == entry) {
+                        navController.navigate("detail/${Uri.encode(callId)}") { launchSingleTop = true }
+                    }
+                },
             )
         }
         composable(
             route = DETAIL_ROUTE,
             arguments = listOf(navArgument(CALL_HISTORY_CALL_ID_ARG) { type = NavType.StringType }),
-        ) {
+        ) { entry ->
             CallDetailScreenRoute(
-                onBack = navController::popBackStack,
+                onBack = { if (navController.currentBackStackEntry == entry) navController.popBackStack() },
                 onDownload = onDownload,
             )
         }

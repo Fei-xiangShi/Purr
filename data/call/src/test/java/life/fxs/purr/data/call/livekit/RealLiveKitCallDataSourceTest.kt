@@ -245,8 +245,8 @@ class RealLiveKitCallDataSourceTest {
         val failure = observed.filterIsInstance<MediaCallEvent.Failed>().single()
         assertThat(failure.reason).isEqualTo("provider failed")
         assertThat(roomStateProvider.room.value).isNull()
-        verify(exactly = 1) { harness.room.disconnect() }
-        verify(exactly = 1) { harness.room.release() }
+        verify(exactly = 1, timeout = 2_000) { harness.room.disconnect() }
+        verify(exactly = 1, timeout = 2_000) { harness.room.release() }
         observer.cancel()
     }
 

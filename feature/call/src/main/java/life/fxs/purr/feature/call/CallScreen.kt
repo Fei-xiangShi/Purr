@@ -10,12 +10,14 @@ import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import android.widget.Toast
 import android.view.View
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -24,17 +26,18 @@ import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.runtime.Composable
-import life.fxs.purr.domain.call.model.canShowLocalAudioActivity
-import life.fxs.purr.domain.call.model.canShowRemoteAudioActivity
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -43,10 +46,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.util.Locale
 import kotlinx.coroutines.delay
 import life.fxs.purr.core.designsystem.component.VoiceCallScaffold
+import life.fxs.purr.core.media.screenshare.ScreenShareQuality
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.core.model.CallDirection
-import life.fxs.purr.domain.call.model.CallTiming
 import life.fxs.purr.domain.call.model.CallPreparationRequest
+import life.fxs.purr.domain.call.model.CallTiming
+import life.fxs.purr.domain.call.model.LocalScreenShareState
+import life.fxs.purr.domain.call.model.canShowLocalAudioActivity
+import life.fxs.purr.domain.call.model.canShowRemoteAudioActivity
 import life.fxs.purr.domain.call.model.canToggleMute
 import life.fxs.purr.domain.call.model.isEffectivelyMuted
 
@@ -168,9 +175,11 @@ fun CallScreenRoute(
         onRouteSelect = { route -> viewModel.onIntent(CallIntent.RouteSelect(route)) },
         onOpenScreenSharePicker = { viewModel.onIntent(CallIntent.OpenScreenSharePicker) },
         onDismissScreenSharePicker = { viewModel.onIntent(CallIntent.DismissScreenSharePicker) },
+        onSelectPublishQuality = { viewModel.onIntent(CallIntent.SelectPublishQuality(it)) },
         onStartMobileScreenShare = { viewModel.onIntent(CallIntent.StartMobileScreenShare) },
         onStartObsScreenShare = { viewModel.onIntent(CallIntent.StartObsScreenShare) },
         onStopScreenShare = { viewModel.onIntent(CallIntent.StopScreenShare) },
+        onRetryRemoteScreenShare = { viewModel.onIntent(CallIntent.RetryRemoteScreenShare) },
         onDismissObsSetup = { viewModel.onIntent(CallIntent.DismissObsSetup) },
         createRemoteScreenRenderer = viewModel::createRemoteScreenRenderer,
         releaseRemoteScreenRenderer = viewModel::releaseRemoteScreenRenderer,
@@ -191,9 +200,11 @@ fun CallScreen(
     onRouteSelect: (AudioRoute) -> Unit,
     onOpenScreenSharePicker: () -> Unit,
     onDismissScreenSharePicker: () -> Unit,
+    onSelectPublishQuality: (ScreenShareQuality) -> Unit,
     onStartMobileScreenShare: () -> Unit,
     onStartObsScreenShare: () -> Unit,
     onStopScreenShare: () -> Unit,
+    onRetryRemoteScreenShare: () -> Unit,
     onDismissObsSetup: () -> Unit,
     createRemoteScreenRenderer: (Context) -> View,
     releaseRemoteScreenRenderer: (View) -> Unit,
@@ -201,6 +212,34 @@ fun CallScreen(
     onEndCall: () -> Unit,
 ) {
     var toolsVisible by remember(state.session?.callId) { mutableStateOf(false) }
+    var audioRoutesVisible by remember(state.session?.callId) { mutableStateOf(false) }
+    var fullscreen by rememberSaveable(state.screenShare.session?.shareId) { mutableStateOf(false) }
+    var controlsVisible by remember(state.screenShare.session?.shareId) { mutableStateOf(true) }
+    var interaction by remember { mutableLongStateOf(0L) }
+    val live = state.screenState == CallScreenState.Active &&
+        (state.screenShare.remoteState == RemoteScreenShareUiState.Live ||
+            state.screenShare.localState is LocalScreenShareState.Live)
+    val keepControls = toolsVisible || audioRoutesVisible ||
+        state.screenShare.sourcePickerVisible || state.screenShare.obsSetupVisible
+    LaunchedEffect(live, interaction, keepControls, state.screenShare.session?.shareId) {
+        controlsVisible = true
+        if (live && !keepControls) {
+            delay(4_000L)
+            controlsVisible = false
+        }
+    }
+    LaunchedEffect(state.screenShare.shouldShowRemotePanel, state.screenState) {
+        if (!state.screenShare.shouldShowRemotePanel || state.screenState.isTerminalPresentation()) fullscreen = false
+    }
+    val recordInteraction: () -> Unit = { interaction++; controlsVisible = true }
+    val interactionModifier = Modifier.pointerInput(state.screenShare.session?.shareId) {
+        awaitPointerEventScope {
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Final)
+                if (event.changes.any { it.pressed }) recordInteraction()
+            }
+        }
+    }
     LaunchedEffect(state.screenState) {
         if (state.screenState.isTerminalPresentation()) toolsVisible = false
     }
@@ -236,6 +275,8 @@ fun CallScreen(
     }
 
     VoiceCallScaffold(
+        modifier = interactionModifier,
+        chromeVisible = controlsVisible,
         partnerName = partnerName,
         partnerAvatarUrl = partnerAvatarUrl,
         status = if (state.screenState == CallScreenState.Waiting &&
@@ -269,6 +310,7 @@ fun CallScreen(
                     activeRoute = state.activeRoute,
                     enabled = canManageActiveCall && state.availableRoutes.isNotEmpty(),
                     onRouteSelect = onRouteSelect,
+                    onVisibilityChanged = { audioRoutesVisible = it },
                 )
                 CallToolsButton(
                     onClick = { toolsVisible = true },
@@ -279,16 +321,38 @@ fun CallScreen(
         },
         centerContent = if (state.screenShare.shouldShowRemotePanel) {
             {
-                RemoteScreenSharePanel(
-                    state = state.screenShare,
-                    createRenderer = createRemoteScreenRenderer,
-                    releaseRenderer = releaseRemoteScreenRenderer,
-                )
+                if (!fullscreen) {
+                    RemoteScreenSharePanel(
+                        state = state.screenShare,
+                        controlsVisible = controlsVisible,
+                        onFullscreen = { fullscreen = true; recordInteraction() },
+                        createRenderer = createRemoteScreenRenderer,
+                        releaseRenderer = releaseRemoteScreenRenderer,
+                onRetry = onRetryRemoteScreenShare,
+                    )
+                } else {
+                    Spacer(Modifier.fillMaxSize())
+                }
             }
         } else {
             null
         },
     )
+
+    if (fullscreen && state.screenShare.shouldShowRemotePanel) {
+        ScreenShareFullscreenDialog(onDismiss = { fullscreen = false; recordInteraction() }) {
+            RemoteScreenSharePanel(
+                state = state.screenShare,
+                fullscreen = true,
+                controlsVisible = controlsVisible,
+                modifier = interactionModifier,
+                onFullscreen = { fullscreen = false; recordInteraction() },
+                createRenderer = createRemoteScreenRenderer,
+                releaseRenderer = releaseRemoteScreenRenderer,
+                onRetry = onRetryRemoteScreenShare,
+            )
+        }
+    }
 
     if (toolsVisible && !state.screenState.isTerminalPresentation()) {
         CallToolsSheet(
@@ -312,6 +376,8 @@ fun CallScreen(
 
     if (state.screenShare.sourcePickerVisible) {
         ScreenShareSourceSheet(
+            quality = state.screenShare.publishQuality,
+            onSelectQuality = onSelectPublishQuality,
             onDismiss = onDismissScreenSharePicker,
             onMobile = onStartMobileScreenShare,
             onObs = onStartObsScreenShare,
@@ -319,7 +385,7 @@ fun CallScreen(
     }
     if (state.screenShare.obsSetupVisible) {
         state.screenShare.obsPublishing?.let { publishing ->
-            ObsSetupDialog(publishing = publishing, onDismiss = onDismissObsSetup)
+            ObsSetupDialog(publishing = publishing, quality = state.screenShare.publishQuality, onDismiss = onDismissObsSetup)
         }
     }
 }

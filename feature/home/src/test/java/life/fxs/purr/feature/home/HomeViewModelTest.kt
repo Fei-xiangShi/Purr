@@ -24,6 +24,9 @@ import life.fxs.purr.core.model.PairBond
 import life.fxs.purr.core.model.PairedPartner
 import life.fxs.purr.core.model.SelfProfile
 import life.fxs.purr.domain.account.model.AuthSession
+import life.fxs.purr.domain.account.model.ActiveCall
+import life.fxs.purr.domain.account.usecase.RefreshActiveCallUseCase
+import life.fxs.purr.domain.account.usecase.StartRealtimeUpdatesUseCase
 import life.fxs.purr.domain.account.model.RealtimeState
 import life.fxs.purr.domain.account.usecase.ObserveAuthSessionUseCase
 import life.fxs.purr.domain.account.usecase.ObservePairBondUseCase
@@ -40,6 +43,54 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class HomeViewModelTest {
+    @Test
+    fun `server room remains resumable after local hangup for either participant`() = runTest(dispatcher) {
+        callLifecycleState.value = CallLifecycleState(session = callSession(CallConnectionState.Disconnected))
+        withViewModel { vm ->
+            runCurrent()
+            listOf(false, true).forEach { incoming ->
+                realtimeState.value = RealtimeState(activeCall = ActiveCall("server-call", "server-pair", incoming))
+                runCurrent()
+                val target = HomeCallTarget.Existing("server-pair", "server-call", if (incoming) CallDirection.Incoming else CallDirection.Outgoing)
+                assertThat(vm.uiState.value.activeCallTarget).isEqualTo(target)
+                val effect = async { vm.effects.first() }
+                runCurrent()
+                vm.onIntent(HomeIntent.StartCall)
+                runCurrent()
+                assertThat(effect.await()).isEqualTo(HomeEffect.NavigateToCall(target))
+            }
+        }
+    }
+
+    @Test
+    fun `click revalidates a stale room and never joins its old identity`() = runTest(dispatcher) {
+        realtimeState.value = RealtimeState(activeCall = ActiveCall("old-call", "pair-1", false))
+        withViewModel { vm ->
+            runCurrent()
+            coEvery { refreshActiveCallUseCase.invoke() } coAnswers {
+                realtimeState.value = RealtimeState()
+                AppResult.Success(Unit)
+            }
+            val effect = async { vm.effects.first() }
+            runCurrent()
+            vm.onIntent(HomeIntent.StartCall)
+            runCurrent()
+            assertThat(effect.await()).isEqualTo(HomeEffect.NavigateToCall(HomeCallTarget.NewOutgoing("pair-1")))
+        }
+    }
+
+    @Test
+    fun `server refresh failure cannot fall through to a new outgoing call`() = runTest(dispatcher) {
+        withViewModel { vm ->
+            runCurrent()
+            coEvery { refreshActiveCallUseCase.invoke() } returns AppResult.Failure(life.fxs.purr.core.common.AppError.Network())
+            val effect = async { vm.effects.first() }
+            runCurrent()
+            vm.onIntent(HomeIntent.StartCall)
+            runCurrent()
+            assertThat(effect.await()).isInstanceOf(HomeEffect.ShowError::class.java)
+        }
+    }
     private val dispatcher = StandardTestDispatcher()
     private val authState = MutableStateFlow<AuthSession?>(session())
     private val pairState = MutableStateFlow<PairBond?>(pairBond())
@@ -52,9 +103,13 @@ class HomeViewModelTest {
     private val observeRealtimeStateUseCase = mockk<ObserveRealtimeStateUseCase>()
     private val observeCallLifecycleUseCase = mockk<ObserveCallLifecycleUseCase>()
 
+    private val refreshActiveCallUseCase = mockk<RefreshActiveCallUseCase>()
+    private val startRealtimeUpdatesUseCase = mockk<StartRealtimeUpdatesUseCase>(relaxed = true)
+
     @Before
     fun setUp() {
         Dispatchers.setMain(dispatcher)
+        coEvery { refreshActiveCallUseCase.invoke() } returns AppResult.Success(Unit)
         every { observeAuthSessionUseCase.invoke() } returns authState
         every { observePairBondUseCase.invoke() } returns pairState
         every { observeRealtimeStateUseCase.invoke() } returns realtimeState
@@ -365,6 +420,8 @@ class HomeViewModelTest {
         refreshPairBondUseCase = refreshPairBondUseCase,
         observeRealtimeStateUseCase = observeRealtimeStateUseCase,
         observeCallLifecycleUseCase = observeCallLifecycleUseCase,
+        refreshActiveCallUseCase = refreshActiveCallUseCase,
+        startRealtimeUpdatesUseCase = startRealtimeUpdatesUseCase,
     )
 
     private companion object {

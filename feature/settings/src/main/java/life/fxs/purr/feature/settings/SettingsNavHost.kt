@@ -86,7 +86,7 @@ internal fun SettingsNavHost(
                 onRequestIgnoreBatteryOptimizations = onRequestIgnoreBatteryOptimizations,
             )
         }
-        composable(AVATAR_CROP_ROUTE) {
+        composable(AVATAR_CROP_ROUTE) { entry ->
             val image = decodedAvatar
             if (image == null) {
                 DisposableEffect(Unit) {
@@ -98,7 +98,7 @@ internal fun SettingsNavHost(
                 }
                 LaunchedEffect(isPreparingAvatar, hasPendingAvatarSelection) {
                     if (!isPreparingAvatar && !hasPendingAvatarSelection) {
-                        navController.popBackStack()
+                        if (navController.currentBackStackEntry == entry) navController.popBackStack()
                     }
                 }
                 Box(
@@ -118,15 +118,16 @@ internal fun SettingsNavHost(
                     bitmap = image.bitmap,
                     isExporting = isExportingAvatar || isCropConfirming,
                     errorMessage = avatarProcessingError,
-                    onCancel = { navController.popBackStack() },
+                    onCancel = { if (navController.currentBackStackEntry == entry) navController.popBackStack() },
                     onConfirm = { cropArea ->
-                        if (isCropConfirming || isExportingAvatar) return@AvatarCropScreen
+                        if (navController.currentBackStackEntry != entry || isCropConfirming || isExportingAvatar) return@AvatarCropScreen
                         isCropConfirming = true
                         coroutineScope.launch {
                             var keepLockedUntilDestinationDisposes = false
                             try {
                                 if (onCropConfirm(image, cropArea)) {
-                                    keepLockedUntilDestinationDisposes = navController.popBackStack()
+                                    keepLockedUntilDestinationDisposes =
+                                        navController.currentBackStackEntry == entry && navController.popBackStack()
                                 }
                             } finally {
                                 if (!keepLockedUntilDestinationDisposes) {

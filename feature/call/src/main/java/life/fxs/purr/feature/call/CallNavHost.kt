@@ -9,6 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import life.fxs.purr.core.media.screenshare.ScreenShareQuality
 import life.fxs.purr.core.model.AudioRoute
 
 private const val CALL_OVERVIEW_ROUTE = "overview"
@@ -32,9 +33,11 @@ internal fun CallNavHost(
     onRouteSelect: (AudioRoute) -> Unit,
     onOpenScreenSharePicker: () -> Unit,
     onDismissScreenSharePicker: () -> Unit,
+    onSelectPublishQuality: (ScreenShareQuality) -> Unit,
     onStartMobileScreenShare: () -> Unit,
     onStartObsScreenShare: () -> Unit,
     onStopScreenShare: () -> Unit,
+    onRetryRemoteScreenShare: () -> Unit,
     onDismissObsSetup: () -> Unit,
     createRemoteScreenRenderer: (Context) -> View,
     releaseRemoteScreenRenderer: (View) -> Unit,
@@ -66,9 +69,11 @@ internal fun CallNavHost(
                 onRouteSelect = onRouteSelect,
                 onOpenScreenSharePicker = onOpenScreenSharePicker,
                 onDismissScreenSharePicker = onDismissScreenSharePicker,
+                onSelectPublishQuality = onSelectPublishQuality,
                 onStartMobileScreenShare = onStartMobileScreenShare,
                 onStartObsScreenShare = onStartObsScreenShare,
                 onStopScreenShare = onStopScreenShare,
+                onRetryRemoteScreenShare = onRetryRemoteScreenShare,
                 onDismissObsSetup = onDismissObsSetup,
                 createRemoteScreenRenderer = createRemoteScreenRenderer,
                 releaseRemoteScreenRenderer = releaseRemoteScreenRenderer,

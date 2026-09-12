@@ -1181,6 +1181,7 @@ class CallRepositoryImpl @Inject internal constructor(
             "local.release",
             if (failure == null) "end" else "error",
             localStartedAt,
+            failure,
         )
         operationMutex.withLock {
             val current = sessionState.value

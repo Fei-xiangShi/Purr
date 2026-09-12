@@ -24,6 +24,7 @@ import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.core.model.CallDirection
+import life.fxs.purr.core.media.screenshare.ScreenShareQuality
 import life.fxs.purr.core.media.screenshare.ScreenSharePublisherController
 import life.fxs.purr.core.media.screenshare.ScreenSharePublisherStatus
 import life.fxs.purr.core.media.screenshare.WhepPlaybackController
@@ -784,11 +785,15 @@ class CallViewModelTest {
         runCurrent()
 
         viewModel.effects.test {
+            viewModel.onIntent(CallIntent.SelectPublishQuality(ScreenShareQuality.QHD60))
             viewModel.onIntent(CallIntent.StartMobileScreenShare)
             advanceUntilIdle()
 
             val effect = awaitItem() as CallEffect.RequestScreenCapturePermission
             assertThat(effect.request.shareId).isEqualTo("share-1")
+            assertThat(effect.request.quality).isEqualTo(ScreenShareQuality.QHD60)
+            viewModel.onIntent(CallIntent.SelectPublishQuality(ScreenShareQuality.HD30))
+            assertThat(viewModel.state.value.screenShare.publishQuality).isEqualTo(ScreenShareQuality.QHD60)
             verify(exactly = 1) {
                 screenSharePublisherController.prepare(
                     match { it.shareId == "share-1" && it.whipUrl == "https://media.test/whip" },
@@ -868,10 +873,12 @@ class CallViewModelTest {
             )
             runCurrent()
 
+            viewModel.onIntent(CallIntent.SelectPublishQuality(ScreenShareQuality.HD60))
             viewModel.onIntent(CallIntent.StartObsScreenShare)
             advanceUntilIdle()
 
             assertThat(viewModel.state.value.screenShare.obsSetupVisible).isTrue()
+            assertThat(viewModel.state.value.screenShare.publishQuality).isEqualTo(ScreenShareQuality.HD60)
             assertThat(viewModel.state.value.screenShare.obsPublishing).isEqualTo(share.publishing)
             verify(exactly = 0) { screenSharePublisherController.prepare(any()) }
             verify(exactly = 0) { screenSharePublisherController.start(any(), any()) }
@@ -1001,7 +1008,17 @@ class CallViewModelTest {
         assertThat(viewModel.state.value.screenShare.remoteState)
             .isEqualTo(RemoteScreenShareUiState.Failed)
         assertThat(viewModel.state.value.screenShare.errorMessage).isEqualTo("ICE failed")
+        viewModel.onIntent(CallIntent.RetryRemoteScreenShare)
+        viewModel.onIntent(CallIntent.RetryRemoteScreenShare)
+        advanceUntilIdle()
+        verify(exactly = 2) { whepPlaybackController.start(request) } // Initial play + one retry.
+        assertThat(viewModel.state.value.screenShare.remoteState).isEqualTo(RemoteScreenShareUiState.Connecting)
+        assertThat(viewModel.state.value.screenShare.errorMessage).isNull()
         coVerify(exactly = 0) { disconnectCallUseCase.invoke(any()) }
+        viewModel.onIntent(CallIntent.EndCall)
+        advanceUntilIdle()
+        viewModel.onIntent(CallIntent.RetryRemoteScreenShare)
+        verify(exactly = 2) { whepPlaybackController.start(request) }
     }
 
     @Test
