@@ -97,7 +97,7 @@ class HomeViewModel @Inject constructor(
                 val isCallable = bond?.pairId != null &&
                     realtime.activeCall == null &&
                     callLifecycle.resumableSession == null &&
-                    !callLifecycle.isNewCallBlocked && realtime.incomingCallCandidate == null
+                    !callLifecycle.isTerminationInProgress && realtime.incomingCallCandidate == null
                 _uiState.value = _uiState.value.copy(
                     self = session?.self,
                     pairId = bond?.pairId,
@@ -136,7 +136,7 @@ class HomeViewModel @Inject constructor(
                 viewModelScope.launch {
                     try {
                         if (callLifecycleState.value.resumableSession == null &&
-                            !callLifecycleState.value.isNewCallBlocked) {
+                            !callLifecycleState.value.isTerminationInProgress) {
                             startRealtimeUpdatesUseCase()
                             val result = refreshActiveCallUseCase()
                             if (result is AppResult.Failure) {
@@ -150,7 +150,7 @@ class HomeViewModel @Inject constructor(
                         val latestRealtime = realtimeSource.first()
                         val resumeTarget = latestCallLifecycle.resumableSession?.toHomeCallTarget()
                             ?: latestRealtime.serverCallTarget()
-                        if (latestCallLifecycle.isNewCallBlocked && latestCallLifecycle.resumableSession == null) {
+                        if (latestCallLifecycle.isTerminationInProgress && latestCallLifecycle.resumableSession == null) {
                             _effects.emit(HomeEffect.ShowError("上一通电话正在结束，请稍候"))
                         } else if (resumeTarget != null) {
                             _effects.emit(HomeEffect.NavigateToCall(resumeTarget))

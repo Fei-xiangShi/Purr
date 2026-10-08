@@ -16,14 +16,8 @@ data class CallLifecycleState(
                 it.connectionState.isResumable
         }
 
+    /** Local teardown of the current call is still running; a new call must wait for it. */
     val isTerminationInProgress: Boolean
-        get() = session?.let { current ->
-            current.callId == disconnectingCallId &&
-                (current.connectionState == CallConnectionState.Terminating ||
-                    current.connectionState.isOngoing)
-        } == true
-
-    val isNewCallBlocked: Boolean
         get() = session?.let { current ->
             current.callId == disconnectingCallId && current.connectionState.isOngoing
         } == true

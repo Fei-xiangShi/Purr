@@ -246,6 +246,7 @@ private fun ScreenShareDto.toDomain() = ScreenShareSession(
     publishing = publishing?.toDomain(),
     playback = playback?.toDomain(),
     errorMessage = errorMessage,
+    watchUrl = watchUrl,
 )
 
 private fun ScreenSharePublishingDto.toDomain() = ScreenSharePublishing(

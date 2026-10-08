@@ -57,6 +57,7 @@ import life.fxs.purr.domain.call.model.CallLifecycleState
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.LocalCallInterruption
 import life.fxs.purr.domain.call.model.LocalAudioState
+import life.fxs.purr.domain.call.model.canToggleMute
 import life.fxs.purr.domain.call.model.CallPreparationRequest
 import life.fxs.purr.domain.call.repository.CallRepository
 
@@ -106,7 +107,7 @@ class CallRepositoryImpl @Inject internal constructor(
         }
         repositoryScope.launch {
             callRuntimeController.mediaEvents.collect { mediaEvent ->
-                val terminalState = operationMutex.withLock {
+                val termination = operationMutex.withLock {
                     val current = sessionState.value
                     // A delayed event from a previous media generation must not mutate a new call.
                     if (current == null || current.callId != mediaEvent.callId) return@withLock null
@@ -121,39 +122,24 @@ class CallRepositoryImpl @Inject internal constructor(
                     ) {
                         return@withLock null
                     }
-                    if (
-                        mediaEvent is MediaCallEvent.Connected ||
-                        mediaEvent is MediaCallEvent.Reconnecting ||
-                        mediaEvent is MediaCallEvent.Reconnected
-                    ) {
-                        mediaGeneration = mediaEvent.generation
-                    }
-                    if (
-                        mediaEvent is MediaCallEvent.Disconnected ||
-                        mediaEvent is MediaCallEvent.Failed
-                    ) {
-                        if (current.connectionState.isTerminal ||
-                            current.connectionState == CallConnectionState.Terminating
-                        ) {
-                            return@withLock null
+                    when (mediaEvent) {
+                        is MediaCallEvent.Connected,
+                        is MediaCallEvent.Reconnecting,
+                        is MediaCallEvent.Reconnected,
+                        -> mediaGeneration = mediaEvent.generation
+                        is MediaCallEvent.Disconnected,
+                        is MediaCallEvent.Failed,
+                        -> {
+                            // Register teardown atomically with the event so a new call cannot
+                            // replace this session before its runtime is released. The teardown
+                            // itself runs outside this collector.
+                            val terminalState = when (mediaEvent) {
+                                is MediaCallEvent.Failed -> CallConnectionState.Failed(mediaEvent.reason)
+                                else -> CallConnectionState.Disconnected
+                            }
+                            return@withLock beginTerminationLocked(current.callId, terminalState)
                         }
-                        mediaConnection = null
-                        mediaGeneration = null
-                        currentLifecycleGeneration = null
-                        cancelSystemInterruptionLocked(clearOwner = true)
-                        callStatusSynchronizer.stop()
-                        sessionState.emit(
-                            current.copy(
-                                connectionState = CallConnectionState.Terminating,
-                                timing = current.timing.stoppedLocally(System.nanoTime() / NANOS_PER_MILLI),
-                                localAudioState = LocalAudioState.Disabled,
-                                uiSnapshot = current.uiSnapshot.copy(remoteParticipantConnected = false),
-                            ),
-                        )
-                        return@withLock when (mediaEvent) {
-                            is MediaCallEvent.Failed -> CallConnectionState.Failed(mediaEvent.reason)
-                            else -> CallConnectionState.Disconnected
-                        }
+                        else -> Unit
                     }
 
                     val synchronizedSession = callMediaEventReducer.reduce(current, mediaEvent)
@@ -161,11 +147,8 @@ class CallRepositoryImpl @Inject internal constructor(
                     sessionState.emit(synchronizedSession)
                     null
                 }
-                if (terminalState != null) {
-                    terminateCall(
-                        callId = mediaEvent.callId,
-                        terminalState = terminalState,
-                    )
+                if (termination != null) {
+                    repositoryScope.launch { completeTermination(mediaEvent.callId, termination) }
                 }
             }
         }
@@ -184,37 +167,33 @@ class CallRepositoryImpl @Inject internal constructor(
     }.distinctUntilChanged()
 
     override suspend fun prepareCall(request: CallPreparationRequest): AppResult<CallSession> {
-        while (true) {
-            var immediateResult: AppResult<CallSession>? = null
-            val operation = operationMutex.withLock {
-                val inFlight = prepareOperation
-                if (inFlight != null) {
-                    if (inFlight.request == request) return@withLock inFlight.deferred
-                    immediateResult = AppResult.Failure(AppError.Validation("A different call is being prepared"))
-                    return@withLock null
-                }
-                val existing = sessionState.value
-                if (existing != null &&
-                    existing.connectionState.isOngoing &&
-                    existing.connectionState != CallConnectionState.Terminating
-                ) {
-                    immediateResult = AppResult.Failure(AppError.Validation("A call is already in progress"))
-                    return@withLock null
-                }
-
-                val id = ++operationId
-                val deferred = repositoryScope.async(start = CoroutineStart.LAZY) {
-                    performPrepareCall(id, request)
-                }
-                prepareOperation = PrepareOperation(id, request, deferred)
-                deferred
+        var immediateResult: AppResult<CallSession>? = null
+        val operation = operationMutex.withLock {
+            val inFlight = prepareOperation
+            if (inFlight != null) {
+                if (inFlight.request == request) return@withLock inFlight.deferred
+                immediateResult = AppResult.Failure(AppError.Validation("A different call is being prepared"))
+                return@withLock null
+            }
+            // A terminating call no longer blocks the next one; its teardown is call-scoped.
+            val existing = sessionState.value
+            if (existing != null && existing.connectionState.isResumable) {
+                immediateResult = AppResult.Failure(AppError.Validation("A call is already in progress"))
+                return@withLock null
             }
 
-            immediateResult?.let { return it }
-            val activeOperation = requireNotNull(operation)
-            activeOperation.start()
-            return activeOperation.await()
+            val id = ++operationId
+            val deferred = repositoryScope.async(start = CoroutineStart.LAZY) {
+                performPrepareCall(id, request)
+            }
+            prepareOperation = PrepareOperation(id, request, deferred)
+            deferred
         }
+
+        immediateResult?.let { return it }
+        val activeOperation = requireNotNull(operation)
+        activeOperation.start()
+        return activeOperation.await()
     }
 
     override suspend fun cancelCallPreparation() {
@@ -232,7 +211,7 @@ class CallRepositoryImpl @Inject internal constructor(
             val created = sessionPreparationCoordinator.prepare(request)
             prepared = created
             operationMutex.withLock {
-                cancelSystemInterruptionLocked(clearOwner = true)
+                cancelSystemInterruptionLocked()
                 mediaConnection = created.mediaConnection
                 mediaGeneration = null
                 currentLifecycleGeneration = null
@@ -292,7 +271,7 @@ class CallRepositoryImpl @Inject internal constructor(
 
             val id = ++operationId
             val generation = ++lifecycleGeneration
-            cancelSystemInterruptionLocked(clearOwner = true)
+            cancelSystemInterruptionLocked()
             currentLifecycleGeneration = generation
             val terminationSignal = CallTerminationSignal()
             val deferred = repositoryScope.async(start = CoroutineStart.LAZY) {
@@ -359,19 +338,15 @@ class CallRepositoryImpl @Inject internal constructor(
                 terminationSignal.throwIfRequested()
                 AppResult.Success(Unit)
             }
+        } catch (_: CallTerminationException) {
+            // Termination won the race. Its owner publishes the terminal state; the connect
+            // caller is not cancelled and must receive a result rather than a cancellation.
+            AppResult.Failure(AppError.Validation("Call was terminated while connecting"))
         } catch (throwable: Throwable) {
-            if (throwable is CallTerminationException) throw throwable
-            if (throwable is TimeoutCancellationException) {
-                logStage(session.callId, generation, "connect", "timeout", throwable = throwable)
-                repositoryScope.launch {
-                    terminateCall(
-                        callId = session.callId,
-                        terminalState = CallConnectionState.Failed(throwable.message),
-                    )
-                }
-                return AppResult.Failure(throwable.asAppError())
+            if (throwable is CancellationException && throwable !is TimeoutCancellationException) {
+                throw throwable
             }
-            if (throwable is CancellationException) throw throwable
+            logStage(session.callId, generation, "connect", "error", throwable = throwable)
             repositoryScope.launch {
                 terminateCall(
                     callId = session.callId,
@@ -407,7 +382,7 @@ class CallRepositoryImpl @Inject internal constructor(
                 session.connectionState == CallConnectionState.Preparing ||
                 session.connectionState == CallConnectionState.Connecting
             ) {
-                cancelSystemInterruptionLocked(clearOwner = true)
+                cancelSystemInterruptionLocked()
                 return@withLock SuspendDecision.Terminate(session.callId)
             }
             if (
@@ -456,13 +431,12 @@ class CallRepositoryImpl @Inject internal constructor(
                 existing.completed = false
                 existing
             } else {
-                cancelSystemInterruptionLocked(clearOwner = true)
+                cancelSystemInterruptionLocked()
                 SystemInterruptionOwner(
                     callId = session.callId,
                     lifecycleGeneration = lifecycle,
                     mediaGeneration = media,
                     operationId = request.operationId,
-                    inactiveTelecomSequence = request.telecomSequence,
                     latestTelecomSequence = request.telecomSequence,
                     enableMicrophoneOnResume = session.localAudioState.shouldEnableMicrophoneOnResume(),
                 ).also { created ->
@@ -986,14 +960,15 @@ class CallRepositoryImpl @Inject internal constructor(
         )
     }
 
-    private suspend fun cancelSystemInterruptionLocked(clearOwner: Boolean) {
-        val owner = systemInterruptionOwner
-        owner?.enforcementJob?.cancel()
-        owner?.resumeJob?.cancel()
-        owner?.finishTelemetry(result = "cancelled")
-        owner?.enforcementJob = null
-        owner?.resumeJob = null
-        if (clearOwner) systemInterruptionOwner = null
+    private suspend fun cancelSystemInterruptionLocked() {
+        systemInterruptionOwner?.let { owner ->
+            owner.enforcementJob?.cancel()
+            owner.resumeJob?.cancel()
+            owner.enforcementJob = null
+            owner.resumeJob = null
+            owner.finishTelemetry(result = "cancelled")
+        }
+        systemInterruptionOwner = null
         val session = sessionState.value ?: return
         if (session.interruptionState.local != LocalCallInterruption.None) {
             sessionState.emit(
@@ -1016,131 +991,115 @@ class CallRepositoryImpl @Inject internal constructor(
         // Stopping status synchronization can cancel the requesting coroutine.
         // Own the complete handoff, including starting the lazy cleanup job,
         // independently of the observer, screen, or platform callback's lifetime.
-        requestTermination(callId, terminalState)
+        val termination = operationMutex.withLock { beginTerminationLocked(callId, terminalState) }
+        completeTermination(callId, termination)
     }.await()
 
-    private suspend fun requestTermination(
+    /**
+     * Single entry point of the termination state machine. It closes the session to further
+     * media/interruption/status mutations and registers a call-scoped teardown owner, all
+     * under [operationMutex], so no other operation can replace the session in between.
+     */
+    private suspend fun beginTerminationLocked(
         callId: String,
         terminalState: CallConnectionState,
-    ): AppResult<Unit> {
-        var serverEndGeneration = 0L
-        var shouldEnqueueServerEnd = false
-        val operation = operationMutex.withLock {
-            disconnectOperations[callId]?.let { currentOperation ->
-                serverEndGeneration = currentOperation.generation
-                shouldEnqueueServerEnd = true
-                return@withLock currentOperation.deferred
-            }
+    ): Termination {
+        disconnectOperations[callId]?.let { return Termination(it.generation, it.deferred) }
 
-            val session = sessionState.value
+        val session = sessionState.value
+        if (session == null || session.callId != callId || session.connectionState.isTerminal) {
             if (session == null) {
                 prepareOperation?.deferred?.cancel(CancellationException("Call termination requested"))
-                serverEndGeneration = ++lifecycleGeneration
-                shouldEnqueueServerEnd = true
-                return@withLock null
             }
-            if (session.callId != callId) {
-                serverEndGeneration = ++lifecycleGeneration
-                shouldEnqueueServerEnd = true
-                return@withLock null
-            }
-            if (session.connectionState.isTerminal) {
-                serverEndGeneration = ++lifecycleGeneration
-                shouldEnqueueServerEnd = true
-                return@withLock null
-            }
-
-            val pendingConnect = connectOperation
-                ?.takeIf { it.callId == session.callId }
-            pendingConnect?.terminationSignal?.request()
-            val generation = pendingConnect?.generation ?: ++lifecycleGeneration
-            logStage(session.callId, generation, "termination.request", "begin")
-
-            mediaConnection = null
-            mediaGeneration = null
-            currentLifecycleGeneration = null
-            cancelSystemInterruptionLocked(clearOwner = true)
-            callStatusSynchronizer.stop()
-            if (session.connectionState != CallConnectionState.Terminating) {
-                sessionState.emit(
-                    session.copy(
-                        connectionState = CallConnectionState.Terminating,
-                        timing = session.timing.stoppedLocally(System.nanoTime() / NANOS_PER_MILLI),
-                        localAudioState = LocalAudioState.Disabled,
-                        uiSnapshot = session.uiSnapshot.copy(remoteParticipantConnected = false),
-                    ),
-                )
-            }
-
-            val deferred = repositoryScope.async(start = CoroutineStart.LAZY) {
-                disconnectSession(
-                    session = session,
-                    requestedTerminalState = terminalState,
-                    generation = generation,
-                    pendingConnect = pendingConnect?.deferred,
-                )
-            }
-            disconnectOperations[session.callId] = DisconnectOperation(
-                callId = session.callId,
-                generation = generation,
-                deferred = deferred,
-            )
-            disconnectingCallIdState.value = session.callId
-            serverEndGeneration = generation
-            shouldEnqueueServerEnd = true
-            deferred
+            return Termination(serverEndGeneration = ++lifecycleGeneration, teardown = null)
         }
 
+        val pendingConnect = connectOperation?.takeIf { it.callId == callId }
+        pendingConnect?.terminationSignal?.request()
+        val generation = pendingConnect?.generation ?: ++lifecycleGeneration
+        logStage(callId, generation, "termination.request", "begin")
+
+        mediaConnection = null
+        mediaGeneration = null
+        currentLifecycleGeneration = null
+        cancelSystemInterruptionLocked()
+        callStatusSynchronizer.stop()
+        val current = requireNotNull(sessionState.value)
+        if (current.connectionState != CallConnectionState.Terminating) {
+            sessionState.emit(
+                current.copy(
+                    connectionState = CallConnectionState.Terminating,
+                    timing = current.timing.stoppedLocally(System.nanoTime() / NANOS_PER_MILLI),
+                    localAudioState = LocalAudioState.Disabled,
+                    uiSnapshot = current.uiSnapshot.copy(remoteParticipantConnected = false),
+                ),
+            )
+        }
+
+        // Do not await the connect owner. The termination signal has been requested; local
+        // teardown owns the runtime and stale connect completions are filtered by callId.
+        val deferred = repositoryScope.async(start = CoroutineStart.LAZY) {
+            disconnectSession(
+                callId = callId,
+                requestedTerminalState = terminalState,
+                generation = generation,
+            )
+        }
+        disconnectOperations[callId] = DisconnectOperation(generation, deferred)
+        disconnectingCallIdState.value = callId
+        return Termination(serverEndGeneration = generation, teardown = deferred)
+    }
+
+    private suspend fun completeTermination(
+        callId: String,
+        termination: Termination,
+    ): AppResult<Unit> {
         // Server reconciliation is deliberately independent from local teardown. Start it
         // before any synchronous/native disconnect stage can suspend or time out, and also
         // start it for idempotent/stale calls that no longer have a local session.
-        if (shouldEnqueueServerEnd) {
-            enqueueServerEnd(callId, serverEndGeneration)
-        }
-
-        if (operation == null) return AppResult.Success(Unit)
-        operation.start()
-        return operation.await()
+        enqueueServerEnd(callId, termination.serverEndGeneration)
+        val teardown = termination.teardown ?: return AppResult.Success(Unit)
+        teardown.start()
+        return teardown.await()
     }
 
     /**
-     * Performs local teardown before the server request. The caller is an application-scoped
-     * operation so a screen being popped cannot cancel microphone/foreground-service cleanup.
+     * Performs local teardown. The caller is an application-scoped operation so a screen
+     * being popped cannot cancel microphone/foreground-service cleanup.
      */
     private suspend fun disconnectSession(
-        session: CallSession,
+        callId: String,
         requestedTerminalState: CallConnectionState,
         generation: Long,
-        pendingConnect: Deferred<AppResult<Unit>>?,
     ): AppResult<Unit> {
         var failure: Throwable? = null
         var cancellation: CancellationException? = null
-        val terminationStartedAt = System.nanoTime()
+        val startedAt = System.nanoTime()
+        logStage(callId, generation, "local.release", "begin")
         try {
             withTimeout(CALL_TERMINATION_TIMEOUT_MILLIS) {
-                failure = performDisconnectSession(
-                    session = session,
-                    requestedTerminalState = requestedTerminalState,
-                    generation = generation,
-                    pendingConnect = pendingConnect,
-                )
+                // The runtime releases audio, Telecom and the foreground service itself,
+                // including when the media provider disconnect fails.
+                callRuntimeController.execute(MediaCallCommand.Disconnect(callId))
             }
         } catch (timeout: TimeoutCancellationException) {
-            failure = failure?.also { it.addSuppressed(timeout) } ?: timeout
-            logStage(
-                session.callId,
-                generation,
-                "termination",
-                "timeout",
-                terminationStartedAt,
-                timeout,
-            )
+            failure = timeout
         } catch (cancelled: CancellationException) {
             cancellation = cancelled
+        } catch (throwable: Throwable) {
+            failure = throwable
         } finally {
+            logStage(
+                callId,
+                generation,
+                "local.release",
+                if (failure == null && cancellation == null) "end" else "error",
+                startedAt,
+                failure ?: cancellation,
+            )
             withContext(NonCancellable) {
                 finalizeDisconnectSession(
-                    session = session,
+                    callId = callId,
                     requestedTerminalState = requestedTerminalState,
                     generation = generation,
                     failure = failure ?: cancellation,
@@ -1150,56 +1109,6 @@ class CallRepositoryImpl @Inject internal constructor(
 
         cancellation?.let { throw it }
         return failure?.let { AppResult.Failure(it.asAppError()) } ?: AppResult.Success(Unit)
-    }
-
-    private suspend fun performDisconnectSession(
-        session: CallSession,
-        requestedTerminalState: CallConnectionState,
-        generation: Long,
-        pendingConnect: Deferred<AppResult<Unit>>?,
-    ): Throwable? {
-        var failure: Throwable? = null
-
-        // Do not await the connect owner here. The termination signal has already
-        // been requested; local teardown owns the runtime and stale connect
-        // completions are filtered by callId/generation.
-
-        val localStartedAt = System.nanoTime()
-        logStage(session.callId, generation, "local.release", "begin")
-        try {
-            callRuntimeController.execute(MediaCallCommand.Disconnect(session.callId))
-        } catch (throwable: Throwable) {
-            if (throwable is CancellationException) throw throwable
-            failure = throwable
-            runCatching { callRuntimeController.releaseResources() }
-                .exceptionOrNull()
-                ?.let { cleanupFailure -> failure?.addSuppressed(cleanupFailure) }
-        }
-        logStage(
-            session.callId,
-            generation,
-            "local.release",
-            if (failure == null) "end" else "error",
-            localStartedAt,
-            failure,
-        )
-        operationMutex.withLock {
-            val current = sessionState.value
-            if (current?.callId == session.callId) {
-                val localTerminalState = failure
-                    ?.let { CallConnectionState.Failed(it.message) }
-                    ?: requestedTerminalState
-                sessionState.emit(
-                    current.copy(
-                        connectionState = localTerminalState,
-                        localAudioState = LocalAudioState.Disabled,
-                        uiSnapshot = current.uiSnapshot.copy(remoteParticipantConnected = false),
-                    ),
-                )
-            }
-        }
-
-        return failure
     }
 
     /** Server synchronization is application-scoped and never part of local call termination. */
@@ -1241,125 +1150,118 @@ class CallRepositoryImpl @Inject internal constructor(
     }
 
     private suspend fun finalizeDisconnectSession(
-        session: CallSession,
+        callId: String,
         requestedTerminalState: CallConnectionState,
         generation: Long,
         failure: Throwable?,
     ) {
         operationMutex.withLock {
-            disconnectOperations[session.callId]
-                ?.takeIf { it.generation == generation }
-                ?.let { disconnectOperations.remove(session.callId) }
+            if (disconnectOperations[callId]?.generation == generation) {
+                disconnectOperations.remove(callId)
+            }
             val current = sessionState.value
-            if (current?.callId == session.callId) {
-                val finalState = if (current.connectionState.isTerminal) {
-                    current.connectionState
-                } else {
-                    failure?.let { CallConnectionState.Failed(it.message) } ?: requestedTerminalState
-                }
+            if (current?.callId == callId) {
                 sessionState.emit(
                     current.copy(
-                        connectionState = finalState,
+                        connectionState = failure
+                            ?.let { CallConnectionState.Failed(it.message) }
+                            ?: requestedTerminalState,
                         localAudioState = LocalAudioState.Disabled,
                         uiSnapshot = current.uiSnapshot.copy(remoteParticipantConnected = false),
                     ),
                 )
-                logStage(session.callId, generation, "terminal.emit", "end")
+                logStage(callId, generation, "terminal.emit", "end")
             }
-            if (disconnectingCallIdState.value == session.callId) {
+            if (disconnectingCallIdState.value == callId) {
                 disconnectingCallIdState.value = null
             }
         }
     }
 
-    override suspend fun setMuted(muted: Boolean): AppResult<Unit> = operationMutex.withLock {
-        val session = sessionState.value
-            ?: return@withLock AppResult.Failure(AppError.Validation("No call session"))
-        if (session.connectionState != CallConnectionState.Connected) {
-            return@withLock AppResult.Failure(AppError.Validation("Call media is not connected"))
+    override suspend fun setMuted(muted: Boolean): AppResult<Unit> {
+        val transitionalState = if (muted) LocalAudioState.Muting else LocalAudioState.Unmuting
+        val targetState = if (muted) LocalAudioState.Muted else LocalAudioState.Enabled
+        var previousAudioState: LocalAudioState = LocalAudioState.Disabled
+        val callId = operationMutex.withLock {
+            val session = sessionState.value
+                ?: return AppResult.Failure(AppError.Validation("No call session"))
+            if (session.connectionState != CallConnectionState.Connected) {
+                return AppResult.Failure(AppError.Validation("Call media is not connected"))
+            }
+            if (session.interruptionState.local != LocalCallInterruption.None) {
+                return AppResult.Failure(AppError.Validation("Call media is suspended by a system call"))
+            }
+            if (session.localAudioState == targetState) return AppResult.Success(Unit)
+            if (!session.localAudioState.canToggleMute) {
+                return AppResult.Failure(AppError.Validation("Microphone state is not ready"))
+            }
+            previousAudioState = session.localAudioState
+            sessionState.emit(session.copy(localAudioState = transitionalState))
+            session.callId
         }
-        if (session.interruptionState.local != LocalCallInterruption.None) {
-            return@withLock AppResult.Failure(AppError.Validation("Call media is suspended by a system call"))
+
+        // The runtime call stays outside operationMutex: a stuck provider must never block
+        // hang-up, media events or status synchronization.
+        var result: AppResult<Unit>? = null
+        try {
+            result = runCatchingAppResult {
+                callRuntimeController.execute(MediaCallCommand.SetMuted(callId = callId, muted = muted))
+            }
+        } finally {
+            withContext(NonCancellable) {
+                operationMutex.withLock {
+                    val current = sessionState.value
+                    // Termination or a provider audio fact may have superseded this transition.
+                    if (current?.callId != callId || current.localAudioState != transitionalState) {
+                        return@withLock
+                    }
+                    val committedState = if (result is AppResult.Success) targetState else previousAudioState
+                    sessionState.emit(current.copy(localAudioState = committedState))
+                }
+            }
         }
-        val previousAudioState = session.localAudioState
-        if (muted && previousAudioState == LocalAudioState.Muted) {
-            return@withLock AppResult.Success(Unit)
-        }
-        if (!muted && previousAudioState == LocalAudioState.Enabled) {
-            return@withLock AppResult.Success(Unit)
-        }
-        if (previousAudioState != LocalAudioState.Enabled && previousAudioState != LocalAudioState.Muted) {
-            return@withLock AppResult.Failure(AppError.Validation("Microphone state is not ready"))
-        }
-        sessionState.emit(
-            session.copy(
-                localAudioState = if (muted) LocalAudioState.Muting else LocalAudioState.Unmuting,
-            ),
-        )
-        appResult(
-            onFailure = {
-                val restoredSession = requireNotNull(sessionState.value ?: session)
-                    .copy(localAudioState = previousAudioState)
-                sessionState.emit(restoredSession)
-            },
-        ) {
-            callRuntimeController.execute(
-                MediaCallCommand.SetMuted(
-                    callId = session.callId,
-                    muted = muted,
-                ),
-            )
-            val updatedSession = requireNotNull(sessionState.value ?: session).copy(
-                localAudioState = if (muted) LocalAudioState.Muted else LocalAudioState.Enabled,
-            )
-            sessionState.emit(updatedSession)
-        }
+        return requireNotNull(result)
     }
 
-    override suspend fun selectAudioRoute(route: AudioRoute): AppResult<Unit> = operationMutex.withLock {
-        val session = sessionState.value
-            ?: return@withLock AppResult.Failure(AppError.Validation("No call session"))
-        if (session.connectionState != CallConnectionState.Connected) {
-            return@withLock AppResult.Failure(AppError.Validation("Call media is not connected"))
+    override suspend fun selectAudioRoute(route: AudioRoute): AppResult<Unit> {
+        operationMutex.withLock {
+            val session = sessionState.value
+                ?: return AppResult.Failure(AppError.Validation("No call session"))
+            if (session.connectionState != CallConnectionState.Connected) {
+                return AppResult.Failure(AppError.Validation("Call media is not connected"))
+            }
+            if (session.interruptionState.local != LocalCallInterruption.None) {
+                return AppResult.Failure(AppError.Validation("Audio route is locked during a system call"))
+            }
         }
-        if (session.interruptionState.local != LocalCallInterruption.None) {
-            return@withLock AppResult.Failure(AppError.Validation("Audio route is locked during a system call"))
-        }
-        appResult {
-            callRuntimeController.selectAudioRoute(route)
-        }
+        // The runtime ignores route requests once its call has been released.
+        return runCatchingAppResult { callRuntimeController.selectAudioRoute(route) }
     }
 
     private fun startCallStatusSync(callId: String) {
         callStatusSynchronizer.start(callId) { callStatus ->
-            val callEnded = operationMutex.withLock {
+            val termination = operationMutex.withLock {
                 val latestSession = sessionState.value
-                if (latestSession == null || latestSession.callId != callId) return@withLock false
+                if (latestSession == null || latestSession.callId != callId) return@withLock null
                 if (latestSession.connectionState.isTerminal ||
                     latestSession.connectionState == CallConnectionState.Terminating
-                ) return@withLock false
+                ) return@withLock null
                 val syncedSession = latestSession.copy(
                     recordingState = callStatus.recordingStatus.toRecordingState(),
                     timing = callStatus.toCallTiming(previous = latestSession.timing),
                 )
-                if (callStatus.state.equals("ended", ignoreCase = true)) {
-                    sessionState.emit(syncedSession)
-                    return@withLock true
-                }
                 if (syncedSession != latestSession) {
                     sessionState.emit(syncedSession)
                 }
-                false
-            }
-            if (!callEnded) return@start true
+                if (!callStatus.state.equals("ended", ignoreCase = true)) return@withLock null
+                // Route status-driven termination through the same call-scoped owner as UI,
+                // notification, Telecom, and media events.
+                beginTerminationLocked(callId, CallConnectionState.Disconnected)
+            } ?: return@start true
 
-            // Route status-driven termination through the same call-scoped owner as UI,
-            // notification, Telecom, and media events. This records the termination signal
-            // before waiting for runtime cleanup and keeps slow teardown outside operationMutex.
-            terminateCall(
-                callId = callId,
-                terminalState = CallConnectionState.Disconnected,
-            )
+            // Registering the termination stopped this observation, so the remaining
+            // handoff must not run in the observer's (now cancelled) coroutine.
+            repositoryScope.launch { completeTermination(callId, termination) }
             false
         }
     }
@@ -1383,18 +1285,15 @@ class CallRepositoryImpl @Inject internal constructor(
         if (throwable == null) logger.d(LOG_TAG, message) else logger.e(LOG_TAG, throwable, message)
     }
 
-    private suspend inline fun <T> appResult(
-        noinline onFailure: suspend (Throwable) -> Unit = {},
-        block: suspend () -> T,
-    ): AppResult<T> {
+    private suspend inline fun <T> runCatchingAppResult(block: suspend () -> T): AppResult<T> {
         return try {
             AppResult.Success(block())
         } catch (throwable: Throwable) {
             if (throwable is CancellationException) throw throwable
-            onFailure(throwable)
             AppResult.Failure(throwable.asAppError())
         }
     }
+
     private companion object {
         const val LOG_TAG = "CallLifecycle"
         const val NANOS_PER_MILLI = 1_000_000L
@@ -1432,24 +1331,30 @@ private enum class ResumeLoopAction {
     Stop,
 }
 
-private data class SystemInterruptionOwner(
+/** Mutable, identity-compared owner of one system-call interruption operation. */
+private class SystemInterruptionOwner(
     val callId: String,
     val lifecycleGeneration: Long,
     val mediaGeneration: Long,
     val operationId: String,
-    val inactiveTelecomSequence: Long,
     var latestTelecomSequence: Long,
     val enableMicrophoneOnResume: Boolean,
-    var enforcementJob: Job? = null,
-    var resumeJob: Job? = null,
-    var completed: Boolean = false,
-    var telemetryOperation: CallInterruptionTelemetryOperation? = null,
-)
+) {
+    var enforcementJob: Job? = null
+    var resumeJob: Job? = null
+    var completed: Boolean = false
+    var telemetryOperation: CallInterruptionTelemetryOperation? = null
+}
 
-private data class DisconnectOperation(
-    val callId: String,
+private class DisconnectOperation(
     val generation: Long,
     val deferred: Deferred<AppResult<Unit>>,
+)
+
+/** Result of registering a termination: a server end is always due, local teardown only for a live session. */
+private class Termination(
+    val serverEndGeneration: Long,
+    val teardown: Deferred<AppResult<Unit>>?,
 )
 
 private data class PrepareOperation(

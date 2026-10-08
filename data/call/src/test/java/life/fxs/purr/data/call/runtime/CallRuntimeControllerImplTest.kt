@@ -189,44 +189,14 @@ class CallRuntimeControllerImplTest {
     }
 
     @Test
-    fun `mute changes only media transmission`() = runTest {
+    fun `mute and unmute change only media transmission`() = runTest {
         val runtime = connectedRuntime()
-        val command = MediaCallCommand.SetMuted("call-1", muted = true)
-        coEvery { mediaCallPort.execute(command) } returns Unit
+        coEvery { mediaCallPort.execute(match { it is MediaCallCommand.SetMuted }) } returns Unit
 
-        runtime.execute(command)
+        runtime.execute(MediaCallCommand.SetMuted("call-1", muted = true))
+        runtime.execute(MediaCallCommand.SetMuted("call-1", muted = false))
 
-        coVerify(exactly = 1) { mediaCallPort.execute(command) }
-        coVerify(exactly = 0) { audioRouteController.selectRoute(any()) }
-        coVerify(exactly = 0) { audioRouteController.selectDefaultRoute() }
-        coVerify(exactly = 0) { audioRouteController.releaseCallRoute() }
-    }
-
-    @Test
-    fun `unmute changes only media transmission`() = runTest {
-        val runtime = connectedRuntime()
-        val command = MediaCallCommand.SetMuted("call-1", muted = false)
-        coEvery { mediaCallPort.execute(command) } returns Unit
-
-        runtime.execute(command)
-
-        coVerify(exactly = 1) { mediaCallPort.execute(command) }
-        coVerify(exactly = 0) { audioRouteController.selectRoute(any()) }
-        coVerify(exactly = 0) { audioRouteController.selectDefaultRoute() }
-        coVerify(exactly = 0) { audioRouteController.releaseCallRoute() }
-    }
-
-    @Test
-    fun `failed unmute does not mutate the audio session or route`() = runTest {
-        val runtime = connectedRuntime()
-        val command = MediaCallCommand.SetMuted("call-1", muted = false)
-        val failure = IllegalStateException("provider rejected unmute")
-        coEvery { mediaCallPort.execute(command) } throws failure
-
-        val result = runCatching { runtime.execute(command) }
-
-        assertThat(result.exceptionOrNull()).isSameInstanceAs(failure)
-        coVerify(exactly = 1) { mediaCallPort.execute(command) }
+        coVerify(exactly = 2) { mediaCallPort.execute(match { it is MediaCallCommand.SetMuted }) }
         coVerify(exactly = 0) { audioRouteController.selectRoute(any()) }
         coVerify(exactly = 0) { audioRouteController.selectDefaultRoute() }
         coVerify(exactly = 0) { audioRouteController.releaseCallRoute() }

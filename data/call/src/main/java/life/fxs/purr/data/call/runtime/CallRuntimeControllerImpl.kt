@@ -131,13 +131,6 @@ class CallRuntimeControllerImpl @Inject constructor(
         logger.d(LOG_TAG, "callId=${command.callId} phase=runtime.mute event=end muted=${command.muted}")
     }
 
-    override suspend fun releaseResources() = lifecycleMutex.withLock {
-        val failure = releaseResourcesLocked()
-        activeCallId = null
-        failure?.let { throw it }
-        Unit
-    }
-
     override suspend fun suspendForSystemCall(
         request: MediaSystemCallSuspendRequest,
     ): MediaSystemCallInterruptionResult = lifecycleMutex.withLock {

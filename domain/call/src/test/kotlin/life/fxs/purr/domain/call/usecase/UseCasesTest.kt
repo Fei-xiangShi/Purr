@@ -2,7 +2,6 @@ package life.fxs.purr.domain.call.usecase
 
 import com.google.common.truth.Truth.assertThat
 import life.fxs.purr.core.common.AppResult
-import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.domain.call.repository.CallRepository
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -22,16 +21,5 @@ class UseCasesTest {
 
         assertThat(result).isEqualTo(AppResult.Success(Unit))
         coVerify { repository.setMuted(true) }
-    }
-
-    @Test
-    fun `select audio route delegates to repository`() = runTest {
-        coEvery { repository.selectAudioRoute(AudioRoute.Speaker) } returns AppResult.Success(Unit)
-
-        val useCase = SelectAudioRouteUseCase(repository)
-        val result = useCase(AudioRoute.Speaker)
-
-        assertThat(result).isEqualTo(AppResult.Success(Unit))
-        coVerify { repository.selectAudioRoute(AudioRoute.Speaker) }
     }
 }

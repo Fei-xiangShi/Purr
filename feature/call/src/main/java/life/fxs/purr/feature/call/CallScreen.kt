@@ -290,6 +290,9 @@ fun CallScreen(
         avatarModifier = partnerAvatarModifier,
         remoteAudioLevel = remoteAudioLevel,
         bottomContent = {
+            if (!state.screenState.isTerminalPresentation()) {
+                BrowserWatchLinkCard(state.screenShare)
+            }
             LocalScreenShareStatus(state.screenShare)
             Row(
                 modifier = Modifier.fillMaxWidth(),

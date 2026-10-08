@@ -37,9 +37,11 @@ class CallMediaEventReducerTest {
     fun `event for another call is ignored`() {
         val reduced = reducer.reduce(
             session = session(),
-            event = MediaCallEvent.Disconnected(
+            event = MediaCallEvent.ParticipantChanged(
                 callId = "old-call",
                 generation = 1L,
+                remoteIdentity = "remote",
+                remoteParticipantConnected = true,
             ),
         )
 
@@ -47,21 +49,9 @@ class CallMediaEventReducerTest {
     }
 
     @Test
-    fun `provider failure maps to one terminal domain state`() {
-        val reduced = reducer.reduce(
-            session = session(),
-            event = MediaCallEvent.Failed(
-                callId = "call-1",
-                generation = 9L,
-                reason = "transport failed",
-            ),
-        )
-
-        assertThat(reduced?.connectionState)
-            .isEqualTo(CallConnectionState.Failed("transport failed"))
-        assertThat(reduced?.localAudioState)
-            .isEqualTo(LocalAudioState.Error("transport failed"))
-        assertThat(reduced?.uiSnapshot?.remoteParticipantConnected).isFalse()
+    fun `terminal media facts are left to the session termination owner`() {
+        assertThat(reducer.reduce(session(), MediaCallEvent.Disconnected("call-1", 1L))).isNull()
+        assertThat(reducer.reduce(session(), MediaCallEvent.Failed("call-1", 1L, "transport failed"))).isNull()
     }
 
     @Test

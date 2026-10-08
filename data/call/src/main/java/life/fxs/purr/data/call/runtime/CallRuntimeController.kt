@@ -18,8 +18,6 @@ interface CallRuntimeController {
         request: MediaSystemCallResumeRequest,
     ): MediaSystemCallInterruptionResult
 
-    suspend fun releaseResources()
-
     suspend fun selectAudioRoute(route: AudioRoute)
 }
 

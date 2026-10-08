@@ -14,9 +14,7 @@ class CallLifecycleStateTest {
 
         assertThat(pending.resumableSession).isNull()
         assertThat(pending.isTerminationInProgress).isFalse()
-        assertThat(pending.isNewCallBlocked).isFalse()
         assertThat(complete.isTerminationInProgress).isFalse()
-        assertThat(complete.isNewCallBlocked).isFalse()
     }
 
     @Test
@@ -39,7 +37,6 @@ class CallLifecycleStateTest {
 
         assertThat(lifecycle.resumableSession).isNull()
         assertThat(lifecycle.isTerminationInProgress).isTrue()
-        assertThat(lifecycle.isNewCallBlocked).isTrue()
     }
 
     private fun session(connectionState: CallConnectionState) = CallSession(

@@ -45,6 +45,7 @@ data class ScreenShareSession(
     val publishing: ScreenSharePublishing? = null,
     val playback: ScreenShareMediaEndpoint? = null,
     val errorMessage: String? = null,
+    val watchUrl: String? = null,
 )
 
 sealed interface LocalScreenShareState {

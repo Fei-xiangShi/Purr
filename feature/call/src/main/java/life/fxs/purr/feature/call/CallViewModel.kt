@@ -252,6 +252,11 @@ class CallViewModel @Inject constructor(
             when (val result = connectCallUseCase()) {
                 is AppResult.Success -> Unit
                 is AppResult.Failure -> {
+                    // A termination that won the race is presented by onSessionChanged.
+                    val session = observeCallStateUseCase().first()
+                    if (session?.callId == currentCallId && session?.connectionState?.isResumable == false) {
+                        return@launch
+                    }
                     val message = result.error.toCallUserMessage(CALL_CONNECTION_FAILED_MESSAGE)
                     _state.value = _state.value.copy(
                         screenState = CallScreenState.Failed,

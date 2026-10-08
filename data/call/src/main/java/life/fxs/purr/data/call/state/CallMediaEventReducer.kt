@@ -1,6 +1,7 @@
 package life.fxs.purr.data.call.state
 
 import javax.inject.Inject
+import life.fxs.purr.core.model.SystemCallInterruptionPhase
 import life.fxs.purr.data.call.runtime.MediaCallEvent
 import life.fxs.purr.domain.call.model.CallConnectionState
 import life.fxs.purr.domain.call.model.CallSession
@@ -80,30 +81,24 @@ class CallMediaEventReducer @Inject constructor() {
             is MediaCallEvent.RemoteSystemCallInterruptionChanged -> session.copy(
                 interruptionState = session.interruptionState.copy(
                     remote = when (event.phase) {
-                        life.fxs.purr.core.model.SystemCallInterruptionPhase.Suspended ->
+                        SystemCallInterruptionPhase.Suspended ->
                             RemoteCallInterruption.Suspended(
                                 operationId = event.operationId,
                                 degraded = event.degraded,
                             )
-                        life.fxs.purr.core.model.SystemCallInterruptionPhase.Resuming ->
+                        SystemCallInterruptionPhase.Resuming ->
                             RemoteCallInterruption.Resuming(event.operationId)
-                        life.fxs.purr.core.model.SystemCallInterruptionPhase.Active ->
+                        SystemCallInterruptionPhase.Active ->
                             RemoteCallInterruption.None
                     },
                 ),
             )
 
-            is MediaCallEvent.Disconnected -> session.copy(
-                connectionState = CallConnectionState.Disconnected,
-                localAudioState = LocalAudioState.Disabled,
-                uiSnapshot = session.uiSnapshot.copy(remoteParticipantConnected = false),
-            )
-
-            is MediaCallEvent.Failed -> session.copy(
-                connectionState = CallConnectionState.Failed(event.reason),
-                localAudioState = LocalAudioState.Error(event.reason),
-                uiSnapshot = session.uiSnapshot.copy(remoteParticipantConnected = false),
-            )
+            // Session termination owns teardown, server end and the terminal state, so the
+            // repository routes these facts to it instead of reducing them here.
+            is MediaCallEvent.Disconnected,
+            is MediaCallEvent.Failed,
+            -> null
         }
     }
 }

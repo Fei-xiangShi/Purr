@@ -100,10 +100,11 @@ class ApiRealtimeRepository @Inject constructor(
             if (!shouldRun || requestIdentity != Triple(lifecycleGeneration, callStateRevision, refreshSequence)) {
                 return@synchronized
             }
-            val candidate = activeCall.toIncomingCallOrNull(consumedIncomingCalls::contains)
+            val currentActiveCall = activeCall?.takeUnless { endedCalls.contains(it.callId) }
+            val candidate = currentActiveCall.toIncomingCallOrNull(consumedIncomingCalls::contains)
             state.update { current -> current.copy(
                 incomingCallCandidate = candidate,
-                activeCall = activeCall?.takeUnless { endedCalls.contains(it.callId) }
+                activeCall = currentActiveCall
                     ?.let { ActiveCall(it.callId, it.pairId, it.isIncoming) },
             ) }
         }

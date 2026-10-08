@@ -89,6 +89,12 @@ class ApiRealtimeRepositoryLifecycleTest {
         listener.captured.onMessage(socket, snapshot)
         assertThat(repository.observeState().first().incomingCallCandidate).isNull()
         assertThat(repository.observeState().first().activeCall).isNull()
+        // Prompt consumption and server-ended tombstones have separate lifetimes.
+        // Evict the consumed prompt without evicting the authoritative ended ID.
+        repeat(128) { repository.consumeIncomingCall("other-$it") }
+        repository.refreshActiveCall()
+        assertThat(repository.observeState().first().incomingCallCandidate).isNull()
+        assertThat(repository.observeState().first().activeCall).isNull()
         repository.stop()
     }
 

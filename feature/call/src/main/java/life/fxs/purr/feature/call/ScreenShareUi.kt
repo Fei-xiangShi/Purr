@@ -43,6 +43,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -57,13 +58,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import life.fxs.purr.core.media.screenshare.ScreenShareQuality
-import life.fxs.purr.core.media.screenshare.browserWatchLink
 import life.fxs.purr.domain.call.model.LocalScreenShareState
 import life.fxs.purr.domain.call.model.ScreenSharePublishing
 import life.fxs.purr.domain.call.model.ScreenShareSource
@@ -86,8 +87,6 @@ internal fun CallToolsSheet(
     )
     val canStop = active && state.isOwnedByCurrentUser
     val stopping = state.session?.status == ScreenShareStatus.Stopping
-    val clipboard = LocalClipboardManager.current
-    val context = LocalContext.current
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Text(
             text = "通话工具",
@@ -115,27 +114,7 @@ internal fun CallToolsSheet(
                 ) { Text(if (canStop) "停止" else "选择") }
             },
         )
-        ListItem(
-            headlineContent = { Text("网页观看直播") },
-            supportingContent = { Text("复制短期观看链接后请尽快打开；已连接可继续观看，直播停止后失效。浏览器需支持 HEVC WebRTC。") },
-            trailingContent = {
-                Button(
-                    enabled = active && !stopping && state.session?.playback != null,
-                    onClick = {
-                        val endpoint = state.session?.playback
-                        val link = endpoint?.let { browserWatchLink(it.url, it.bearerToken, it.expiresAtEpochMillis) }
-                        if (endpoint == null || link == null || System.currentTimeMillis() >= endpoint.expiresAtEpochMillis) {
-                            Toast.makeText(context, "观看凭证正在刷新，请稍后重试", Toast.LENGTH_SHORT).show()
-                        } else {
-                            clipboard.setText(AnnotatedString(link))
-                            val expiry = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
-                                .format(java.util.Date(endpoint.expiresAtEpochMillis))
-                            Toast.makeText(context, "已复制网页观看链接，请在 $expiry 前打开", Toast.LENGTH_LONG).show()
-                        }
-                    },
-                ) { Text("复制链接") }
-            },
-        )
+        BrowserWatchLinkCard(state, Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
         ListItem(
             headlineContent = { Text("网络状况检测") },
             supportingContent = { Text("查看通话与直播的实际帧率、码率、丢包和缓冲") },
@@ -143,6 +122,44 @@ internal fun CallToolsSheet(
             trailingContent = { Button(onClick = onDiagnostics) { Text("查看") } },
         )
         Spacer(Modifier.height(28.dp))
+    }
+}
+
+@Composable
+internal fun BrowserWatchLinkCard(state: CallScreenShareState, modifier: Modifier = Modifier) {
+    val session = state.session ?: return
+    if (session.status !in setOf(ScreenShareStatus.Authorized, ScreenShareStatus.Live)) return
+    val link = session.watchUrl?.takeIf(String::isNotBlank) ?: return
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    val copy = {
+        clipboard.setText(AnnotatedString(link))
+        Toast.makeText(context, "已复制观看链接，打开即可观看", Toast.LENGTH_SHORT).show()
+    }
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+    ) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("直播观看链接", style = MaterialTheme.typography.titleSmall)
+            Text(
+                text = link,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.fillMaxWidth().clickable(onClickLabel = "复制观看链接", onClick = copy),
+            )
+            Text("持有链接即可免登录观看，本场直播结束后失效。", style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = copy) { Text("复制链接") }
+                TextButton(onClick = {
+                    runCatching { uriHandler.openUri(link) }.onFailure {
+                        Toast.makeText(context, "无法打开浏览器，请复制链接后打开", Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text("打开观看") }
+            }
+        }
     }
 }
 

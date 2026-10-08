@@ -64,6 +64,7 @@ class ScreenShareRepositoryImplTest {
         assertThat(result.value.status).isEqualTo(ScreenShareStatus.Authorized)
         assertThat(result.value.publishing?.whip?.url).isEqualTo("https://media.test/whip")
         assertThat(result.value.publishing?.whip?.bearerToken).isEqualTo("publish-token")
+        assertThat(result.value.watchUrl).isEqualTo("https://media.test/watch/share-1")
     }
 
     @Test
@@ -84,6 +85,7 @@ class ScreenShareRepositoryImplTest {
 
         assertThat(refreshed.value?.publishing?.whip?.bearerToken).isEqualTo("publish-token")
         assertThat(refreshed.value?.playback?.url).isEqualTo("https://media.test/whep")
+        assertThat(refreshed.value?.watchUrl).isEqualTo("https://media.test/watch/share-1")
     }
 
     @Test
@@ -168,6 +170,7 @@ class ScreenShareRepositoryImplTest {
         expiresAtEpochMillis = 61_000L,
         publishing = publishing,
         playback = playback,
+        watchUrl = "https://media.test/watch/share-1",
     )
 
     private fun sampleEndpoint(url: String, token: String) = ScreenShareMediaEndpointDto(
