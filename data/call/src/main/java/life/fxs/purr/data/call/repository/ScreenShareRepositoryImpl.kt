@@ -19,6 +19,9 @@ import kotlinx.coroutines.sync.withLock
 import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.common.ApplicationScope
+import life.fxs.purr.core.media.screenshare.ScreenSharePublishCredentialRefresher
+import life.fxs.purr.core.media.screenshare.ScreenSharePublishCredentials
+import life.fxs.purr.core.media.screenshare.ScreenSharePublishCredentialsRejectedException
 import life.fxs.purr.core.media.screenshare.ScreenSharePublisherController
 import life.fxs.purr.core.media.screenshare.ScreenSharePublisherStatus
 import life.fxs.purr.core.media.screenshare.callIdOrNull
@@ -48,7 +51,7 @@ class ScreenShareRepositoryImpl @Inject constructor(
     private val invalidations: ScreenShareRealtimeInvalidations,
     private val publisherController: ScreenSharePublisherController,
     @ApplicationScope private val applicationScope: CoroutineScope,
-) : ScreenShareRepository {
+) : ScreenShareRepository, ScreenSharePublishCredentialRefresher {
     private val serverStates = MutableStateFlow<Map<String, ServerState>>(emptyMap())
     private val refreshMutex = Mutex()
     private val autoStoppedShares = mutableSetOf<String>()
@@ -141,6 +144,20 @@ class ScreenShareRepositoryImpl @Inject constructor(
             }
         }
 
+    override suspend fun refreshPublishing(callId: String, shareId: String): ScreenSharePublishCredentials =
+        when (val result = callApiResult { api.refreshScreenSharePublishing(callId, shareId).whip }) {
+            is AppResult.Success -> ScreenSharePublishCredentials(
+                bearerToken = result.value.bearerToken,
+                expiresAtEpochMillis = result.value.expiresAtEpochMillis,
+            )
+            is AppResult.Failure -> when (val error = result.error) {
+                // 4xx: not owner, share ended/expired or session gone. Retrying cannot help.
+                is AppError.Validation, is AppError.Unauthorized ->
+                    throw ScreenSharePublishCredentialsRejectedException(error.toScreenShareMessage())
+                else -> throw java.io.IOException(error.toScreenShareMessage())
+            }
+        }
+
     override suspend fun stop(callId: String): AppResult<ScreenShareSession?> {
         publisherController.stop(callId)
         return stopRemoteOnly(callId, serverStates.value[callId]?.session?.shareId)
@@ -204,6 +221,7 @@ private fun ScreenSharePublisherStatus.toDomainLocalState(
             is ScreenSharePublisherStatus.Connecting ->
                 LocalScreenShareState.Connecting(request.shareId)
             is ScreenSharePublisherStatus.Live -> LocalScreenShareState.Live(request.shareId)
+            is ScreenSharePublisherStatus.Reconnecting -> LocalScreenShareState.Reconnecting(request.shareId)
             is ScreenSharePublisherStatus.Stopping -> LocalScreenShareState.Stopping(request.shareId)
             is ScreenSharePublisherStatus.Failed ->
                 LocalScreenShareState.Failed(shareId, message)

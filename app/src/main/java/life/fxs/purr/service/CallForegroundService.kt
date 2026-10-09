@@ -7,7 +7,6 @@ import android.app.Service
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -53,6 +52,9 @@ open class CallForegroundService : Service() {
     private var notificationIdentityJob: Job? = null
     private val hangUpInProgress = AtomicBoolean(false)
 
+    @Volatile
+    private var currentNotification: Notification? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -83,7 +85,15 @@ open class CallForegroundService : Service() {
         }
         val existingCallId = stateStore.state.value.activeCallId
         if (existingCallId != null && existingCallId != callId) {
-            // Do not replace the notification owned by the active call.
+            // Do not replace the notification owned by the active call, but still honour the
+            // startForegroundService() deadline by re-entering foreground with that notification.
+            currentNotification?.let { owned ->
+                try {
+                    enterForeground(owned)
+                } catch (_: SecurityException) {
+                } catch (_: IllegalArgumentException) {
+                }
+            }
             return START_NOT_STICKY
         }
         val pairId = intent.getStringExtra(EXTRA_PAIR_ID)
@@ -107,6 +117,7 @@ open class CallForegroundService : Service() {
             handleForegroundStartFailure(callId, startId)
             return START_NOT_STICKY
         }
+        currentNotification = notification
         stateStore.markStarted(callId, direction)
         observeNotificationIdentity(callId, pairId)
         if (::callOverlayCoordinator.isInitialized) {
@@ -117,14 +128,12 @@ open class CallForegroundService : Service() {
 
     /** Keeps the platform call replaceable in lifecycle tests while preserving the real Service boundary. */
     protected open fun enterForeground(notification: Notification) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        CallForegroundServiceTypes.start(Build.VERSION.SDK_INT) { type ->
+            if (type == null) {
+                startForeground(NOTIFICATION_ID, notification)
+            } else {
+                startForeground(NOTIFICATION_ID, notification, type)
+            }
         }
     }
 
@@ -138,6 +147,7 @@ open class CallForegroundService : Service() {
         val destroyedCallId = stateStore.state.value.activeCallId
         notificationIdentityJob?.cancel()
         notificationIdentityJob = null
+        currentNotification = null
         stateStore.markStopped(destroyedCallId)
         if (::callOverlayCoordinator.isInitialized) callOverlayCoordinator.stop()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -160,9 +170,9 @@ open class CallForegroundService : Service() {
                     ?.let { notificationAvatarLoader.load(it) }
                 if (stateStore.state.value.activeCallId != callId) return@collectLatest
                 val direction = stateStore.state.value.direction ?: return@collectLatest
-                updateForegroundNotification(
-                    buildNotification(callId, expectedPairId, direction, identity, callerIcon),
-                )
+                val updated = buildNotification(callId, expectedPairId, direction, identity, callerIcon)
+                currentNotification = updated
+                updateForegroundNotification(updated)
             }
         }
     }

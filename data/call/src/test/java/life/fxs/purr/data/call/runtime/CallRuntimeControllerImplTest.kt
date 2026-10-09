@@ -9,6 +9,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.withContext
@@ -200,6 +201,88 @@ class CallRuntimeControllerImplTest {
         coVerify(exactly = 0) { audioRouteController.selectRoute(any()) }
         coVerify(exactly = 0) { audioRouteController.selectDefaultRoute() }
         coVerify(exactly = 0) { audioRouteController.releaseCallRoute() }
+    }
+
+    @Test
+    fun `livekit stage may use its full 25 second budget`() = runTest {
+        val runtime = runtime()
+        coEvery { callServiceController.startForegroundCall(any(), any(), any()) } returns Unit
+        coEvery { callAudioSessionController.activate() } returns Unit
+        coEvery { mediaCallPort.execute(any<MediaCallCommand.Connect>()) } coAnswers { delay(24_000L) }
+
+        runtime.execute(connectCommand())
+
+        coVerify(exactly = 0) { callAudioSessionController.release() }
+        assertThat(testScheduler.currentTime).isEqualTo(24_000L)
+    }
+
+    @Test
+    fun `livekit stage times out after 25 seconds and releases resources`() = runTest {
+        val runtime = runtime()
+        coEvery { callServiceController.startForegroundCall(any(), any(), any()) } returns Unit
+        coEvery { callAudioSessionController.activate() } returns Unit
+        coEvery { mediaCallPort.execute(any<MediaCallCommand.Connect>()) } coAnswers { delay(26_000L) }
+        coEvery { callAudioSessionController.release() } returns Unit
+        coEvery { callServiceController.stopForegroundCall("call-1") } returns Unit
+
+        val failure = runCatching { runtime.execute(connectCommand()) }.exceptionOrNull()
+
+        assertThat(failure).isInstanceOf(kotlinx.coroutines.TimeoutCancellationException::class.java)
+        assertThat(testScheduler.currentTime).isEqualTo(25_000L)
+        coVerify(exactly = 1) { callAudioSessionController.release() }
+    }
+
+    @Test
+    fun `platform stage times out after 5 seconds`() = runTest {
+        val runtime = runtime()
+        coEvery { callServiceController.startForegroundCall(any(), any(), any()) } coAnswers { delay(6_000L) }
+        coEvery { callAudioSessionController.release() } returns Unit
+        coEvery { callServiceController.stopForegroundCall("call-1") } returns Unit
+
+        val failure = runCatching { runtime.execute(connectCommand()) }.exceptionOrNull()
+
+        assertThat(failure).isInstanceOf(kotlinx.coroutines.TimeoutCancellationException::class.java)
+        assertThat(testScheduler.currentTime).isEqualTo(5_000L)
+        coVerify(exactly = 0) { systemCallController.startCall(any()) }
+    }
+
+    @Test
+    fun `rejoin runs only the media stage and keeps resources on failure`() = runTest {
+        val runtime = connectedRuntime()
+        coEvery { mediaCallPort.execute(match { it is MediaCallCommand.Rejoin }) } throws
+            java.io.IOException("offline")
+        val rejoin = MediaCallCommand.Rejoin(
+            callId = "call-1",
+            connection = CallMediaConnection("wss://example.invalid", "token-2"),
+            microphoneEnabled = true,
+        )
+
+        val failure = runCatching { runtime.execute(rejoin) }.exceptionOrNull()
+
+        assertThat(failure).isInstanceOf(java.io.IOException::class.java)
+        coVerify(exactly = 1) { callServiceController.startForegroundCall(any(), any(), any()) }
+        coVerify(exactly = 1) { systemCallController.startCall(any()) }
+        coVerify(exactly = 1) { callAudioSessionController.activate() }
+        coVerify(exactly = 0) { callAudioSessionController.release() }
+        coVerify(exactly = 0) { systemCallController.disconnectCall(any()) }
+        coVerify(exactly = 0) { callServiceController.stopForegroundCall(any()) }
+    }
+
+    @Test
+    fun `rejoin without an active runtime is rejected`() = runTest {
+        val runtime = runtime()
+        val failure = runCatching {
+            runtime.execute(
+                MediaCallCommand.Rejoin(
+                    callId = "call-1",
+                    connection = CallMediaConnection("wss://example.invalid", "token"),
+                    microphoneEnabled = true,
+                ),
+            )
+        }.exceptionOrNull()
+
+        assertThat(failure).isInstanceOf(IllegalStateException::class.java)
+        coVerify(exactly = 0) { mediaCallPort.execute(any()) }
     }
 
     private suspend fun connectedRuntime(): CallRuntimeControllerImpl {

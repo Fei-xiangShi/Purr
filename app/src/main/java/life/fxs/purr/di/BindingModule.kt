@@ -69,6 +69,12 @@ abstract class BindingModule {
 
     @Binds
     @Singleton
+    abstract fun bindNetworkAvailability(
+        impl: life.fxs.purr.network.AndroidNetworkAvailability,
+    ): life.fxs.purr.core.common.NetworkAvailability
+
+    @Binds
+    @Singleton
     abstract fun bindAccountSecurityRepository(impl: ApiAccountSecurityRepository): AccountSecurityRepository
 
     @Binds
@@ -122,6 +128,11 @@ abstract class BindingModule {
     @Binds
     @Singleton
     abstract fun bindScreenShareRepository(impl: ScreenShareRepositoryImpl): ScreenShareRepository
+
+    @Binds
+    abstract fun bindScreenSharePublishCredentialRefresher(
+        impl: ScreenShareRepositoryImpl,
+    ): life.fxs.purr.core.media.screenshare.ScreenSharePublishCredentialRefresher
 
     @Binds
     @Singleton

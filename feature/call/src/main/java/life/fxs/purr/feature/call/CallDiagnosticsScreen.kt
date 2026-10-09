@@ -95,7 +95,8 @@ private fun CallDiagnosticsContent(
                     "未开始"
                 },
             )
-            DiagnosticMetricRow("通话质量", context.networkQualityScore.networkQualityLabel())
+            DiagnosticMetricRow("上行质量", context.networkQualityScore.networkQualityLabel())
+            DiagnosticMetricRow("下行质量", context.downlinkQualityScore.networkQualityLabel())
             DiagnosticMetricRow(
                 "远端参与者",
                 if (metrics.remoteConnected) "已连接" else "未连接",

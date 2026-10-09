@@ -11,6 +11,7 @@ internal data class CallDiagnosticsContext(
     val shareId: String? = null,
     val shareSource: String? = null,
     val shareStatus: String? = null,
+    val downlinkQualityScore: Int? = null,
 )
 
 internal fun CallState.toDiagnosticsContext(): CallDiagnosticsContext = CallDiagnosticsContext(
@@ -21,4 +22,5 @@ internal fun CallState.toDiagnosticsContext(): CallDiagnosticsContext = CallDiag
     shareId = screenShare.session?.shareId,
     shareSource = screenShare.session?.source?.wireValue,
     shareStatus = screenShare.session?.status?.wireValue,
+    downlinkQualityScore = session?.uiSnapshot?.networkQuality?.downlinkScore,
 )

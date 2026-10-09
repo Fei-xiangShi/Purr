@@ -15,6 +15,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import life.fxs.purr.R
 import life.fxs.purr.core.media.screenshare.ScreenCapturePermission
 import life.fxs.purr.core.media.screenshare.ScreenShareQuality
@@ -23,6 +25,8 @@ import life.fxs.purr.core.media.screenshare.ScreenShareQualitySample
 import life.fxs.purr.core.media.screenshare.ScreenShareFailureReporter
 import life.fxs.purr.core.media.screenshare.ScreenShareFailureCode
 import life.fxs.purr.core.media.screenshare.ScreenShareFailureException
+import life.fxs.purr.core.media.screenshare.ScreenSharePublishCredentialRefresher
+import life.fxs.purr.core.media.screenshare.ScreenSharePublishCredentialsRejectedException
 import life.fxs.purr.core.media.screenshare.ScreenSharePublishRequest
 import life.fxs.purr.core.media.screenshare.ScreenSharePublisherStateStore
 import life.fxs.purr.core.media.screenshare.ScreenSharePublisherStatus
@@ -35,6 +39,7 @@ class ScreenShareForegroundService : Service() {
     lateinit var stateStore: ScreenSharePublisherStateStore
     @Inject lateinit var diagnostics: ScreenShareDiagnosticsStore
     @Inject lateinit var failures: ScreenShareFailureReporter
+    @Inject lateinit var credentialRefresher: ScreenSharePublishCredentialRefresher
     private var diagnosticsEpoch = 0L
 
     private var publisher: RootEncoderWhipScreenPublisher? = null
@@ -134,7 +139,19 @@ class ScreenShareForegroundService : Service() {
                     }
                     override fun onLive(request: ScreenSharePublishRequest) {
                         mainExecutor.execute {
-                            if (activeRequest == request && !terminalFailure && !explicitStop) stateStore.live(request)
+                            if (activeRequest == request && !terminalFailure && !explicitStop) {
+                                stateStore.live(request)
+                                updateNotification(request, reconnecting = false)
+                            }
+                        }
+                    }
+
+                    override fun onReconnecting(request: ScreenSharePublishRequest, attempt: Int) {
+                        mainExecutor.execute {
+                            if (activeRequest == request && !terminalFailure && !explicitStop) {
+                                stateStore.reconnecting(request, attempt)
+                                updateNotification(request, reconnecting = true)
+                            }
                         }
                     }
 
@@ -156,6 +173,24 @@ class ScreenShareForegroundService : Service() {
                         }
                     }
                 },
+                { current ->
+                    // Runs on the publisher's recovery thread, never on the main thread.
+                    try {
+                        val credentials = runBlocking {
+                            withTimeout(CREDENTIAL_REFRESH_TIMEOUT_MILLIS) {
+                                credentialRefresher.refreshPublishing(current.callId, current.shareId)
+                            }
+                        }
+                        RootEncoderWhipScreenPublisher.Credentials(
+                            credentials.bearerToken,
+                            credentials.expiresAtEpochMillis,
+                        )
+                    } catch (rejected: ScreenSharePublishCredentialsRejectedException) {
+                        throw RootEncoderWhipScreenPublisher.CredentialsRejectedException(
+                            rejected.message ?: "rejected",
+                        )
+                    }
+                },
             )
             publisher?.start()
         } catch (error: Throwable) {
@@ -166,30 +201,50 @@ class ScreenShareForegroundService : Service() {
 
     private fun startProjectionForeground(request: ScreenSharePublishRequest) {
         createNotificationChannel()
-        val stopPendingIntent = PendingIntent.getService(
-            this,
-            STOP_REQUEST_CODE,
-            stopIntent(this, request.callId, request.shareId),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("Purr 正在共享屏幕")
-            .setContentText("屏幕画面与系统声音正在直播，语音通话保持连接")
-            .setOngoing(true)
-            .setSilent(true)
-            .addAction(0, "停止投屏", stopPendingIntent)
-            .build()
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
-            notification,
+            buildNotification(request, reconnecting = false),
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             } else {
                 0
             },
         )
+    }
+
+    private fun buildNotification(request: ScreenSharePublishRequest, reconnecting: Boolean) =
+        NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(if (reconnecting) "投屏重新连接中" else "Purr 正在共享屏幕")
+            .setContentText(
+                if (reconnecting) {
+                    "网络不稳定，正在自动恢复投屏，语音通话保持连接"
+                } else {
+                    "屏幕画面与系统声音正在直播，语音通话保持连接"
+                },
+            )
+            .setOngoing(true)
+            .setSilent(true)
+            .addAction(
+                0,
+                "停止投屏",
+                PendingIntent.getService(
+                    this,
+                    STOP_REQUEST_CODE,
+                    stopIntent(this, request.callId, request.shareId),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                ),
+            )
+            .build()
+
+    private fun updateNotification(request: ScreenSharePublishRequest, reconnecting: Boolean) {
+        try {
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+                .notify(NOTIFICATION_ID, buildNotification(request, reconnecting))
+        } catch (_: RuntimeException) {
+            // The status text is best effort and must not affect the publisher.
+        }
     }
 
     private fun createNotificationChannel() {
@@ -257,6 +312,7 @@ class ScreenShareForegroundService : Service() {
     }
 
     companion object {
+        private const val CREDENTIAL_REFRESH_TIMEOUT_MILLIS = 15_000L
         private const val ACTION_START = "life.fxs.purr.action.START_SCREEN_SHARE"
         private const val ACTION_STOP = "life.fxs.purr.action.STOP_SCREEN_SHARE"
         private const val EXTRA_CALL_ID = "call_id"

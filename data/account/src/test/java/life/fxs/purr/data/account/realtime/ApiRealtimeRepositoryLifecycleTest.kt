@@ -18,10 +18,38 @@ import life.fxs.purr.data.account.network.SessionTokenHolder
 import okhttp3.OkHttpClient
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.Flow
+import life.fxs.purr.core.common.NetworkAvailability
 import org.junit.Test
+import io.mockk.verify
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ApiRealtimeRepositoryLifecycleTest {
+    @Test
+    fun `isRunning follows start and stop`() = runTest {
+        val webSocket = mockk<WebSocket>(relaxed = true)
+        val client = mockk<OkHttpClient> {
+            every { newWebSocket(any(), any()) } returns webSocket
+        }
+        val repository = ApiRealtimeRepository(
+            okHttpClient = client,
+            json = Json,
+            sessionTokenHolder = SessionTokenHolder().apply {
+                update(accessToken = "token", refreshToken = "refresh", userId = "user-a")
+            },
+            api = mockk(relaxed = true),
+            realtimeUrl = "wss://example.invalid/realtime",
+            applicationScope = this,
+        )
+
+        assertThat(repository.isRunning.value).isFalse()
+        repository.start()
+        assertThat(repository.isRunning.value).isTrue()
+        repository.stop()
+        assertThat(repository.isRunning.value).isFalse()
+    }
+
     @Test
     fun `response from a previous authenticated lifecycle cannot restore a call`() = runTest {
         val response = CompletableDeferred<ActiveCallResponseDto>()
@@ -127,6 +155,58 @@ class ApiRealtimeRepositoryLifecycleTest {
         refresh.await()
         assertThat(repository.observeState().first().incomingCallCandidate?.callId).isEqualTo("call-1")
         repository.stop()
+    }
+
+    @Test
+    fun `network availability reconnects immediately and stop ends the subscription`() = runTest {
+        val sockets = mutableListOf<WebSocket>()
+        val client = mockk<OkHttpClient> {
+            every { newWebSocket(any(), any()) } answers {
+                mockk<WebSocket>(relaxed = true).also(sockets::add)
+            }
+        }
+        val signals = MutableSharedFlow<Unit>()
+        val repository = ApiRealtimeRepository(
+            okHttpClient = client,
+            json = Json,
+            sessionTokenHolder = SessionTokenHolder().apply { update("token", "refresh", "user-a") },
+            api = mockk(relaxed = true),
+            realtimeUrl = "wss://example.invalid/realtime",
+            applicationScope = backgroundScope,
+            networkAvailability = object : NetworkAvailability {
+                override val available: Flow<Unit> = signals
+            },
+        )
+        repository.start()
+        runCurrent()
+        assertThat(sockets).hasSize(1)
+
+        signals.emit(Unit)
+        runCurrent()
+        assertThat(sockets).hasSize(2)
+        verify(exactly = 1) { sockets[0].cancel() }
+
+        repository.stop()
+        runCurrent()
+        assertThat(signals.subscriptionCount.value).isEqualTo(0)
+        signals.emit(Unit)
+        runCurrent()
+        assertThat(sockets).hasSize(2)
+    }
+
+    @Test
+    fun `reconnect delay applies bounded jitter to exponential backoff`() {
+        val low = reconnectDelayMillis(2, kotlin.random.Random(1))
+        assertThat(low).isAtLeast(3_200L)
+        assertThat(low).isAtMost(4_800L)
+        repeat(50) { attempt ->
+            val delay = reconnectDelayMillis(attempt, kotlin.random.Random(attempt))
+            assertThat(delay).isAtLeast(800L)
+            assertThat(delay).isAtMost(36_000L)
+        }
+        val capped = reconnectDelayMillis(20, kotlin.random.Random(3))
+        assertThat(capped).isAtLeast(24_000L)
+        assertThat(capped).isAtMost(36_000L)
     }
 
     private fun incomingCall() = ActiveCallDto(

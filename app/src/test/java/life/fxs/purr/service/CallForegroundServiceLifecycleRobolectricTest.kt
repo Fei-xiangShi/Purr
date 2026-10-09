@@ -123,6 +123,29 @@ class CallForegroundServiceLifecycleRobolectricTest {
     }
 
     @Test
+    fun `different active call start re-enters foreground with the owned notification`() {
+        val stateStore = CallForegroundServiceStateStore()
+        val service = attachService<RecordingNotificationService>(stateStore)
+        service.onStartCommand(
+            CallForegroundService.intent(service, callId = "call-new", pairId = "pair-1", direction = CallDirection.Outgoing),
+            0,
+            1,
+        )
+        val owned = service.latestNotification
+        service.foregroundEntries.clear()
+
+        service.onStartCommand(
+            CallForegroundService.intent(service, callId = "call-old", pairId = "pair-1", direction = CallDirection.Outgoing),
+            0,
+            2,
+        )
+
+        assertThat(service.foregroundEntries).hasSize(1)
+        assertThat(service.foregroundEntries.single()).isSameInstanceAs(owned)
+        assertThat(stateStore.state.value.activeCallId).isEqualTo("call-new")
+    }
+
+    @Test
     fun `task removal leaves the foreground call owned by the service`() {
         val stateStore = CallForegroundServiceStateStore()
         val service = attachService<CallForegroundService>(stateStore)
@@ -344,8 +367,10 @@ class CallForegroundServiceLifecycleRobolectricTest {
 
     class RecordingNotificationService : CallForegroundService() {
         var latestNotification: Notification? = null
+        val foregroundEntries = mutableListOf<Notification>()
 
         override fun enterForeground(notification: Notification) {
+            foregroundEntries += notification
             latestNotification = notification
         }
 

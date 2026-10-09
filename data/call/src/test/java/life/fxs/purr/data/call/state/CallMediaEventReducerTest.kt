@@ -2,6 +2,7 @@ package life.fxs.purr.data.call.state
 
 import com.google.common.truth.Truth.assertThat
 import life.fxs.purr.data.call.runtime.MediaCallEvent
+import life.fxs.purr.data.call.runtime.NetworkQualityDirection
 import life.fxs.purr.domain.call.model.CallConnectionState
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.LocalAudioState
@@ -31,6 +32,27 @@ class CallMediaEventReducerTest {
         assertThat(reduced?.participantIdentity?.local).isEqualTo("resolved-self")
         assertThat(reduced?.participantIdentity?.remote).isEqualTo("remote")
         assertThat(reduced?.uiSnapshot?.remoteParticipantConnected).isTrue()
+    }
+
+    @Test
+    fun `network quality maps uplink and downlink independently and null means no data`() {
+        val up = reducer.reduce(
+            session(),
+            MediaCallEvent.NetworkQualityChanged("call-1", 1L, NetworkQualityDirection.Uplink, 4, 10L),
+        )!!
+        val both = reducer.reduce(
+            up,
+            MediaCallEvent.NetworkQualityChanged("call-1", 1L, NetworkQualityDirection.Downlink, 2, 20L),
+        )!!
+        assertThat(both.uiSnapshot.networkQuality.uplinkScore).isEqualTo(4)
+        assertThat(both.uiSnapshot.networkQuality.downlinkScore).isEqualTo(2)
+
+        val unknown = reducer.reduce(
+            both,
+            MediaCallEvent.NetworkQualityChanged("call-1", 1L, NetworkQualityDirection.Downlink, null, 30L),
+        )!!
+        assertThat(unknown.uiSnapshot.networkQuality.downlinkScore).isNull()
+        assertThat(unknown.uiSnapshot.networkQuality.uplinkScore).isEqualTo(4)
     }
 
     @Test

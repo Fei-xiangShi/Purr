@@ -6,6 +6,7 @@ import life.fxs.purr.core.network.model.SessionRequestDto
 import life.fxs.purr.core.network.model.SessionResponseDto
 import life.fxs.purr.core.network.model.CreateScreenShareRequestDto
 import life.fxs.purr.core.network.model.ScreenShareEnvelopeDto
+import life.fxs.purr.core.network.model.ScreenSharePublishingDto
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
@@ -34,6 +35,12 @@ interface PurrCallApi {
 
     @GET("calls/{callId}/screen-share")
     suspend fun getScreenShare(@Path("callId") callId: String): ScreenShareEnvelopeDto
+
+    @POST("calls/{callId}/screen-share/{shareId}/publishing")
+    suspend fun refreshScreenSharePublishing(
+        @Path("callId") callId: String,
+        @Path("shareId") shareId: String,
+    ): ScreenSharePublishingDto
 
     @DELETE("calls/{callId}/screen-share")
     suspend fun stopScreenShare(

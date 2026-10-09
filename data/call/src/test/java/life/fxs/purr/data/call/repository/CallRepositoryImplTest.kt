@@ -21,6 +21,10 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.launch
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody.Companion.toResponseBody
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -29,7 +33,9 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.SupervisorJob
 import life.fxs.purr.core.common.AppResult
+import life.fxs.purr.core.common.NetworkAvailability
 import life.fxs.purr.core.common.NoOpPurrLogger
+import java.io.IOException
 import life.fxs.purr.core.media.audio.AudioRouteController
 import life.fxs.purr.core.media.service.CallServiceController
 import life.fxs.purr.core.media.service.ForegroundCallServiceState
@@ -1210,8 +1216,531 @@ class CallRepositoryImplTest {
             .isEqualTo(CallConnectionState.Disconnected)
     }
 
+    @Test
+    fun `recoverable media loss rejoins without ending the call and keeps resources`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        val rejoins = mutableListOf<MediaCallCommand.Rejoin>()
+        coEvery { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) } coAnswers {
+            rejoins += firstArg<MediaCallCommand.Rejoin>()
+            events.emit(MediaCallEvent.Connected("call-1", 3L, "self-1", "partner", true))
+        }
+        val repository = repository()
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        // Late callbacks of the lost room cannot be mistaken for the replacement.
+        events.emit(MediaCallEvent.Reconnected("call-1", 1L, "partner", true))
+        runCurrent()
+
+        assertThat(rejoins).hasSize(1)
+        assertThat(rejoins.single().microphoneEnabled).isTrue()
+        assertThat(rejoins.single().suspendedOperationId).isNull()
+        val session = repository.observeCallSession().first()
+        assertThat(session?.connectionState).isEqualTo(CallConnectionState.Connected)
+        coVerify(exactly = 0) { api.endCall(any()) }
+        coVerify(exactly = 0) { callRuntimeController.execute(match { it is MediaCallCommand.Disconnect }) }
+        coVerify(exactly = 2) {
+            api.createSession(match { it.expectedCallId == null || it.expectedCallId == "call-1" })
+        }
+        coVerify(exactly = 1) {
+            api.createSession(match { it.expectedCallId == "call-1" && it.recordingConsent })
+        }
+    }
+
+    @Test
+    fun `connection loss shows reconnecting while the rejoin is in flight`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        val rejoinStarted = CompletableDeferred<Unit>()
+        coEvery { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) } coAnswers {
+            rejoinStarted.complete(Unit)
+            awaitCancellation()
+        }
+        val repository = repository()
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        runCurrent()
+
+        assertThat(rejoinStarted.isCompleted).isTrue()
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Reconnecting)
+        coVerify(exactly = 0) { api.endCall(any()) }
+        repository.disconnectCall("call-1")
+        runCurrent()
+    }
+
+    @Test
+    fun `exhausted rejoin window terminates once with one server end`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        var attempts = 0
+        coEvery { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) } coAnswers {
+            attempts++
+            throw IOException("offline")
+        }
+        val repository = repository()
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        runCurrent()
+        advanceTimeBy(44_000L)
+        runCurrent()
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Reconnecting)
+        coVerify(exactly = 0) { api.endCall(any()) }
+
+        advanceTimeBy(2_000L)
+        runCurrent()
+
+        assertThat(attempts).isAtLeast(4)
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isInstanceOf(CallConnectionState.Failed::class.java)
+        coVerify(exactly = 1) { api.endCall("call-1") }
+        coVerify(exactly = 1) { callRuntimeController.execute(match { it is MediaCallCommand.Disconnect }) }
+    }
+
+    @Test
+    fun `server reporting the call gone stops rejoining and terminates once`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        var sessions = 0
+        coEvery { api.createSession(any()) } answers {
+            if (sessions++ == 0) {
+                SessionResponseDto("call-1", "pair-1", "room-1", "self-1", "token-1", "wss://one", true)
+            } else {
+                throw IllegalStateException("Call has already ended")
+            }
+        }
+        val repository = repository()
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        runCurrent()
+        advanceTimeBy(10_000L)
+        runCurrent()
+
+        assertThat(sessions).isEqualTo(2)
+        coVerify(exactly = 0) { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) }
+        coVerify(exactly = 1) { api.endCall("call-1") }
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isInstanceOf(CallConnectionState.Failed::class.java)
+    }
+
+    @Test
+    fun `hangup during rejoin aborts it and drops the late result`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        val rejoinStarted = CompletableDeferred<Unit>()
+        var attempts = 0
+        coEvery { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) } coAnswers {
+            attempts++
+            rejoinStarted.complete(Unit)
+            firstArg<MediaCallCommand.Rejoin>().terminationSignal.runStage { awaitCancellation() }
+        }
+        val repository = repository()
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        runCurrent()
+        rejoinStarted.await()
+
+        repository.disconnectCall("call-1")
+        runCurrent()
+        events.emit(MediaCallEvent.Connected("call-1", 3L, "self-1", "partner", true))
+        runCurrent()
+        advanceTimeBy(60_000L)
+        runCurrent()
+
+        assertThat(attempts).isEqualTo(1)
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Disconnected)
+        coVerify(exactly = 1) { api.endCall("call-1") }
+    }
+
+    @Test
+    fun `server ended status during rejoin aborts it`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        val statuses = MutableSharedFlow<CallStatusDto>(extraBufferCapacity = 4)
+        every { callStatusRemoteDataSource.observeStatus("call-1") } returns statuses
+        coEvery { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) } coAnswers {
+            firstArg<MediaCallCommand.Rejoin>().terminationSignal.runStage { awaitCancellation() }
+        }
+        val repository = repository()
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        runCurrent()
+
+        statuses.emit(
+            CallStatusDto(
+                callId = "call-1",
+                pairId = "pair-1",
+                state = "ended",
+                recordingStatus = "idle",
+                startedAtEpochMillis = 1L,
+                endedAtEpochMillis = 2L,
+            ),
+        )
+        runCurrent()
+        advanceTimeBy(60_000L)
+        runCurrent()
+
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Disconnected)
+        coVerify(exactly = 1) { api.endCall("call-1") }
+        coVerify(exactly = 1) { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) }
+    }
+
+    @Test
+    fun `user mute intent survives a rejoin`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        coEvery { callRuntimeController.execute(match { it is MediaCallCommand.SetMuted }) } returns Unit
+        val rejoins = mutableListOf<MediaCallCommand.Rejoin>()
+        coEvery { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) } coAnswers {
+            rejoins += firstArg<MediaCallCommand.Rejoin>()
+            events.emit(MediaCallEvent.Connected("call-1", 3L, "self-1", "partner", true))
+            events.emit(MediaCallEvent.AudioStateChanged("call-1", 3L, muted = true))
+        }
+        val repository = repository()
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+        repository.setMuted(true)
+        runCurrent()
+
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        runCurrent()
+
+        assertThat(rejoins.single().microphoneEnabled).isFalse()
+        val session = repository.observeCallSession().first()
+        assertThat(session?.connectionState).isEqualTo(CallConnectionState.Connected)
+        assertThat(session?.localAudioState).isEqualTo(LocalAudioState.Muted)
+    }
+
+    @Test
+    fun `system call inactive during rejoin closes the gate on the new media generation`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        coEvery { callRuntimeController.suspendForSystemCall(any()) } answers {
+            MediaSystemCallInterruptionResult.Applied(firstArg<life.fxs.purr.data.call.runtime.MediaSystemCallSuspendRequest>().expectedGeneration)
+        }
+        val gate = CompletableDeferred<Unit>()
+        var sessions = 0
+        coEvery { api.createSession(any()) } coAnswers {
+            if (sessions++ > 0) gate.await()
+            SessionResponseDto("call-1", "pair-1", "room-1", "self-1", "token-1", "wss://one", sessions == 1)
+        }
+        val rejoins = mutableListOf<MediaCallCommand.Rejoin>()
+        coEvery { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) } coAnswers {
+            rejoins += firstArg<MediaCallCommand.Rejoin>()
+            events.emit(MediaCallEvent.Connected("call-1", 3L, "self-1", "partner", true))
+        }
+        val repository = repository()
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        runCurrent()
+
+        val result = repository.suspendForSystemCall(interruptionRequest(sequence = 5L))
+        assertThat(result).isEqualTo(SystemCallInterruptionResult.RetryScheduled)
+        gate.complete(Unit)
+        runCurrent()
+
+        assertThat(rejoins.single().suspendedOperationId).isEqualTo("system-call-operation")
+        coVerify(exactly = 1) {
+            callRuntimeController.suspendForSystemCall(
+                match { it.expectedGeneration == 3L && it.operationId == "system-call-operation" },
+            )
+        }
+        assertThat(repository.observeCallSession().first()?.interruptionState?.local)
+            .isInstanceOf(LocalCallInterruption.Suspended::class.java)
+        coVerify(exactly = 0) { api.endCall(any()) }
+    }
+
+    @Test
+    fun `network availability triggers an immediate rejoin attempt`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        val network = MutableSharedFlow<Unit>()
+        var attempts = 0
+        coEvery { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) } coAnswers {
+            attempts++
+            if (attempts == 1) throw IOException("offline")
+            events.emit(MediaCallEvent.Connected("call-1", 3L, "self-1", "partner", true))
+        }
+        val repository = repository(
+            networkAvailability = object : NetworkAvailability {
+                override val available = network
+            },
+        )
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        runCurrent()
+        assertThat(attempts).isEqualTo(1)
+
+        advanceTimeBy(100L)
+        network.emit(Unit)
+        runCurrent()
+
+        assertThat(attempts).isEqualTo(2)
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Connected)
+    }
+
+    @Test
+    fun `connection loss before the callee joined keeps terminal behaviour`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        coEvery { callStatusRemoteDataSource.getStatus("call-1") } returns CallStatusDto(
+            callId = "call-1",
+            pairId = "pair-1",
+            state = "waiting",
+            recordingStatus = "idle",
+        )
+        val repository = repository()
+        runCurrent()
+        repository.prepareCall(CallPreparationRequest.NewOutgoing("pair-1", true))
+        repository.connectCall()
+        events.emit(MediaCallEvent.Connected("call-1", 1L, "self-1", null, false))
+        runCurrent()
+
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        runCurrent()
+
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Disconnected)
+        coVerify(exactly = 0) { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) }
+        coVerify(exactly = 1) { api.endCall("call-1") }
+    }
+
+    private fun httpError(code: Int) = retrofit2.HttpException(
+        retrofit2.Response.error<Unit>(
+            code,
+            "{}".toResponseBody("application/json".toMediaType()),
+        ),
+    )
+
+    private suspend fun TestScope.assertHttpFailureTerminatesRejoin(code: Int) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        var sessions = 0
+        coEvery { api.createSession(any()) } answers {
+            if (sessions++ == 0) {
+                SessionResponseDto("call-1", "pair-1", "room-1", "self-1", "token-1", "wss://one", true)
+            } else {
+                throw httpError(code)
+            }
+        }
+        val repository = repository()
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        runCurrent()
+        advanceTimeBy(5_000L)
+        runCurrent()
+
+        assertThat(sessions).isEqualTo(2)
+        coVerify(exactly = 1) { api.endCall("call-1") }
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isInstanceOf(CallConnectionState.Failed::class.java)
+    }
+
+    @Test
+    fun `http 401 stops the rejoin immediately`() = runTest(dispatcher) { assertHttpFailureTerminatesRejoin(401) }
+
+    @Test
+    fun `http 403 stops the rejoin immediately`() = runTest(dispatcher) { assertHttpFailureTerminatesRejoin(403) }
+
+    @Test
+    fun `http 404 stops the rejoin immediately`() = runTest(dispatcher) { assertHttpFailureTerminatesRejoin(404) }
+
+    @Test
+    fun `http 409 stops the rejoin immediately`() = runTest(dispatcher) { assertHttpFailureTerminatesRejoin(409) }
+
+    @Test
+    fun `http 410 stops the rejoin immediately`() = runTest(dispatcher) { assertHttpFailureTerminatesRejoin(410) }
+
+    @Test
+    fun `408 429 and 5xx rejoin failures are retried within the window`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        var sessions = 0
+        val failures = listOf(httpError(408), httpError(429), httpError(503), httpError(500))
+        coEvery { api.createSession(any()) } answers {
+            val index = sessions++
+            if (index == 0 || index > failures.size) {
+                SessionResponseDto("call-1", "pair-1", "room-1", "self-1", "token-1", "wss://one", index == 0)
+            } else {
+                throw failures[index - 1]
+            }
+        }
+        coEvery { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) } coAnswers {
+            events.emit(MediaCallEvent.Connected("call-1", 3L, "self-1", "partner", true))
+        }
+        val repository = repository()
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        runCurrent()
+        advanceTimeBy(30_000L)
+        runCurrent()
+
+        assertThat(sessions).isEqualTo(failures.size + 2)
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Connected)
+        coVerify(exactly = 0) { api.endCall(any()) }
+    }
+
+    @Test
+    fun `final rejoin attempt is clipped to the remaining window`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        var attempts = 0
+        coEvery { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) } coAnswers {
+            attempts++
+            awaitCancellation()
+        }
+        val repository = repository()
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        runCurrent()
+        // The first attempt is capped at the 25 s LiveKit budget, not left running.
+        advanceTimeBy(26_000L)
+        runCurrent()
+        assertThat(attempts).isEqualTo(1)
+        advanceTimeBy(18_000L)
+        runCurrent()
+        // The second attempt is still running at 44 s and would otherwise last until ~51 s.
+        assertThat(attempts).isEqualTo(2)
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Reconnecting)
+        coVerify(exactly = 0) { api.endCall(any()) }
+
+        advanceTimeBy(2_000L)
+        runCurrent()
+
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isInstanceOf(CallConnectionState.Failed::class.java)
+        coVerify(exactly = 1) { api.endCall("call-1") }
+    }
+
+    @Test
+    fun `replacement room lost before commit is retried and recovers`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        var attempts = 0
+        coEvery { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) } coAnswers {
+            val generation = 1L + 2L * ++attempts
+            events.emit(MediaCallEvent.Connected("call-1", generation, "self-1", "partner", true))
+            if (attempts == 1) events.emit(MediaCallEvent.ConnectionLost("call-1", generation, "signal_close"))
+        }
+        val repository = repository()
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        runCurrent()
+        advanceTimeBy(20_000L)
+        runCurrent()
+
+        assertThat(attempts).isAtLeast(2)
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Connected)
+        coVerify(exactly = 0) { api.endCall(any()) }
+        coVerify(exactly = 0) { callRuntimeController.execute(match { it is MediaCallCommand.Disconnect }) }
+    }
+
+    @Test
+    fun `replacement room lost again does not terminate before the window ends`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        var attempts = 0
+        coEvery { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) } coAnswers {
+            val generation = 1L + 2L * ++attempts
+            events.emit(MediaCallEvent.Connected("call-1", generation, "self-1", "partner", true))
+            events.emit(MediaCallEvent.ConnectionLost("call-1", generation, "signal_close"))
+        }
+        val repository = repository()
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        runCurrent()
+        advanceTimeBy(40_000L)
+        runCurrent()
+
+        assertThat(attempts).isAtLeast(3)
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isNotInstanceOf(CallConnectionState.Failed::class.java)
+        coVerify(exactly = 0) { api.endCall(any()) }
+    }
+
+    @Test
+    fun `interrupted presentation stays continuous through loss and rejoin`() = runTest(dispatcher) {
+        val events = MutableSharedFlow<MediaCallEvent>(extraBufferCapacity = 16)
+        configureConnectedSystemInterruptionCall(events)
+        coEvery { callRuntimeController.suspendForSystemCall(any()) } answers {
+            MediaSystemCallInterruptionResult.Applied(
+                firstArg<life.fxs.purr.data.call.runtime.MediaSystemCallSuspendRequest>().expectedGeneration,
+            )
+        }
+        coEvery { callRuntimeController.execute(match { it is MediaCallCommand.Rejoin }) } coAnswers {
+            events.emit(MediaCallEvent.Connected("call-1", 3L, "self-1", "partner", true))
+        }
+        val repository = repository()
+        runCurrent()
+        establishConnectedCall(repository, events)
+        runCurrent()
+        repository.suspendForSystemCall(interruptionRequest(sequence = 1L))
+        runCurrent()
+
+        val observed = mutableListOf<LocalCallInterruption>()
+        val observer = launch {
+            repository.observeCallSession().collect { it?.let { s -> observed += s.interruptionState.local } }
+        }
+        runCurrent()
+        events.emit(MediaCallEvent.ConnectionLost("call-1", 1L, "unknown_reason"))
+        runCurrent()
+        advanceTimeBy(5_000L)
+        runCurrent()
+        observer.cancel()
+
+        assertThat(observed).isNotEmpty()
+        assertThat(observed).doesNotContain(LocalCallInterruption.None)
+        assertThat(observed.last()).isInstanceOf(LocalCallInterruption.Suspended::class.java)
+        assertThat(repository.observeCallSession().first()?.connectionState)
+            .isEqualTo(CallConnectionState.Connected)
+    }
+
     private fun repository(
         interruptionTelemetry: CallInterruptionTelemetry = NoOpCallInterruptionTelemetry,
+        networkAvailability: NetworkAvailability = NetworkAvailability.None,
     ) = CallRepositoryImpl(
         api = api,
         sessionPreparationCoordinator = CallSessionPreparationCoordinator(
@@ -1227,7 +1756,8 @@ class CallRepositoryImplTest {
         logger = NoOpPurrLogger,
         applicationScope = applicationScope,
         interruptionTelemetry = interruptionTelemetry,
-    )
+        networkAvailability = networkAvailability,
+    ).also { it.rejoinRandom = kotlin.random.Random(7) }
 
     private fun configureConnectedSystemInterruptionCall(
         runtimeEvents: MutableSharedFlow<MediaCallEvent>,

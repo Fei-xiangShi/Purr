@@ -9,6 +9,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,6 +26,7 @@ import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.core.model.CallDirection
 import life.fxs.purr.core.media.screenshare.ScreenCapturePermission
+import life.fxs.purr.core.media.screenshare.ScreenShareFailureCode
 import life.fxs.purr.core.media.screenshare.ScreenSharePublishRequest
 import life.fxs.purr.core.media.screenshare.ScreenSharePublisherController
 import life.fxs.purr.core.media.screenshare.WhepPlaybackController
@@ -91,6 +93,9 @@ class CallViewModel @Inject constructor(
     private var observedScreenShareCallId: String? = null
     private var pendingPublishRequest: ScreenSharePublishRequest? = null
     private var currentWhepRequest: WhepPlaybackRequest? = null
+    private var whepRetryJob: Job? = null
+    private var whepRetryAttempt = 0
+    private var whepLiveSinceMillis: Long? = null
     private var endRequested: Boolean = false
     private var currentCallId: String? = null
     private var hasStartedCurrentCall: Boolean = false
@@ -627,6 +632,8 @@ class CallViewModel @Inject constructor(
                 expiresAtEpochMillis = endpoint.expiresAtEpochMillis,
             )
             if (currentWhepRequest.shouldReplaceWith(playbackRequest)) {
+                if (currentWhepRequest?.shareId != playbackRequest.shareId) whepRetryAttempt = 0
+                cancelWhepAutoRetry()
                 currentWhepRequest = playbackRequest
                 whepPlaybackController.start(playbackRequest)
             }
@@ -641,13 +648,79 @@ class CallViewModel @Inject constructor(
             viewModelScope.launch { _effects.emit(CallEffect.ShowMessage("播放凭证已过期，请返回首页后继续通话以刷新")) }
             return
         }
+        cancelWhepAutoRetry()
+        whepRetryAttempt = 0
         _state.update { it.copy(screenShare = it.screenShare.copy(
             remoteState = RemoteScreenShareUiState.Connecting, errorMessage = null)) }
         whepPlaybackController.start(request)
     }
 
+    private fun cancelWhepAutoRetry() {
+        whepRetryJob?.cancel()
+        whepRetryJob = null
+    }
+
+    /**
+     * The owner can briefly lose its WHIP connection and re-publish under the same LIVE share.
+     * Retry viewer playback a bounded number of times before exposing a failure.
+     */
+    private fun scheduleWhepAutoRetry(failed: WhepPlaybackStatus.Failed): Boolean {
+        if (failed.code !in WHEP_AUTO_RETRY_CODES || endRequested || cleared) return false
+        val screenShare = _state.value.screenShare
+        val share = screenShare.session
+        if (share == null || screenShare.isOwnedByCurrentUser || share.status != ScreenShareStatus.Live ||
+            share.shareId != failed.request.shareId || share.callId != currentCallId ||
+            failed.request != currentWhepRequest
+        ) return false
+        val liveSince = whepLiveSinceMillis
+        whepLiveSinceMillis = null
+        // A stream that played stably for a while earns a fresh retry budget.
+        if (liveSince != null && System.currentTimeMillis() - liveSince >= WHEP_STABLE_PLAYBACK_MILLIS) {
+            whepRetryAttempt = 0
+        }
+        val delayMillis = WHEP_RETRY_DELAYS_MILLIS.getOrNull(whepRetryAttempt) ?: return false
+        whepRetryAttempt += 1
+        cancelWhepAutoRetry()
+        val shareId = share.shareId
+        whepRetryJob = viewModelScope.launch {
+            delay(delayMillis)
+            restartRemotePlaybackWithLatestCredentials(shareId)
+        }
+        return true
+    }
+
+    private fun restartRemotePlaybackWithLatestCredentials(shareId: String) {
+        val screenShare = _state.value.screenShare
+        val share = screenShare.session
+        val endpoint = share?.playback
+        if (endRequested || cleared || share == null || endpoint == null || screenShare.isOwnedByCurrentUser ||
+            share.status != ScreenShareStatus.Live || share.shareId != shareId || share.callId != currentCallId ||
+            currentWhepRequest?.shareId != shareId
+        ) {
+            // No usable credentials any more: surface the manual retry state. A share change
+            // or hangup is handled by its own flow and cancels this job.
+            if (currentWhepRequest?.shareId == shareId) {
+                _state.update { it.copy(screenShare = it.screenShare.copy(
+                    remoteState = RemoteScreenShareUiState.Failed)) }
+            }
+            return
+        }
+        val request = WhepPlaybackRequest(
+            callId = share.callId,
+            shareId = share.shareId,
+            url = endpoint.url,
+            bearerToken = endpoint.bearerToken,
+            expiresAtEpochMillis = endpoint.expiresAtEpochMillis,
+        )
+        currentWhepRequest = request
+        whepPlaybackController.start(request)
+    }
+
     private fun stopRemoteScreenPlayback() {
         val shareId = currentWhepRequest?.shareId
+        cancelWhepAutoRetry()
+        whepRetryAttempt = 0
+        whepLiveSinceMillis = null
         currentWhepRequest = null
         if (shareId != null) whepPlaybackController.stop(shareId)
     }
@@ -676,6 +749,20 @@ class CallViewModel @Inject constructor(
         }
         if (request != null && request != currentWhepRequest) {
             return
+        }
+        if (status is WhepPlaybackStatus.Live) {
+            if (whepLiveSinceMillis == null) whepLiveSinceMillis = System.currentTimeMillis()
+        } else if (status is WhepPlaybackStatus.Failed) {
+            if (scheduleWhepAutoRetry(status)) {
+                // Keep the viewer in a buffering state while retries are pending.
+                _state.update { current ->
+                    current.copy(screenShare = current.screenShare.copy(
+                        remoteState = RemoteScreenShareUiState.Buffering, errorMessage = null))
+                }
+                return
+            }
+            whepLiveSinceMillis = null
+            whepPlaybackController.reportFailure(status.request, status.code)
         }
         val remoteState = when (status) {
             WhepPlaybackStatus.Idle -> RemoteScreenShareUiState.None
@@ -707,6 +794,14 @@ class CallViewModel @Inject constructor(
         const val CALL_PREPARATION_FAILED_MESSAGE = "通话准备失败，请稍后重试"
         const val CALL_CONNECTION_FAILED_MESSAGE = "通话连接失败，请稍后重试"
         const val CALL_ACTION_FAILED_MESSAGE = "通话操作失败，请稍后重试"
+        val WHEP_RETRY_DELAYS_MILLIS = listOf(2_000L, 3_000L, 5_000L, 8_000L, 10_000L, 10_000L, 10_000L)
+        const val WHEP_STABLE_PLAYBACK_MILLIS = 15_000L
+        val WHEP_AUTO_RETRY_CODES = setOf(
+            ScreenShareFailureCode.IceConnection,
+            ScreenShareFailureCode.FirstFrameTimeout,
+            ScreenShareFailureCode.PlaybackStalled,
+            ScreenShareFailureCode.StreamEnded,
+        )
         val ACTIVE_SCREEN_SHARE_STATUSES = setOf(
             ScreenShareStatus.Authorized,
             ScreenShareStatus.Live,

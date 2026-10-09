@@ -66,6 +66,20 @@ sealed interface MediaCallCommand {
         internal val terminationSignal: CallTerminationSignal = CallTerminationSignal(),
     ) : MediaCallCommand
 
+    /**
+     * Re-establishes only the media room of an already running call after a recoverable
+     * transport loss. Foreground service, Telecom and audio ownership are never touched.
+     */
+    data class Rejoin(
+        override val callId: String,
+        val connection: CallMediaConnection,
+        /** The user's microphone intent captured before the loss. */
+        val microphoneEnabled: Boolean,
+        /** Non-null while a system call keeps the physical media gate closed. */
+        val suspendedOperationId: String? = null,
+        internal val terminationSignal: CallTerminationSignal = CallTerminationSignal(),
+    ) : MediaCallCommand
+
     data class Disconnect(
         override val callId: String,
     ) : MediaCallCommand
@@ -120,8 +134,9 @@ sealed interface MediaCallEvent {
     data class NetworkQualityChanged(
         override val callId: String,
         override val generation: Long,
-        val uplinkScore: Int,
-        val downlinkScore: Int,
+        val direction: NetworkQualityDirection,
+        /** Null means the SDK reported UNKNOWN; consumers must show "no data". */
+        val score: Int?,
         val sampledAtEpochMillis: Long,
     ) : MediaCallEvent
 
@@ -142,6 +157,16 @@ sealed interface MediaCallEvent {
         override val callId: String,
         override val generation: Long,
         val reason: String?,
+    ) : MediaCallEvent
+
+    /**
+     * The media room is gone for a recoverable (network class) reason. The provider has already
+     * detached the old room; the call owner decides whether to rejoin or to terminate.
+     */
+    data class ConnectionLost(
+        override val callId: String,
+        override val generation: Long,
+        val reasonCode: String,
     ) : MediaCallEvent
 }
 
@@ -204,3 +229,6 @@ sealed interface MediaSystemCallInterruptionResult {
         val reasonCode: String,
     ) : MediaSystemCallInterruptionResult
 }
+
+/** Local participant quality describes uplink; the remote participant's describes downlink. */
+enum class NetworkQualityDirection { Uplink, Downlink }

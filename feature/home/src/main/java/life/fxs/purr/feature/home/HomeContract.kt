@@ -8,6 +8,9 @@ import life.fxs.purr.core.model.SelfProfile
 sealed interface HomeIntent {
     data object StartCall : HomeIntent
     data object RefreshStatus : HomeIntent
+    data class CheckBatteryPrompt(val ignoringBatteryOptimizations: Boolean) : HomeIntent
+    data object BatteryPromptAccepted : HomeIntent
+    data object BatteryPromptDismissed : HomeIntent
 }
 
 sealed interface HomeCallTarget {
@@ -34,6 +37,7 @@ data class HomeState(
     val isCallable: Boolean = false,
     val lastSessionSummary: CallSessionSummary? = null,
     val isLoading: Boolean = false,
+    val showBatteryPrompt: Boolean = false,
 ) {
     val hasActiveCall: Boolean
         get() = activeCallTarget != null

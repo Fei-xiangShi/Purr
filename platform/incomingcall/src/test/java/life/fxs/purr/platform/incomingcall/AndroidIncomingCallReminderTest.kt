@@ -61,7 +61,7 @@ class AndroidIncomingCallReminderTest {
 
     @Test
     fun `incoming call notification owns full screen and call actions`() {
-        reminder(canUseFullScreenIntent = true).replace(incomingCall("call-1"))
+        reminder().replace(incomingCall("call-1"))
 
         val notification = notificationManager.activeNotifications.single().notification
 
@@ -73,12 +73,12 @@ class AndroidIncomingCallReminderTest {
     }
 
     @Test
-    fun `full screen denial falls back to call notification`() {
-        reminder(canUseFullScreenIntent = false).replace(incomingCall("call-1"))
+    fun `full screen intent is always set so the system can degrade it`() {
+        reminder().replace(incomingCall("call-1"))
 
         val notification = notificationManager.activeNotifications.single().notification
 
-        assertThat(notification.fullScreenIntent).isNull()
+        assertThat(notification.fullScreenIntent).isNotNull()
         assertThat(notification.contentIntent).isNotNull()
         assertThat(notification.actions).hasLength(2)
     }
@@ -146,7 +146,6 @@ class AndroidIncomingCallReminderTest {
     }
 
     private fun reminder(
-        canUseFullScreenIntent: Boolean = true,
         avatarLoader: CallNotificationAvatarLoader = RecordingAvatarLoader(null),
     ) = AndroidIncomingCallReminder(
         context = context,
@@ -160,7 +159,6 @@ class AndroidIncomingCallReminderTest {
                     activityPendingIntent("answer", content.callId)
             },
         ),
-        fullScreenIntentCapability = FullScreenIntentCapability { canUseFullScreenIntent },
         avatarLoader = avatarLoader,
         applicationScope = scope,
     )

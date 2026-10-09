@@ -11,7 +11,7 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class WhepPlaybackLifecycleTest {
     @Test
-    fun `only final active failure is reported and expected codec failures are excluded`() = runTest {
+    fun `only final active failure is reported explicitly and expected codec failures are excluded`() = runTest {
         val reported = mutableListOf<ScreenShareFailureCode>()
         val sessions = mutableListOf<FakeSession>()
         val lifecycle = WhepPlaybackLifecycle(backgroundScope, clock = { testScheduler.currentTime },
@@ -28,6 +28,10 @@ class WhepPlaybackLifecycleTest {
         sessions[1].listener.onFailed("failed", ScreenShareFailureCode.IceConnection)
         sessions[1].listener.onFailed("duplicate", ScreenShareFailureCode.IceConnection)
         runCurrent()
+        val failed = lifecycle.status.value as WhepPlaybackStatus.Failed
+        assertThat(failed.code).isEqualTo(ScreenShareFailureCode.IceConnection)
+        assertThat(reported).isEmpty()
+        lifecycle.reportFailure(failed.request, failed.code)
         assertThat(reported).containsExactly(ScreenShareFailureCode.IceConnection)
     }
     @Test
@@ -113,7 +117,7 @@ class WhepPlaybackLifecycleTest {
         lifecycle.stop(null)
     }
 
-    @Test fun `sustained stall reports once closes playback and cannot revive from a late frame`() = runTest {
+    @Test fun `sustained stall fails once closes playback and cannot revive from a late frame`() = runTest {
         val reported = mutableListOf<ScreenShareFailureCode>()
         val sessions = mutableListOf<FakeSession>()
         val lifecycle = WhepPlaybackLifecycle(backgroundScope, clock = { testScheduler.currentTime },
@@ -126,7 +130,9 @@ class WhepPlaybackLifecycleTest {
         advanceTimeBy(20_000)
         runCurrent()
         assertThat(lifecycle.status.value).isInstanceOf(WhepPlaybackStatus.Failed::class.java)
-        assertThat(reported).containsExactly(ScreenShareFailureCode.PlaybackStalled)
+        assertThat((lifecycle.status.value as WhepPlaybackStatus.Failed).code)
+            .isEqualTo(ScreenShareFailureCode.PlaybackStalled)
+        assertThat(reported).isEmpty()
         assertThat(sessions[0].closed).isEqualTo(1)
         assertThat(sessions[0].listener.onFrame(720, 1280)).isFalse()
         lifecycle.start(request)
@@ -137,7 +143,7 @@ class WhepPlaybackLifecycleTest {
         lifecycle.stop(null)
         runCurrent()
         advanceTimeBy(30_000)
-        assertThat(reported).hasSize(1)
+        assertThat(reported).isEmpty()
         assertThat(sessions[1].closed).isEqualTo(1)
     }
 

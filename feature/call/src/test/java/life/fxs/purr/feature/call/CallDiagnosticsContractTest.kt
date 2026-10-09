@@ -19,7 +19,7 @@ class CallDiagnosticsContractTest {
                 participantIdentity = ParticipantIdentity(local = "local", remote = "remote"),
                 roomName = "room-1",
                 uiSnapshot = CallUiSnapshot(
-                    networkQuality = NetworkQuality(uplinkScore = 4),
+                    networkQuality = NetworkQuality(uplinkScore = 4, downlinkScore = 2),
                 ),
             ),
             activeRoute = AudioRoute.Bluetooth,
@@ -32,6 +32,7 @@ class CallDiagnosticsContractTest {
                 activeRoute = AudioRoute.Bluetooth,
                 networkQualityScore = 4,
                 callId = "call-1",
+                downlinkQualityScore = 2,
             ),
         )
     }

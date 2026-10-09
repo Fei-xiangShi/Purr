@@ -8,15 +8,18 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.random.Random
 import kotlinx.serialization.json.Json
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.common.ApplicationScope
+import life.fxs.purr.core.common.NetworkAvailability
 import life.fxs.purr.core.network.asAppError
 import life.fxs.purr.core.network.api.PurrCallApi
 import life.fxs.purr.core.network.model.ActiveCallDto
@@ -42,7 +45,7 @@ private const val SCREEN_SHARE_CHANGED_EVENT = "screen_share_changed"
 
 @Singleton
 class ApiRealtimeRepository @Inject constructor(
-    private val okHttpClient: OkHttpClient,
+    @RealtimeClient private val okHttpClient: OkHttpClient,
     private val json: Json,
     private val sessionTokenHolder: SessionTokenHolder,
     private val api: PurrCallApi,
@@ -50,9 +53,15 @@ class ApiRealtimeRepository @Inject constructor(
     @ApplicationScope private val applicationScope: CoroutineScope,
     private val screenShareInvalidations: ScreenShareRealtimeInvalidations =
         ScreenShareRealtimeInvalidations(),
+    private val networkAvailability: NetworkAvailability = NetworkAvailability.None,
 ) : RealtimeRepository {
+    /** Replaceable by tests to make reconnect jitter deterministic. */
+    internal var random: Random = Random.Default
+    private var networkJob: Job? = null
     private val scope = applicationScope
     private val state = MutableStateFlow(RealtimeState())
+    private val running = MutableStateFlow(false)
+    override val isRunning: StateFlow<Boolean> = running.asStateFlow()
     private var shouldRun = false
     private var socket: WebSocket? = null
     private var reconnectJob: Job? = null
@@ -71,14 +80,22 @@ class ApiRealtimeRepository @Inject constructor(
     override fun start() {
         if (shouldRun) return
         shouldRun = true
+        running.value = true
         lifecycleGeneration++
+        networkJob?.cancel()
+        networkJob = scope.launch {
+            networkAvailability.available.collect { reconnectNow() }
+        }
         openSocket()
     }
 
     @Synchronized
     override fun stop() {
         shouldRun = false
+        running.value = false
         lifecycleGeneration++
+        networkJob?.cancel()
+        networkJob = null
         reconnectJob?.cancel()
         reconnectJob = null
         heartbeatJob?.cancel()
@@ -126,6 +143,24 @@ class ApiRealtimeRepository @Inject constructor(
                 current
             }
         }
+    }
+
+    /** Drops a possibly stale socket and reconnects immediately with a fresh backoff. */
+    @Synchronized
+    internal fun reconnectNow() {
+        if (!shouldRun) return
+        reconnectJob?.cancel()
+        reconnectJob = null
+        reconnectAttempt = 0
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+        val stale = socket
+        socket = null
+        stale?.cancel()
+        if (stale != null) {
+            state.update { it.copy(isConnected = false, partnerOnline = null) }
+        }
+        openSocket()
     }
 
     @Synchronized
@@ -213,10 +248,7 @@ class ApiRealtimeRepository @Inject constructor(
     @Synchronized
     private fun scheduleReconnect() {
         if (!shouldRun || reconnectJob?.isActive == true) return
-        val delayMillis = minOf(
-            MAX_RECONNECT_DELAY_MILLIS,
-            INITIAL_RECONNECT_DELAY_MILLIS * (1L shl minOf(reconnectAttempt, MAX_RECONNECT_SHIFT)),
-        )
+        val delayMillis = reconnectDelayMillis(reconnectAttempt, random)
         reconnectAttempt++
         reconnectJob = scope.launch {
             delay(delayMillis)
@@ -249,11 +281,21 @@ class ApiRealtimeRepository @Inject constructor(
         const val NORMAL_CLOSURE_STATUS = 1000
         const val HEARTBEAT_MESSAGE = "heartbeat"
         const val HEARTBEAT_INTERVAL_MILLIS = 15_000L
-        const val INITIAL_RECONNECT_DELAY_MILLIS = 1_000L
-        const val MAX_RECONNECT_DELAY_MILLIS = 30_000L
-        const val MAX_RECONNECT_SHIFT = 5
     }
 }
+
+internal fun reconnectDelayMillis(attempt: Int, random: Random): Long {
+    val base = minOf(
+        RECONNECT_MAX_DELAY_MILLIS,
+        RECONNECT_INITIAL_DELAY_MILLIS * (1L shl minOf(attempt, RECONNECT_MAX_SHIFT)),
+    )
+    return (base * random.nextDouble(1.0 - RECONNECT_JITTER, 1.0 + RECONNECT_JITTER)).toLong()
+}
+
+private const val RECONNECT_INITIAL_DELAY_MILLIS = 1_000L
+private const val RECONNECT_MAX_DELAY_MILLIS = 30_000L
+private const val RECONNECT_MAX_SHIFT = 5
+private const val RECONNECT_JITTER = 0.2
 
 internal fun RealtimeState.applyRealtimeEvent(
     event: RealtimeEventDto,

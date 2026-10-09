@@ -41,6 +41,7 @@ import life.fxs.purr.data.call.runtime.CallMediaConnection
 import life.fxs.purr.data.call.runtime.MediaCallCommand
 import life.fxs.purr.data.call.runtime.MediaCallEvent
 import life.fxs.purr.data.call.runtime.MediaSystemCallInterruptionResult
+import life.fxs.purr.data.call.runtime.NetworkQualityDirection
 import life.fxs.purr.data.call.runtime.MediaSystemCallResumeRequest
 import life.fxs.purr.data.call.runtime.MediaSystemCallSuspendRequest
 
@@ -76,7 +77,7 @@ class RealLiveKitCallDataSourceTest {
             RoomEvent.Disconnected(
                 room = harness.room,
                 error = null,
-                reason = DisconnectReason.SERVER_SHUTDOWN,
+                reason = DisconnectReason.ROOM_DELETED,
             ),
         )
         runCurrent()
@@ -93,12 +94,145 @@ class RealLiveKitCallDataSourceTest {
             RoomEvent.Disconnected(
                 room = harness.room,
                 error = null,
-                reason = DisconnectReason.SERVER_SHUTDOWN,
+                reason = DisconnectReason.ROOM_DELETED,
             ),
         )
         runCurrent()
         verify(exactly = 1) { harness.room.disconnect() }
         verify(exactly = 1) { harness.room.release() }
+        observer.cancel()
+    }
+
+    @Test
+    fun `recoverable disconnect publishes connection lost and detaches the room`() = runTest(dispatcher) {
+        val harness = roomHarness()
+        every { roomFactory.create() } returns harness.room
+        val source = source()
+        val observed = mutableListOf<MediaCallEvent>()
+        val observer = launch { source.events.toList(observed) }
+
+        source.execute(connectCommand())
+        runCurrent()
+        harness.events.emit(
+            RoomEvent.Disconnected(room = harness.room, error = null, reason = DisconnectReason.SERVER_SHUTDOWN),
+        )
+        runCurrent()
+
+        assertThat(observed.filterIsInstance<MediaCallEvent.ConnectionLost>()).hasSize(1)
+        assertThat(observed.filterIsInstance<MediaCallEvent.Disconnected>()).isEmpty()
+        assertThat(roomStateProvider.room.value).isNull()
+        verify(exactly = 1) { harness.room.disconnect() }
+        verify(exactly = 1) { harness.room.release() }
+        observer.cancel()
+    }
+
+    @Test
+    fun `rejoin restores mute intent and never opens the gate while suspended`() = runTest(dispatcher) {
+        val first = roomHarness()
+        val second = roomHarness()
+        every { roomFactory.create() } returnsMany listOf(first.room, second.room)
+        val source = source()
+        val observed = mutableListOf<MediaCallEvent>()
+        val observer = launch { source.events.toList(observed) }
+        runCurrent()
+
+        source.execute(connectCommand())
+        runCurrent()
+        first.events.emit(
+            RoomEvent.Disconnected(room = first.room, error = null, reason = DisconnectReason.UNKNOWN_REASON),
+        )
+        runCurrent()
+        source.execute(
+            MediaCallCommand.Rejoin(
+                callId = "call-1",
+                connection = CallMediaConnection("wss://example.invalid", "token-2"),
+                microphoneEnabled = false,
+                suspendedOperationId = "op-1",
+            ),
+        )
+        runCurrent()
+
+        coVerify(exactly = 0) { second.localParticipant.setMicrophoneEnabled(true) }
+        coVerify(atLeast = 1) { second.localParticipant.setMicrophoneEnabled(false) }
+        val connected = observed.filterIsInstance<MediaCallEvent.Connected>()
+        assertThat(connected).hasSize(2)
+        assertThat(connected.last().generation).isGreaterThan(connected.first().generation)
+        assertThat(observed.filterIsInstance<MediaCallEvent.AudioStateChanged>().last().muted).isTrue()
+        assertThat(roomStateProvider.room.value).isSameInstanceAs(second.room)
+        verify(exactly = 1) { first.room.release() }
+        verify(exactly = 0) { second.room.release() }
+        observer.cancel()
+    }
+
+    @Test
+    fun `failed rejoin attempt throws without publishing a terminal fact`() = runTest(dispatcher) {
+        val first = roomHarness()
+        val second = roomHarness()
+        coEvery { second.room.connect(any(), any(), any()) } throws java.io.IOException("offline")
+        every { roomFactory.create() } returnsMany listOf(first.room, second.room)
+        val source = source()
+        val observed = mutableListOf<MediaCallEvent>()
+        val observer = launch { source.events.toList(observed) }
+
+        source.execute(connectCommand())
+        runCurrent()
+        first.events.emit(
+            RoomEvent.Disconnected(room = first.room, error = null, reason = DisconnectReason.UNKNOWN_REASON),
+        )
+        runCurrent()
+        val failure = runCatching {
+            source.execute(
+                MediaCallCommand.Rejoin(
+                    callId = "call-1",
+                    connection = CallMediaConnection("wss://example.invalid", "token-2"),
+                    microphoneEnabled = true,
+                ),
+            )
+        }.exceptionOrNull()
+        runCurrent()
+
+        assertThat(failure).isInstanceOf(java.io.IOException::class.java)
+        assertThat(observed.filterIsInstance<MediaCallEvent.Failed>()).isEmpty()
+        assertThat(observed.filterIsInstance<MediaCallEvent.Disconnected>()).isEmpty()
+        assertThat(roomStateProvider.room.value).isNull()
+        verify(exactly = 1) { second.room.release() }
+        observer.cancel()
+    }
+
+    @Test
+    fun `local quality maps to uplink remote to downlink and unknown to no data`() = runTest(dispatcher) {
+        val harness = roomHarness()
+        every { roomFactory.create() } returns harness.room
+        val source = source()
+        val observed = mutableListOf<MediaCallEvent>()
+        val observer = launch { source.events.toList(observed) }
+        source.execute(connectCommand())
+        runCurrent()
+        val remote = harness.remoteParticipant
+
+        harness.events.emit(
+            RoomEvent.ConnectionQualityChanged(
+                harness.room, harness.localParticipant, io.livekit.android.room.participant.ConnectionQuality.GOOD,
+            ),
+        )
+        harness.events.emit(
+            RoomEvent.ConnectionQualityChanged(
+                harness.room, remote, io.livekit.android.room.participant.ConnectionQuality.POOR,
+            ),
+        )
+        harness.events.emit(
+            RoomEvent.ConnectionQualityChanged(
+                harness.room, remote, io.livekit.android.room.participant.ConnectionQuality.UNKNOWN,
+            ),
+        )
+        runCurrent()
+
+        val quality = observed.filterIsInstance<MediaCallEvent.NetworkQualityChanged>()
+        assertThat(quality.map { it.direction to it.score }).containsExactly(
+            NetworkQualityDirection.Uplink to 4,
+            NetworkQualityDirection.Downlink to 2,
+            NetworkQualityDirection.Downlink to null,
+        ).inOrder()
         observer.cancel()
     }
 
@@ -605,6 +739,7 @@ class RealLiveKitCallDataSourceTest {
             room = room,
             events = events,
             localParticipant = localParticipant,
+            remoteParticipant = remoteParticipant,
             localAudioTrack = localAudioTrack,
             remoteAttributes = remoteAttributes,
             setRoomState = { roomState = it },
@@ -616,6 +751,7 @@ private data class RoomHarness(
     val room: Room,
     val events: MutableSharedFlow<RoomEvent>,
     val localParticipant: LocalParticipant,
+    val remoteParticipant: RemoteParticipant,
     val localAudioTrack: LocalAudioTrack,
     val remoteAttributes: MutableMap<String, String>,
     val setRoomState: (Room.State) -> Unit,

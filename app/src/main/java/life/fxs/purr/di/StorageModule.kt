@@ -11,12 +11,20 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
+import android.util.Log
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import life.fxs.purr.data.account.local.SessionStore
 import life.fxs.purr.data.account.local.AndroidKeyStoreTokenCipher
 import life.fxs.purr.data.account.local.TokenCipher
 import life.fxs.purr.core.common.ApplicationScope
+import life.fxs.purr.diagnostics.PurrSentry
+
+internal val applicationScopeExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+    Log.e("ApplicationScope", "Uncaught coroutine failure", throwable)
+    PurrSentry.error("ApplicationScope", throwable, "Uncaught coroutine failure")
+}
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -29,7 +37,7 @@ object StorageModule {
     @Singleton
     @ApplicationScope
     fun provideApplicationScope(): CoroutineScope =
-        CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default)
+        CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default + applicationScopeExceptionHandler)
 
     @Provides
     @Singleton

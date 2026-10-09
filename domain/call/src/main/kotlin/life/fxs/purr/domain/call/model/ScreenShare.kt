@@ -53,6 +53,8 @@ sealed interface LocalScreenShareState {
     data class RequestingPermission(val shareId: String) : LocalScreenShareState
     data class Connecting(val shareId: String) : LocalScreenShareState
     data class Live(val shareId: String) : LocalScreenShareState
+    /** WHIP dropped; the publisher is retrying without a new capture permission. */
+    data class Reconnecting(val shareId: String) : LocalScreenShareState
     data class Stopping(val shareId: String) : LocalScreenShareState
     data class Failed(val shareId: String?, val message: String) : LocalScreenShareState
 }

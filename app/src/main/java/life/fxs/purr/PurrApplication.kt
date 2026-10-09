@@ -1,6 +1,7 @@
 package life.fxs.purr
 
 import android.app.Application
+import android.os.Build
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import dagger.hilt.android.HiltAndroidApp
@@ -11,6 +12,7 @@ import life.fxs.purr.data.call.telemetry.CallTelemetryCoordinator
 import life.fxs.purr.platform.push.PushPlatformCoordinator
 import life.fxs.purr.telecom.IncomingSystemCallLifecycleCoordinator
 import life.fxs.purr.telecom.SystemCallEventCoordinator
+import life.fxs.purr.diagnostics.ProcessExitReasonReporter
 import life.fxs.purr.diagnostics.PurrSentry
 import life.fxs.purr.screenshare.ScreenShareCallLifecycleCoordinator
 
@@ -48,6 +50,7 @@ class PurrApplication : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
         PurrSentry.initialize(this)
+        reportPreviousProcessExits()
         // Plain Robolectric service tests create the application without a Hilt test component.
         // Android production startup always injects this field before Application.onCreate.
         if (::realtimeSessionCoordinator.isInitialized) {
@@ -71,5 +74,13 @@ class PurrApplication : Application(), Configuration.Provider {
         if (::screenShareCallLifecycleCoordinator.isInitialized) {
             screenShareCallLifecycleCoordinator.start()
         }
+    }
+
+    private fun reportPreviousProcessExits() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        // Off the main thread; failures must never affect startup.
+        Thread {
+            runCatching { ProcessExitReasonReporter.create(this).reportNewExits() }
+        }.apply { name = "purr-exit-reasons" }.start()
     }
 }

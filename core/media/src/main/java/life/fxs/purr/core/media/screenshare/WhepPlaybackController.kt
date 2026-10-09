@@ -65,7 +65,11 @@ sealed interface WhepPlaybackStatus {
     data class Connecting(val request: WhepPlaybackRequest) : WhepPlaybackStatus
     data class Buffering(val request: WhepPlaybackRequest) : WhepPlaybackStatus
     data class Live(val request: WhepPlaybackRequest, val width: Int = 0, val height: Int = 0) : WhepPlaybackStatus
-    data class Failed(val request: WhepPlaybackRequest, val message: String) : WhepPlaybackStatus
+    data class Failed(
+        val request: WhepPlaybackRequest,
+        val message: String,
+        val code: ScreenShareFailureCode = ScreenShareFailureCode.Playback,
+    ) : WhepPlaybackStatus
     data class Stopped(val shareId: String?) : WhepPlaybackStatus
 }
 
@@ -73,6 +77,12 @@ interface WhepPlaybackController {
     val status: StateFlow<WhepPlaybackStatus>
     fun start(request: WhepPlaybackRequest)
     fun stop(shareId: String? = null)
+
+    /**
+     * Records a final playback failure. Failed statuses are not reported by the controller
+     * itself so the owner of the retry policy can report once after retries are exhausted.
+     */
+    fun reportFailure(request: WhepPlaybackRequest, code: ScreenShareFailureCode)
     fun createVideoRenderer(context: Context): View
     fun releaseVideoRenderer(view: View)
 }
@@ -109,6 +119,9 @@ class NativeWhepPlaybackController(
     override fun start(request: WhepPlaybackRequest) = lifecycle.start(request)
 
     override fun stop(shareId: String?) = lifecycle.stop(shareId)
+
+    override fun reportFailure(request: WhepPlaybackRequest, code: ScreenShareFailureCode) =
+        lifecycle.reportFailure(request, code)
 
     override fun createVideoRenderer(context: Context): View = SurfaceViewRenderer(context).apply {
         init(eglBase.eglBaseContext, null)

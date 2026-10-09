@@ -40,6 +40,23 @@ class ScreenSharePublisherStateStoreTest {
     }
 
     @Test
+    fun `reconnecting returns to live and keeps the request`() {
+        store.connecting(request)
+        store.live(request)
+        store.reconnecting(request, 2)
+        assertThat(store.status.value).isEqualTo(ScreenSharePublisherStatus.Reconnecting(request, 2))
+        assertThat(store.status.value.requestOrNull()).isEqualTo(request)
+
+        store.live(request)
+        assertThat(store.status.value).isEqualTo(ScreenSharePublisherStatus.Live(request))
+
+        store.stopping(request)
+        store.reconnecting(request, 1)
+        store.live(request)
+        assertThat(store.status.value).isEqualTo(ScreenSharePublisherStatus.Stopping(request))
+    }
+
+    @Test
     fun `stale callbacks cannot replace another active share`() {
         store.connecting(request)
 

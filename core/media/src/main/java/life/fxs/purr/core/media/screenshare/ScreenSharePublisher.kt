@@ -26,6 +26,12 @@ sealed interface ScreenSharePublisherStatus {
     data class RequestingPermission(val request: ScreenSharePublishRequest) : ScreenSharePublisherStatus
     data class Connecting(val request: ScreenSharePublishRequest) : ScreenSharePublisherStatus
     data class Live(val request: ScreenSharePublishRequest) : ScreenSharePublisherStatus
+
+    /** WHIP dropped; sources and MediaProjection are kept while the publisher retries. */
+    data class Reconnecting(
+        val request: ScreenSharePublishRequest,
+        val attempt: Int,
+    ) : ScreenSharePublisherStatus
     data class Stopping(val request: ScreenSharePublishRequest) : ScreenSharePublisherStatus
     data class Failed(
         val callId: String?,
@@ -40,6 +46,23 @@ interface ScreenSharePublisherController {
     fun start(request: ScreenSharePublishRequest, permission: ScreenCapturePermission)
     fun permissionDenied(request: ScreenSharePublishRequest)
     fun stop(callId: String? = null)
+}
+
+/** Fresh owner publishing credentials fetched from the server while recovering. */
+data class ScreenSharePublishCredentials(
+    val bearerToken: String,
+    val expiresAtEpochMillis: Long,
+)
+
+/** The server definitively refused new credentials (share ended, not owner, auth gone). */
+class ScreenSharePublishCredentialsRejectedException(message: String) : Exception(message)
+
+interface ScreenSharePublishCredentialRefresher {
+    /**
+     * @throws ScreenSharePublishCredentialsRejectedException when the server refuses
+     * @throws Exception for transient failures that may be retried
+     */
+    suspend fun refreshPublishing(callId: String, shareId: String): ScreenSharePublishCredentials
 }
 
 @Singleton
@@ -58,11 +81,23 @@ class ScreenSharePublisherStateStore @Inject constructor() {
     }
 
     fun live(request: ScreenSharePublishRequest) {
-        if (mutableStatus.value is ScreenSharePublisherStatus.Connecting &&
-            mutableStatus.value.requestOrNull() == request
-        ) {
+        if (canTransitionToLive(request)) {
             mutableStatus.value = ScreenSharePublisherStatus.Live(request)
         }
+    }
+
+    fun reconnecting(request: ScreenSharePublishRequest, attempt: Int) {
+        if (canTransitionToLive(request)) {
+            mutableStatus.value = ScreenSharePublisherStatus.Reconnecting(request, attempt)
+        }
+    }
+
+    private fun canTransitionToLive(request: ScreenSharePublishRequest): Boolean {
+        val current = mutableStatus.value
+        return (current is ScreenSharePublisherStatus.Connecting ||
+            current is ScreenSharePublisherStatus.Live ||
+            current is ScreenSharePublisherStatus.Reconnecting) &&
+            current.requestOrNull() == request
     }
 
     fun stopping(request: ScreenSharePublishRequest) {
@@ -90,6 +125,7 @@ fun ScreenSharePublisherStatus.requestOrNull(): ScreenSharePublishRequest? = whe
     is ScreenSharePublisherStatus.RequestingPermission -> request
     is ScreenSharePublisherStatus.Connecting -> request
     is ScreenSharePublisherStatus.Live -> request
+    is ScreenSharePublisherStatus.Reconnecting -> request
     is ScreenSharePublisherStatus.Stopping -> request
     is ScreenSharePublisherStatus.Idle,
     is ScreenSharePublisherStatus.Failed,

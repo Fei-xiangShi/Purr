@@ -15,6 +15,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
@@ -27,6 +28,7 @@ import life.fxs.purr.core.model.CallDirection
 import life.fxs.purr.core.media.screenshare.ScreenShareQuality
 import life.fxs.purr.core.media.screenshare.ScreenSharePublisherController
 import life.fxs.purr.core.media.screenshare.ScreenSharePublisherStatus
+import life.fxs.purr.core.media.screenshare.ScreenShareFailureCode
 import life.fxs.purr.core.media.screenshare.WhepPlaybackController
 import life.fxs.purr.core.media.screenshare.WhepPlaybackRequest
 import life.fxs.purr.core.media.screenshare.WhepPlaybackStatus
@@ -108,6 +110,7 @@ class CallViewModelTest {
         every { whepPlaybackController.status } returns whepStatusFlow
         every { whepPlaybackController.start(any()) } just Runs
         every { whepPlaybackController.stop(any()) } just Runs
+        every { whepPlaybackController.reportFailure(any(), any()) } just Runs
     }
 
     @After
@@ -1019,6 +1022,144 @@ class CallViewModelTest {
         advanceUntilIdle()
         viewModel.onIntent(CallIntent.RetryRemoteScreenShare)
         verify(exactly = 2) { whepPlaybackController.start(request) }
+    }
+
+    @Test
+    fun `viewer retries live playback with newest credentials and reports one failure after exhaustion`() =
+        runTest(dispatcher) {
+            sessionFlow.value = sampleSession(
+                connectionState = CallConnectionState.Connected,
+                localAudioState = LocalAudioState.Enabled,
+                recordingState = RecordingState.NotRecording,
+            )
+            val started = mutableListOf<WhepPlaybackRequest>()
+            every { whepPlaybackController.start(capture(started)) } just Runs
+            val viewModel = createViewModel()
+            viewModel.onIntent(CallIntent.OpenExistingCall("pair-1", "call-1", direction = CallDirection.Outgoing))
+            runCurrent()
+            fun publish(token: String) {
+                screenShareFlow.value = ScreenShareSnapshot(
+                    callId = "call-1",
+                    session = sampleScreenShare(
+                        source = ScreenShareSource.Mobile,
+                        status = ScreenShareStatus.Live,
+                        publishing = null,
+                        playback = ScreenShareMediaEndpoint("https://media.test/whep", token, Long.MAX_VALUE),
+                    ),
+                    isOwnedByCurrentUser = false,
+                )
+            }
+            publish("token-0")
+            runCurrent()
+            assertThat(started).hasSize(1)
+
+            val delays = listOf(2_000L, 3_000L, 5_000L, 8_000L, 10_000L, 10_000L, 10_000L)
+            delays.forEachIndexed { index, delayMillis ->
+                whepStatusFlow.value = WhepPlaybackStatus.Failed(
+                    started.last(), "ICE failed", ScreenShareFailureCode.IceConnection,
+                )
+                runCurrent()
+                assertThat(viewModel.state.value.screenShare.remoteState).isEqualTo(RemoteScreenShareUiState.Buffering)
+                publish("token-${index + 1}")
+                runCurrent()
+                advanceTimeBy(delayMillis - 1)
+                runCurrent()
+                assertThat(started).hasSize(index + 1)
+                advanceTimeBy(1)
+                runCurrent()
+                assertThat(started).hasSize(index + 2)
+                assertThat(started.last().bearerToken).isEqualTo("token-${index + 1}")
+            }
+            verify(exactly = 0) { whepPlaybackController.reportFailure(any(), any()) }
+
+            whepStatusFlow.value = WhepPlaybackStatus.Failed(
+                started.last(), "ICE failed", ScreenShareFailureCode.IceConnection,
+            )
+            advanceUntilIdle()
+            assertThat(started).hasSize(delays.size + 1)
+            assertThat(viewModel.state.value.screenShare.remoteState).isEqualTo(RemoteScreenShareUiState.Failed)
+            verify(exactly = 1) {
+                whepPlaybackController.reportFailure(any(), ScreenShareFailureCode.IceConnection)
+            }
+
+            viewModel.onIntent(CallIntent.RetryRemoteScreenShare)
+            runCurrent()
+            assertThat(started).hasSize(delays.size + 2)
+        }
+
+    @Test
+    fun `viewer retry is cancelled by hangup and ignores non retryable failures`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.NotRecording,
+        )
+        val started = mutableListOf<WhepPlaybackRequest>()
+        every { whepPlaybackController.start(capture(started)) } just Runs
+        val viewModel = createViewModel()
+        viewModel.onIntent(CallIntent.OpenExistingCall("pair-1", "call-1", direction = CallDirection.Outgoing))
+        runCurrent()
+        screenShareFlow.value = ScreenShareSnapshot(
+            callId = "call-1",
+            session = sampleScreenShare(
+                ScreenShareSource.Mobile, ScreenShareStatus.Live, null, sampleMediaEndpoint("https://media.test/whep"),
+            ),
+            isOwnedByCurrentUser = false,
+        )
+        runCurrent()
+
+        whepStatusFlow.value = WhepPlaybackStatus.Failed(
+            started.last(), "expired", ScreenShareFailureCode.CredentialsExpired,
+        )
+        runCurrent()
+        assertThat(viewModel.state.value.screenShare.remoteState).isEqualTo(RemoteScreenShareUiState.Failed)
+        verify(exactly = 1) { whepPlaybackController.reportFailure(any(), ScreenShareFailureCode.CredentialsExpired) }
+        advanceTimeBy(60_000)
+        assertThat(started).hasSize(1)
+
+        viewModel.onIntent(CallIntent.RetryRemoteScreenShare)
+        runCurrent()
+        assertThat(started).hasSize(2)
+        whepStatusFlow.value = WhepPlaybackStatus.Failed(
+            started.last(), "stalled", ScreenShareFailureCode.PlaybackStalled,
+        )
+        runCurrent()
+        viewModel.onIntent(CallIntent.EndCall)
+        advanceTimeBy(60_000)
+        advanceUntilIdle()
+        assertThat(started).hasSize(2)
+        verify(exactly = 1) { whepPlaybackController.reportFailure(any(), any()) }
+    }
+
+    @Test
+    fun `viewer retry stops when the share is no longer live`() = runTest(dispatcher) {
+        sessionFlow.value = sampleSession(
+            connectionState = CallConnectionState.Connected,
+            localAudioState = LocalAudioState.Enabled,
+            recordingState = RecordingState.NotRecording,
+        )
+        val started = mutableListOf<WhepPlaybackRequest>()
+        every { whepPlaybackController.start(capture(started)) } just Runs
+        val viewModel = createViewModel()
+        viewModel.onIntent(CallIntent.OpenExistingCall("pair-1", "call-1", direction = CallDirection.Outgoing))
+        runCurrent()
+        val live = sampleScreenShare(
+            ScreenShareSource.Mobile, ScreenShareStatus.Live, null, sampleMediaEndpoint("https://media.test/whep"),
+        )
+        screenShareFlow.value = ScreenShareSnapshot("call-1", session = live, isOwnedByCurrentUser = false)
+        runCurrent()
+        whepStatusFlow.value = WhepPlaybackStatus.Failed(
+            started.last(), "ended", ScreenShareFailureCode.StreamEnded,
+        )
+        runCurrent()
+        screenShareFlow.value = ScreenShareSnapshot(
+            "call-1",
+            session = live.copy(status = ScreenShareStatus.Stopped, playback = null),
+            isOwnedByCurrentUser = false,
+        )
+        runCurrent()
+        advanceTimeBy(60_000)
+        assertThat(started).hasSize(1)
     }
 
     @Test

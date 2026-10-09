@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import life.fxs.purr.core.common.PurrLogger
 import life.fxs.purr.core.media.audio.AudioRouteController
 import life.fxs.purr.core.media.audio.CallAudioSessionController
@@ -36,6 +37,7 @@ class CallRuntimeControllerImpl @Inject constructor(
         )
         when (command) {
             is MediaCallCommand.Connect -> connectLocked(command)
+            is MediaCallCommand.Rejoin -> rejoinLocked(command)
             is MediaCallCommand.Disconnect -> disconnectLocked(command)
             is MediaCallCommand.SetMuted -> setMutedLocked(command)
         }
@@ -59,10 +61,10 @@ class CallRuntimeControllerImpl @Inject constructor(
         try {
             // Start the foreground service while the user-initiated call is still eligible
             // under Android's while-in-use/background-start rules.
-            runStage(command, "service.start") {
+            runStage(command, "service.start", PLATFORM_STAGE_TIMEOUT_MILLIS) {
                 callServiceController.startForegroundCall(command.callId, command.pairId, command.direction)
             }
-            runStage(command, "telecom.start") {
+            runStage(command, "telecom.start", PLATFORM_STAGE_TIMEOUT_MILLIS) {
                 systemCallController.startCall(
                     SystemCallDescriptor(
                         callId = command.callId,
@@ -72,11 +74,13 @@ class CallRuntimeControllerImpl @Inject constructor(
                     ),
                 )
             }
-            runStage(command, "telecom.activate") {
+            runStage(command, "telecom.activate", PLATFORM_STAGE_TIMEOUT_MILLIS) {
                 systemCallController.activateCall(command.callId)
             }
-            runStage(command, "audio.activate") { callAudioSessionController.activate() }
-            runStage(command, "livekit.connect") { mediaCallPort.execute(command) }
+            runStage(command, "audio.activate", PLATFORM_STAGE_TIMEOUT_MILLIS) {
+                callAudioSessionController.activate()
+            }
+            runStage(command, "livekit.connect", LIVEKIT_STAGE_TIMEOUT_MILLIS) { mediaCallPort.execute(command) }
             command.terminationSignal.throwIfRequested()
         } catch (throwable: Throwable) {
             logger.e(
@@ -90,6 +94,26 @@ class CallRuntimeControllerImpl @Inject constructor(
             }
             throw throwable
         }
+    }
+
+    /**
+     * Rejoins only the media room. Foreground service, Telecom and audio stay owned by the
+     * running call, so a failed attempt never releases them; [disconnectLocked] remains the
+     * only release path.
+     */
+    private suspend fun rejoinLocked(command: MediaCallCommand.Rejoin) {
+        if (activeCallId != command.callId) {
+            logger.d(
+                LOG_TAG,
+                "callId=${command.callId} phase=runtime.rejoin event=ignored activeCallId=$activeCallId",
+            )
+            throw IllegalStateException("No active call runtime to rejoin: ${command.callId}")
+        }
+        command.terminationSignal.throwIfRequested()
+        runStage(command.callId, command.terminationSignal, "livekit.rejoin", LIVEKIT_STAGE_TIMEOUT_MILLIS) {
+            mediaCallPort.execute(command)
+        }
+        command.terminationSignal.throwIfRequested()
     }
 
     private suspend fun disconnectLocked(command: MediaCallCommand.Disconnect) {
@@ -194,21 +218,35 @@ class CallRuntimeControllerImpl @Inject constructor(
     private suspend fun <T> runStage(
         command: MediaCallCommand.Connect,
         stage: String,
+        timeoutMillis: Long,
+        block: suspend () -> T,
+    ): T = runStage(command.callId, command.terminationSignal, stage, timeoutMillis, block)
+
+    /**
+     * Each stage has its own budget so a slow platform step cannot starve the LiveKit join.
+     * The timeout surfaces as [kotlinx.coroutines.TimeoutCancellationException], which callers
+     * distinguish from caller cancellation.
+     */
+    private suspend fun <T> runStage(
+        callId: String,
+        terminationSignal: CallTerminationSignal,
+        stage: String,
+        timeoutMillis: Long,
         block: suspend () -> T,
     ): T {
         val startedAt = System.nanoTime()
-        logger.d(LOG_TAG, "callId=${command.callId} phase=$stage event=begin")
+        logger.d(LOG_TAG, "callId=$callId phase=$stage event=begin")
         return try {
-            command.terminationSignal.runStage(block).also {
+            withTimeout(timeoutMillis) { terminationSignal.runStage(block) }.also {
                 logger.d(
                     LOG_TAG,
-                    "callId=${command.callId} phase=$stage event=end elapsedMs=${elapsedMillis(startedAt)}",
+                    "callId=$callId phase=$stage event=end elapsedMs=${elapsedMillis(startedAt)}",
                 )
             }
         } catch (throwable: Throwable) {
             val event = if (throwable is CallTerminationException) "cancel" else "error"
             val message =
-                "callId=${command.callId} phase=$stage event=$event elapsedMs=${elapsedMillis(startedAt)}"
+                "callId=$callId phase=$stage event=$event elapsedMs=${elapsedMillis(startedAt)}"
             if (throwable is CallTerminationException) {
                 logger.d(LOG_TAG, message)
             } else {
@@ -222,6 +260,8 @@ class CallRuntimeControllerImpl @Inject constructor(
 
     private companion object {
         const val LOG_TAG = "CallRuntime"
+        const val PLATFORM_STAGE_TIMEOUT_MILLIS = 5_000L
+        const val LIVEKIT_STAGE_TIMEOUT_MILLIS = 25_000L
     }
 
     override suspend fun selectAudioRoute(route: AudioRoute) = lifecycleMutex.withLock {

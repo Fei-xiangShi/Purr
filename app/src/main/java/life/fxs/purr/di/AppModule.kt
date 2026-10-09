@@ -22,6 +22,7 @@ import life.fxs.purr.core.network.api.PurrRecordingApi
 import life.fxs.purr.core.network.api.PurrPushApi
 import life.fxs.purr.data.account.network.BearerTokenInterceptor
 import life.fxs.purr.data.account.network.RefreshTokenAuthenticator
+import life.fxs.purr.data.account.realtime.RealtimeClient
 import life.fxs.purr.data.account.realtime.RealtimeEndpoint
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -69,6 +70,13 @@ object NetworkModule {
         .addInterceptor(
             loggingInterceptor(),
         )
+        .build()
+
+    @Provides
+    @Singleton
+    @RealtimeClient
+    fun provideRealtimeClient(okHttpClient: OkHttpClient): OkHttpClient = okHttpClient.newBuilder()
+        .pingInterval(REALTIME_PING_INTERVAL_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
     @Provides
@@ -130,6 +138,8 @@ object NetworkModule {
             .create(PurrAuthApi::class.java)
     }
 }
+
+private const val REALTIME_PING_INTERVAL_SECONDS = 20L
 
 private fun loggingInterceptor() = HttpLoggingInterceptor().apply {
     level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE

@@ -29,6 +29,8 @@ import life.fxs.purr.domain.account.model.AuthSession
 import life.fxs.purr.domain.account.repository.AuthRepository
 import life.fxs.purr.domain.call.model.ScreenShareSource
 import life.fxs.purr.domain.call.model.ScreenShareStatus
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -110,6 +112,59 @@ class ScreenShareRepositoryImplTest {
         runCurrent()
 
         coVerify(exactly = 1) { api.stopScreenShare("call-1", "share-1") }
+    }
+
+    @Test
+    fun `reconnecting publisher neither deletes the share nor is stopped while server share is live`() = runTest {
+        coEvery { api.getScreenShare("call-1") } returns ScreenShareEnvelopeDto(
+            sampleDto(status = "live", publishing = null),
+        )
+        val repository = createRepository()
+        val snapshots = mutableListOf<life.fxs.purr.domain.call.model.ScreenShareSnapshot>()
+        val observation = backgroundScope.launch { repository.observe("call-1").collect { snapshots += it } }
+        runCurrent()
+
+        val request = life.fxs.purr.core.media.screenshare.ScreenSharePublishRequest(
+            callId = "call-1",
+            shareId = "share-1",
+            whipUrl = "https://media.test/whip",
+            bearerToken = "publish-token",
+            expiresAtEpochMillis = 61_000L,
+        )
+        publisherStatus.value = ScreenSharePublisherStatus.Reconnecting(request, 2)
+        runCurrent()
+
+        assertThat(snapshots.last().localState)
+            .isEqualTo(life.fxs.purr.domain.call.model.LocalScreenShareState.Reconnecting("share-1"))
+        coVerify(exactly = 0) { api.stopScreenShare(any(), any()) }
+        io.mockk.verify(exactly = 0) { publisherController.stop(any()) }
+        observation.cancel()
+    }
+
+    @Test
+    fun `publishing refresh returns new credentials and classifies rejection`() = runTest {
+        coEvery { api.refreshScreenSharePublishing("call-1", "share-1") } returns ScreenSharePublishingDto(
+            whip = sampleEndpoint("https://media.test/whip", "fresh-token"),
+        )
+        val repository = createRepository()
+        val credentials = repository.refreshPublishing("call-1", "share-1")
+        assertThat(credentials.bearerToken).isEqualTo("fresh-token")
+        assertThat(credentials.expiresAtEpochMillis).isEqualTo(61_000L)
+
+        coEvery { api.refreshScreenSharePublishing("call-1", "share-1") } throws retrofit2.HttpException(
+            retrofit2.Response.error<Any>(
+                409,
+                "{\"message\":\"ended\"}".toResponseBody("application/json".toMediaType()),
+            ),
+        )
+        val rejected = runCatching { repository.refreshPublishing("call-1", "share-1") }.exceptionOrNull()
+        assertThat(rejected).isInstanceOf(
+            life.fxs.purr.core.media.screenshare.ScreenSharePublishCredentialsRejectedException::class.java,
+        )
+
+        coEvery { api.refreshScreenSharePublishing("call-1", "share-1") } throws java.io.IOException("offline")
+        val transient = runCatching { repository.refreshPublishing("call-1", "share-1") }.exceptionOrNull()
+        assertThat(transient).isInstanceOf(java.io.IOException::class.java)
     }
 
     @Test

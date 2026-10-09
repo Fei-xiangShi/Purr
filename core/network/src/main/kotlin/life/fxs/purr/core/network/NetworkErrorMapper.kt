@@ -23,3 +23,6 @@ private fun HttpException.apiMessage(): String? {
         ?.getOrNull(1)
         ?: raw.ifBlank { null }
 }
+
+/** HTTP status of a failed Retrofit call, or null for non-HTTP failures. */
+fun Throwable.httpStatusCode(): Int? = (this as? HttpException)?.code()

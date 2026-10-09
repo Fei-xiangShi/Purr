@@ -9,6 +9,12 @@ class ObserveRealtimeStateUseCase @Inject constructor(
     operator fun invoke() = repository.observeState()
 }
 
+class ObserveRealtimeRunningUseCase @Inject constructor(
+    private val repository: RealtimeRepository,
+) {
+    operator fun invoke() = repository.isRunning
+}
+
 class StartRealtimeUpdatesUseCase @Inject constructor(
     private val repository: RealtimeRepository,
 ) {

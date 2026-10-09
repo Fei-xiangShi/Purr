@@ -51,4 +51,6 @@ dependencies {
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.mockk)
+    testImplementation(libs.retrofit.core)
+    testImplementation(libs.okhttp.core)
 }

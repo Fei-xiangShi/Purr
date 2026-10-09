@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
@@ -31,6 +32,7 @@ import life.fxs.purr.domain.account.usecase.ObserveRealtimeStateUseCase
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.CallLifecycleState
 import life.fxs.purr.domain.call.usecase.ObserveCallLifecycleUseCase
+import life.fxs.purr.domain.incomingcall.ApplicationVisibility
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
@@ -41,6 +43,8 @@ class HomeViewModel @Inject constructor(
     observeCallLifecycleUseCase: ObserveCallLifecycleUseCase,
     private val refreshActiveCallUseCase: RefreshActiveCallUseCase,
     private val startRealtimeUpdatesUseCase: StartRealtimeUpdatesUseCase,
+    private val applicationVisibility: ApplicationVisibility,
+    private val batteryPromptStore: BatteryPromptStore,
 ) : ViewModel() {
     private var navigating = false
     private val _effects = MutableSharedFlow<HomeEffect>()
@@ -115,9 +119,12 @@ class HomeViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            while (isActive) {
-                delay(STATUS_RECOVERY_INTERVAL_MILLIS)
-                refresh(showError = false)
+            applicationVisibility.isForeground.collectLatest { foreground ->
+                if (!foreground) return@collectLatest
+                while (isActive) {
+                    delay(STATUS_RECOVERY_INTERVAL_MILLIS)
+                    refresh(showError = false)
+                }
             }
         }
     }
@@ -128,6 +135,17 @@ class HomeViewModel @Inject constructor(
                 viewModelScope.launch {
                     refresh()
                 }
+            }
+
+            is HomeIntent.CheckBatteryPrompt -> {
+                if (!intent.ignoringBatteryOptimizations && !batteryPromptStore.isPrompted()) {
+                    _uiState.value = _uiState.value.copy(showBatteryPrompt = true)
+                }
+            }
+
+            HomeIntent.BatteryPromptAccepted, HomeIntent.BatteryPromptDismissed -> {
+                batteryPromptStore.markPrompted()
+                _uiState.value = _uiState.value.copy(showBatteryPrompt = false)
             }
 
             HomeIntent.StartCall -> {

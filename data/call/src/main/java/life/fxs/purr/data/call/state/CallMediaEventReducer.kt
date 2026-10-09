@@ -3,6 +3,7 @@ package life.fxs.purr.data.call.state
 import javax.inject.Inject
 import life.fxs.purr.core.model.SystemCallInterruptionPhase
 import life.fxs.purr.data.call.runtime.MediaCallEvent
+import life.fxs.purr.data.call.runtime.NetworkQualityDirection
 import life.fxs.purr.domain.call.model.CallConnectionState
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.LocalAudioState
@@ -70,11 +71,12 @@ class CallMediaEventReducer @Inject constructor() {
 
             is MediaCallEvent.NetworkQualityChanged -> session.copy(
                 uiSnapshot = session.uiSnapshot.copy(
-                    networkQuality = NetworkQuality(
-                        uplinkScore = event.uplinkScore,
-                        downlinkScore = event.downlinkScore,
-                        lastUpdatedEpochMillis = event.sampledAtEpochMillis,
-                    ),
+                    networkQuality = session.uiSnapshot.networkQuality.let { current ->
+                        when (event.direction) {
+                            NetworkQualityDirection.Uplink -> current.copy(uplinkScore = event.score)
+                            NetworkQualityDirection.Downlink -> current.copy(downlinkScore = event.score)
+                        }.copy(lastUpdatedEpochMillis = event.sampledAtEpochMillis)
+                    },
                 ),
             )
 
@@ -98,6 +100,7 @@ class CallMediaEventReducer @Inject constructor() {
             // repository routes these facts to it instead of reducing them here.
             is MediaCallEvent.Disconnected,
             is MediaCallEvent.Failed,
+            is MediaCallEvent.ConnectionLost,
             -> null
         }
     }

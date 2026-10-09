@@ -5,7 +5,6 @@ import android.content.Intent
 import android.net.Uri
 import android.app.NotificationManager
 import android.os.Build
-import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,6 +19,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import life.fxs.purr.core.designsystem.system.BatteryOptimizationIntents
 
 @Stable
 internal class SettingsSystemPermissions internal constructor(
@@ -37,9 +37,6 @@ internal class SettingsSystemPermissions internal constructor(
 internal fun rememberSettingsSystemPermissions(): SettingsSystemPermissions {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val powerManager = remember(context.applicationContext) {
-        context.applicationContext.getSystemService(PowerManager::class.java)
-    }
     val notificationManager = remember(context.applicationContext) {
         context.applicationContext.getSystemService(NotificationManager::class.java)
     }
@@ -51,14 +48,14 @@ internal fun rememberSettingsSystemPermissions(): SettingsSystemPermissions {
     }
     var canDrawOverlays by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     var ignoresBatteryOptimizations by remember {
-        mutableStateOf(powerManager.isIgnoringBatteryOptimizations(context.packageName))
+        mutableStateOf(BatteryOptimizationIntents.isIgnoring(context))
     }
 
     fun refresh() {
         notificationsEnabled = notificationManager.areNotificationsEnabled()
         canUseFullScreenIntent = notificationManager.canUseFullScreenIntentCompat()
         canDrawOverlays = Settings.canDrawOverlays(context)
-        ignoresBatteryOptimizations = powerManager.isIgnoringBatteryOptimizations(context.packageName)
+        ignoresBatteryOptimizations = BatteryOptimizationIntents.isIgnoring(context)
     }
 
     val notificationSettingsLauncher = rememberLauncherForActivityResult(
@@ -114,19 +111,8 @@ internal fun rememberSettingsSystemPermissions(): SettingsSystemPermissions {
             )
         },
         openBatteryOptimizationPermission = {
-            val intent = if (ignoresBatteryOptimizations) {
-                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-            } else {
-                Intent(
-                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                    Uri.parse("package:${context.packageName}"),
-                )
-            }
             batteryOptimizationLauncher.launch(
-                intent.resolvableOrFallback(
-                    context = context,
-                    fallback = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
-                ),
+                BatteryOptimizationIntents.requestIntent(context, ignoresBatteryOptimizations),
             )
         },
     )

@@ -5,14 +5,17 @@ package life.fxs.purr.core.media.screenshare
  * a successful UDP send does not tell us whether the receiver got the packet.
  * Call once every 200 ms with a monotonic clock and session-local drop counters.
  */
-class ScreenShareBitrateController(private val maximumBitrate: Int) {
+class ScreenShareBitrateController @JvmOverloads constructor(
+    private val maximumBitrate: Int,
+    initialBitrate: Int = defaultInitialBitrate(maximumBitrate),
+) {
     init {
         require(maximumBitrate > 0)
     }
 
-    var bitrate: Int = maximumBitrate
+    private val minimumBitrate = minOf(MINIMUM_BITRATE, maximumBitrate)
+    var bitrate: Int = initialBitrate.coerceIn(minimumBitrate, maximumBitrate)
         private set
-    private val minimumBitrate = minOf(500_000, maximumBitrate)
     private var previousVideoDrops = 0L
     private var previousAudioDrops = 0L
     private var congestionSince: Long? = null
@@ -70,5 +73,11 @@ class ScreenShareBitrateController(private val maximumBitrate: Int) {
         return ScreenShareBitrateDecision(bitrate, requestKeyframe)
     }
 }
+
+private const val MINIMUM_BITRATE = 500_000
+
+/** Starts at half of the selected ceiling to avoid congesting the link at stream start. */
+fun defaultInitialBitrate(maximumBitrate: Int): Int =
+    maxOf(minOf(MINIMUM_BITRATE, maximumBitrate), maximumBitrate / 2)
 
 data class ScreenShareBitrateDecision(val bitrate: Int, val requestKeyframe: Boolean)

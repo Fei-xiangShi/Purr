@@ -175,6 +175,7 @@ internal fun LocalScreenShareStatus(state: CallScreenShareState) {
         is LocalScreenShareState.RequestingPermission -> "等待系统授权"
         is LocalScreenShareState.Connecting -> "正在连接"
         is LocalScreenShareState.Live -> "直播中"
+        is LocalScreenShareState.Reconnecting -> "投屏重新连接中"
         is LocalScreenShareState.Stopping -> "正在停止"
         is LocalScreenShareState.Failed -> local.message
     }

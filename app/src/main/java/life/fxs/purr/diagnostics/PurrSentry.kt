@@ -115,6 +115,20 @@ object PurrSentry : CallInterruptionTelemetry, ScreenShareFailureReporter {
         }
     }
 
+    /** Reports an unexpected process exit recorded by the OS; one fingerprint per reason. */
+    internal fun processExit(reason: String, extras: Map<String, String>) {
+        if (!enabled) return
+        runCatching {
+            Sentry.withScope { scope ->
+                scope.setTag("exit.reason", reason)
+                extras["importance"]?.let { scope.setTag("exit.importance", it) }
+                extras.forEach { (key, value) -> scope.setExtra(key, sanitizeForSentry(value)) }
+                scope.fingerprint = listOf("process-exit", reason)
+                Sentry.captureMessage("Process exited: $reason", SentryLevel.WARNING)
+            }
+        }
+    }
+
     override fun report(callId: String?, shareId: String?, code: ScreenShareFailureCode) {
         if (!enabled || !code.reportable) return
         val key = "${shareId ?: callId}:$code"

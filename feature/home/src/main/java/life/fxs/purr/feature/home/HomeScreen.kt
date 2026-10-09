@@ -1,11 +1,16 @@
 package life.fxs.purr.feature.home
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -20,6 +25,7 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.Lifecycle
 import kotlinx.coroutines.flow.collect
 import life.fxs.purr.core.designsystem.component.PurrPanel
+import life.fxs.purr.core.designsystem.system.BatteryOptimizationIntents
 import life.fxs.purr.core.designsystem.component.PurrAvatar
 import life.fxs.purr.core.designsystem.component.PurrPrimaryButton
 import life.fxs.purr.core.designsystem.component.PurrScreen
@@ -49,6 +55,35 @@ fun HomeScreenRoute(
                 is HomeEffect.ShowError -> Toast.makeText(context, effect.message, Toast.LENGTH_SHORT).show()
             }
         }
+    }
+
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        viewModel.onIntent(HomeIntent.CheckBatteryPrompt(BatteryOptimizationIntents.isIgnoring(context)))
+    }
+
+    if (state.showBatteryPrompt) {
+        AlertDialog(
+            onDismissRequest = { viewModel.onIntent(HomeIntent.BatteryPromptDismissed) },
+            title = { Text("允许后台运行") },
+            text = { Text("为了在后台及时收到来电，请允许 Purr 不受电池优化限制。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.onIntent(HomeIntent.BatteryPromptAccepted)
+                        try {
+                            context.startActivity(BatteryOptimizationIntents.requestIntent(context, ignoring = false))
+                        } catch (_: ActivityNotFoundException) {
+                            runCatching {
+                                context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                            }
+                        }
+                    },
+                ) { Text("去设置") }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.onIntent(HomeIntent.BatteryPromptDismissed) }) { Text("以后再说") }
+            },
+        )
     }
 
     HomeScreen(

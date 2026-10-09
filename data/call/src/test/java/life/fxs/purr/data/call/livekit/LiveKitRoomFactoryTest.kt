@@ -12,4 +12,18 @@ class LiveKitRoomFactoryTest {
         assertThat(audioOptions?.audioHandler).isInstanceOf(NoAudioHandler::class.java)
         assertThat(audioOptions?.disableCommunicationModeWorkaround).isTrue()
     }
+
+    @Test
+    fun `voice publish and capture defaults are pinned`() {
+        val options = pinnedRoomOptions()
+        val publish = requireNotNull(options.audioTrackPublishDefaults)
+        assertThat(publish.audioBitrate).isEqualTo(48_000)
+        assertThat(publish.dtx).isTrue()
+        assertThat(publish.red).isTrue()
+        val capture = requireNotNull(options.audioTrackCaptureDefaults)
+        assertThat(capture.noiseSuppression).isTrue()
+        assertThat(capture.echoCancellation).isTrue()
+        assertThat(capture.autoGainControl).isTrue()
+        assertThat(capture.highPassFilter).isTrue()
+    }
 }

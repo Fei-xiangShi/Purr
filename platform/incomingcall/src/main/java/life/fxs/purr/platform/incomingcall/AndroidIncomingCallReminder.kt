@@ -28,7 +28,6 @@ import life.fxs.purr.domain.incomingcall.IncomingCallReminderContent
 internal class AndroidIncomingCallReminder @Inject constructor(
     @ApplicationContext context: Context,
     private val intentFactory: IncomingCallIntentFactory,
-    private val fullScreenIntentCapability: FullScreenIntentCapability,
     private val avatarLoader: CallNotificationAvatarLoader,
     @ApplicationScope private val applicationScope: CoroutineScope,
 ) : IncomingCallReminder {
@@ -86,9 +85,9 @@ internal class AndroidIncomingCallReminder @Inject constructor(
                     intentFactory.answer(content),
                 ),
             )
-        if (fullScreenIntentCapability.canUse()) {
-            notificationBuilder.setFullScreenIntent(openIntent, true)
-        }
+            // Always set: without the permission the system degrades it to a heads-up notification,
+            // while CallStyle validation still requires the field.
+            .setFullScreenIntent(openIntent, true)
 
         try {
             notificationManager.notify(NOTIFICATION_TAG, NOTIFICATION_ID, notificationBuilder.build())

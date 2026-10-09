@@ -1,10 +1,12 @@
 package life.fxs.purr.data.call.livekit
 
 import io.livekit.android.ConnectOptions
+import io.livekit.android.events.DisconnectReason
 import io.livekit.android.events.RoomEvent
 import io.livekit.android.events.collect
 import io.livekit.android.room.Room
 import io.livekit.android.room.participant.ConnectionQuality
+import io.livekit.android.room.participant.LocalParticipant
 import io.livekit.android.room.track.LocalAudioTrack
 import io.livekit.android.room.track.RemoteAudioTrack
 import io.livekit.android.room.track.Track
@@ -30,9 +32,12 @@ import kotlinx.coroutines.withContext
 import life.fxs.purr.core.common.ApplicationScope
 import life.fxs.purr.core.common.PurrLogger
 import life.fxs.purr.data.call.audio.MutableCallAudioLevelProvider
+import life.fxs.purr.data.call.runtime.CallMediaConnection
+import life.fxs.purr.data.call.runtime.CallTerminationSignal
 import life.fxs.purr.data.call.runtime.MediaCallCommand
 import life.fxs.purr.data.call.runtime.MediaCallEvent
 import life.fxs.purr.data.call.runtime.MediaSystemCallInterruptionResult
+import life.fxs.purr.data.call.runtime.NetworkQualityDirection
 import life.fxs.purr.data.call.runtime.MediaSystemCallResumeRequest
 import life.fxs.purr.data.call.runtime.MediaSystemCallSuspendRequest
 import life.fxs.purr.core.model.SystemCallInterruptionPhase
@@ -62,7 +67,23 @@ class RealLiveKitCallDataSource @Inject constructor(
 
     override suspend fun execute(command: MediaCallCommand) {
         when (command) {
-            is MediaCallCommand.Connect -> connect(command)
+            is MediaCallCommand.Connect -> establish(
+                EstablishRequest(
+                    callId = command.callId,
+                    connection = command.connection,
+                    terminationSignal = command.terminationSignal,
+                ),
+            )
+            is MediaCallCommand.Rejoin -> establish(
+                EstablishRequest(
+                    callId = command.callId,
+                    connection = command.connection,
+                    terminationSignal = command.terminationSignal,
+                    rejoin = true,
+                    microphoneEnabled = command.microphoneEnabled,
+                    suspendedOperationId = command.suspendedOperationId,
+                ),
+            )
             is MediaCallCommand.Disconnect -> disconnect(command)
             is MediaCallCommand.SetMuted -> setMuted(command)
         }
@@ -204,18 +225,35 @@ class RealLiveKitCallDataSource @Inject constructor(
         MediaSystemCallInterruptionResult.Applied(current.generation)
     }
 
-    private suspend fun connect(command: MediaCallCommand.Connect) = lifecycleMutex.withLock {
+    private class EstablishRequest(
+        val callId: String,
+        val connection: CallMediaConnection,
+        val terminationSignal: CallTerminationSignal,
+        val rejoin: Boolean = false,
+        val microphoneEnabled: Boolean = true,
+        val suspendedOperationId: String? = null,
+    )
+
+    private suspend fun establish(command: EstablishRequest) = lifecycleMutex.withLock {
         val connectStartedAt = System.nanoTime()
+        val phase = if (command.rejoin) "livekit.rejoin" else "livekit.connect"
         logger.d(
             LOG_TAG,
-            "callId=${command.callId} phase=livekit.connect event=begin wsUrl=${command.connection.wsUrl}",
+            "callId=${command.callId} phase=$phase event=begin",
         )
         val existing = activeCall.get()
         if (existing != null) {
-            if (existing.callId == command.callId) return@withLock
-            throw IllegalStateException(
-                "A different LiveKit call is already active: ${existing.callId}",
-            )
+            if (command.rejoin && existing.callId == command.callId) {
+                // A stale generation of this same call is replaced by the rejoin.
+                existing.attributePublishJob?.cancel()
+                activeCall.set(null)
+                generationCounter.incrementAndGet()
+            } else {
+                if (existing.callId == command.callId) return@withLock
+                throw IllegalStateException(
+                    "A different LiveKit call is already active: ${existing.callId}",
+                )
+            }
         }
         if (room != null) releaseRoomAsyncLocked()
 
@@ -223,7 +261,12 @@ class RealLiveKitCallDataSource @Inject constructor(
         val mediaCall = ActiveMediaCall(
             callId = command.callId,
             generation = generation,
+            rejoin = command.rejoin,
         )
+        if (command.suspendedOperationId != null) {
+            mediaCall.systemSuspended = true
+            mediaCall.interruptionOperationId = command.suspendedOperationId
+        }
         activeCall.set(mediaCall)
 
         try {
@@ -254,12 +297,25 @@ class RealLiveKitCallDataSource @Inject constructor(
 
             if (!isCurrent(createdRoom, generation)) return@withLock
 
-            val microphoneEnabled = createdRoom.localParticipant.setMicrophoneEnabled(true)
-            logger.d(
-                LOG_TAG,
-                "callId=${command.callId} phase=livekit.publish event=microphone_enable result=$microphoneEnabled",
-            )
-            if (!microphoneEnabled) throw IllegalStateException("Unable to publish microphone track")
+            if (mediaCall.systemSuspended) {
+                // The physical gate stays closed: never publish the microphone while a system
+                // call owns the device, and silence whatever remote audio is already present.
+                val failure = enforceSuspendedMediaLocked(createdRoom)
+                updateDesiredInterruptionStateLocked(
+                    activeRoom = createdRoom,
+                    mediaCall = mediaCall,
+                    operationId = requireNotNull(mediaCall.interruptionOperationId),
+                    phase = SystemCallInterruptionPhase.Suspended,
+                    degraded = failure != null,
+                )
+            } else if (command.microphoneEnabled) {
+                val microphoneEnabled = createdRoom.localParticipant.setMicrophoneEnabled(true)
+                logger.d(
+                    LOG_TAG,
+                    "callId=${command.callId} phase=livekit.publish event=microphone_enable result=$microphoneEnabled",
+                )
+                if (!microphoneEnabled) throw IllegalStateException("Unable to publish microphone track")
+            }
             command.terminationSignal.throwIfRequested()
             attachLocalAudioLevel(createdRoom)
             attachRemoteAudioLevel(createdRoom)
@@ -275,6 +331,17 @@ class RealLiveKitCallDataSource @Inject constructor(
                     remoteParticipantConnected = createdRoom.remoteParticipants.isNotEmpty(),
                 ),
             )
+            mediaCall.established = true
+            if (command.rejoin && !command.microphoneEnabled) {
+                // Connected implies an enabled microphone for the domain; restore the user's mute.
+                eventBus.emit(
+                    MediaCallEvent.AudioStateChanged(
+                        callId = command.callId,
+                        generation = generation,
+                        muted = true,
+                    ),
+                )
+            }
             logger.d(
                 LOG_TAG,
                 "callId=${command.callId} phase=livekit.connect event=media_ready elapsedMs=${elapsedMillis(connectStartedAt)} localIdentity=$localIdentity remoteCount=${createdRoom.remoteParticipants.size}",
@@ -293,13 +360,17 @@ class RealLiveKitCallDataSource @Inject constructor(
                 activeCall.set(null)
                 generationCounter.incrementAndGet()
                 releaseRoomAsyncLocked()
-                eventBus.emit(
-                    MediaCallEvent.Failed(
-                        callId = command.callId,
-                        generation = generation,
-                        reason = throwable.message,
-                    ),
-                )
+                // A failed rejoin attempt is reported by throwing; the call owner decides
+                // whether to retry, so no terminal media fact may be published for it.
+                if (!command.rejoin) {
+                    eventBus.emit(
+                        MediaCallEvent.Failed(
+                            callId = command.callId,
+                            generation = generation,
+                            reason = throwable.message,
+                        ),
+                    )
+                }
             }
             throw throwable
         }
@@ -508,10 +579,12 @@ class RealLiveKitCallDataSource @Inject constructor(
                             event = "disconnected",
                             details = "reason=${safeValue { event.reason }} error=${safeValue { event.error?.message }}",
                         )
-                        terminateCurrentCall(
+                        handleRoomLoss(
                             activeRoom = activeRoom,
                             mediaCall = mediaCall,
-                            failure = event.error,
+                            reason = event.reason,
+                            error = event.error,
+                            recoverable = DisconnectReasonPolicy.isRecoverable(event.reason, event.error),
                         )
                     }
 
@@ -679,9 +752,12 @@ class RealLiveKitCallDataSource @Inject constructor(
                             event = "connection_quality_changed",
                             details = "participant=${safeValue { event.participant.identity?.value }} quality=${safeValue { event.quality }}",
                         )
-                        if (event.participant.identity == activeRoom.localParticipant.identity) {
-                            publishNetworkQuality(activeRoom, mediaCall, event.quality)
+                        val direction = if (event.participant is LocalParticipant) {
+                            NetworkQualityDirection.Uplink
+                        } else {
+                            NetworkQualityDirection.Downlink
                         }
+                        publishNetworkQuality(activeRoom, mediaCall, direction, event.quality)
                     }
 
                     is RoomEvent.ParticipantAttributesChanged -> {
@@ -697,10 +773,12 @@ class RealLiveKitCallDataSource @Inject constructor(
                             event = "failed_to_connect",
                             details = "error=${safeValue { event.error.message }}",
                         )
-                        terminateCurrentCall(
+                        handleRoomLoss(
                             activeRoom = activeRoom,
                             mediaCall = mediaCall,
-                            failure = event.error,
+                            reason = null,
+                            error = event.error,
+                            recoverable = DisconnectReasonPolicy.isRecoverableConnectFailure(event.error),
                         )
                     }
 
@@ -908,6 +986,7 @@ class RealLiveKitCallDataSource @Inject constructor(
     private suspend fun publishNetworkQuality(
         activeRoom: Room,
         mediaCall: ActiveMediaCall,
+        direction: NetworkQualityDirection,
         quality: ConnectionQuality,
     ) {
         lifecycleMutex.withLock {
@@ -917,11 +996,43 @@ class RealLiveKitCallDataSource @Inject constructor(
                 MediaCallEvent.NetworkQualityChanged(
                     callId = mediaCall.callId,
                     generation = mediaCall.generation,
-                    uplinkScore = score,
-                    downlinkScore = score,
+                    direction = direction,
+                    score = score,
                     sampledAtEpochMillis = System.currentTimeMillis(),
                 ),
             )
+        }
+    }
+
+    /**
+     * A rejoin attempt that is still connecting reports failure by throwing from
+     * [establish]; only an established room may publish a loss fact.
+     */
+    private suspend fun handleRoomLoss(
+        activeRoom: Room,
+        mediaCall: ActiveMediaCall,
+        reason: DisconnectReason?,
+        error: Throwable?,
+        recoverable: Boolean,
+    ) {
+        if (mediaCall.rejoin && !mediaCall.established) return
+        if (!recoverable || !mediaCall.established) {
+            terminateCurrentCall(activeRoom, mediaCall, failure = error)
+            return
+        }
+        lifecycleMutex.withLock {
+            if (!isCurrent(activeRoom, mediaCall.generation)) return@withLock
+            eventBus.emit(
+                MediaCallEvent.ConnectionLost(
+                    callId = mediaCall.callId,
+                    generation = mediaCall.generation,
+                    reasonCode = DisconnectReasonPolicy.code(reason),
+                ),
+            )
+            mediaCall.attributePublishJob?.cancel()
+            activeCall.set(null)
+            generationCounter.incrementAndGet()
+            releaseRoomAsyncLocked()
         }
     }
 
@@ -1144,6 +1255,8 @@ class RealLiveKitCallDataSource @Inject constructor(
         var desiredInterruption: DesiredInterruptionState? = null,
         var attributePublishJob: Job? = null,
         var remoteInterruptionCursor: RemoteInterruptionCursor? = null,
+        val rejoin: Boolean = false,
+        @Volatile var established: Boolean = false,
     )
 
     private data class DesiredInterruptionState(
@@ -1178,10 +1291,10 @@ class RealLiveKitCallDataSource @Inject constructor(
     }
 }
 
-private fun ConnectionQuality.toScore(): Int = when (this) {
+private fun ConnectionQuality.toScore(): Int? = when (this) {
     ConnectionQuality.EXCELLENT -> 5
     ConnectionQuality.GOOD -> 4
     ConnectionQuality.POOR -> 2
     ConnectionQuality.LOST -> 1
-    ConnectionQuality.UNKNOWN -> 3
+    ConnectionQuality.UNKNOWN -> null
 }

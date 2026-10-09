@@ -9,6 +9,9 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -27,8 +30,11 @@ import kotlinx.coroutines.withTimeout
 import life.fxs.purr.core.common.AppError
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.core.common.ApplicationScope
+import life.fxs.purr.core.common.NetworkAvailability
+import kotlin.random.Random
 import life.fxs.purr.core.common.PurrLogger
 import life.fxs.purr.core.network.asAppError
+import life.fxs.purr.core.network.httpStatusCode
 import life.fxs.purr.core.model.AudioRoute
 import life.fxs.purr.core.model.SystemCallInterruptionRequest
 import life.fxs.purr.core.model.SystemCallInterruptionResult
@@ -72,7 +78,10 @@ class CallRepositoryImpl @Inject internal constructor(
     private val logger: PurrLogger,
     @ApplicationScope private val applicationScope: CoroutineScope,
     private val interruptionTelemetry: CallInterruptionTelemetry = NoOpCallInterruptionTelemetry,
+    private val networkAvailability: NetworkAvailability = NetworkAvailability.None,
 ) : CallRepository {
+    /** Replaceable by tests to make rejoin backoff jitter deterministic. */
+    internal var rejoinRandom: Random = Random.Default
     private val repositoryScope = applicationScope
     private val sessionState = MutableStateFlow<CallSession?>(null)
     private val disconnectingCallIdState = MutableStateFlow<String?>(null)
@@ -85,6 +94,10 @@ class CallRepositoryImpl @Inject internal constructor(
     private var prepareOperation: PrepareOperation? = null
     private var connectOperation: ConnectOperation? = null
     private var systemInterruptionOwner: SystemInterruptionOwner? = null
+    private var rejoinOwner: RejoinOwner? = null
+    /** Provider generation of the lost room; events at or below it are stale while rejoining. */
+    private var lostMediaGeneration: Long? = null
+    private var recordingConsent: Boolean = false
     /**
      * Teardown is call-scoped. A previous call may still be releasing native
      * resources while the next call is already being prepared; a single
@@ -122,11 +135,24 @@ class CallRepositoryImpl @Inject internal constructor(
                     ) {
                         return@withLock null
                     }
+                    // A lost room clears mediaGeneration too; its late callbacks must not
+                    // be accepted as the replacement room.
+                    val lostGeneration = lostMediaGeneration
+                    if (expectedGeneration == null && lostGeneration != null &&
+                        mediaEvent.generation <= lostGeneration
+                    ) {
+                        return@withLock null
+                    }
                     when (mediaEvent) {
+                        is MediaCallEvent.ConnectionLost ->
+                            return@withLock handleConnectionLostLocked(current, mediaEvent)
                         is MediaCallEvent.Connected,
                         is MediaCallEvent.Reconnecting,
                         is MediaCallEvent.Reconnected,
-                        -> mediaGeneration = mediaEvent.generation
+                        -> {
+                            mediaGeneration = mediaEvent.generation
+                            lostMediaGeneration = null
+                        }
                         is MediaCallEvent.Disconnected,
                         is MediaCallEvent.Failed,
                         -> {
@@ -214,6 +240,9 @@ class CallRepositoryImpl @Inject internal constructor(
                 cancelSystemInterruptionLocked()
                 mediaConnection = created.mediaConnection
                 mediaGeneration = null
+                lostMediaGeneration = null
+                rejoinOwner = null
+                recordingConsent = request.recordingConsent
                 currentLifecycleGeneration = null
                 sessionState.emit(created.session)
             }
@@ -365,6 +394,11 @@ class CallRepositoryImpl @Inject internal constructor(
 
     override suspend fun suspendForSystemCall(
         request: SystemCallInterruptionRequest,
+    ): SystemCallInterruptionResult = suspendForSystemCall(request, microphoneOverride = null)
+
+    private suspend fun suspendForSystemCall(
+        request: SystemCallInterruptionRequest,
+        microphoneOverride: Boolean?,
     ): SystemCallInterruptionResult {
         val decision = operationMutex.withLock {
             val session = sessionState.value
@@ -377,6 +411,33 @@ class CallRepositoryImpl @Inject internal constructor(
                 disconnectOperations.containsKey(session.callId)
             ) {
                 return@withLock SuspendDecision.Ignore("termination_won")
+            }
+            val rejoining = rejoinOwner?.takeIf { it.callId == session.callId }
+            if (rejoining != null) {
+                // The next room opens with the physical gate closed; the owner replays this
+                // request once the replacement media generation is committed.
+                val pending = rejoining.pendingInterruption
+                if (pending == null || pending.operationId != request.operationId) {
+                    rejoining.pendingInterruption = PendingInterruption(
+                        operationId = request.operationId,
+                        telecomSequence = request.telecomSequence,
+                        enableMicrophoneOnResume = pending?.enableMicrophoneOnResume
+                            ?: rejoining.microphoneEnabled,
+                        resumeRequested = false,
+                    )
+                } else {
+                    pending.telecomSequence = maxOf(pending.telecomSequence, request.telecomSequence)
+                }
+                if (session.interruptionState.local == LocalCallInterruption.None) {
+                    sessionState.emit(
+                        session.copy(
+                            interruptionState = session.interruptionState.copy(
+                                local = LocalCallInterruption.Suspending(request.operationId),
+                            ),
+                        ),
+                    )
+                }
+                return@withLock SuspendDecision.Deferred
             }
             if (
                 session.connectionState == CallConnectionState.Preparing ||
@@ -431,14 +492,16 @@ class CallRepositoryImpl @Inject internal constructor(
                 existing.completed = false
                 existing
             } else {
-                cancelSystemInterruptionLocked()
+                // Immediately followed by the Suspending publication below.
+                cancelSystemInterruptionLocked(resetPresentation = false)
                 SystemInterruptionOwner(
                     callId = session.callId,
                     lifecycleGeneration = lifecycle,
                     mediaGeneration = media,
                     operationId = request.operationId,
                     latestTelecomSequence = request.telecomSequence,
-                    enableMicrophoneOnResume = session.localAudioState.shouldEnableMicrophoneOnResume(),
+                    enableMicrophoneOnResume = microphoneOverride
+                        ?: session.localAudioState.shouldEnableMicrophoneOnResume(),
                 ).also { created ->
                     created.telemetryOperation = runCatching {
                         interruptionTelemetry.startTransition(
@@ -466,6 +529,7 @@ class CallRepositoryImpl @Inject internal constructor(
 
         return when (decision) {
             is SuspendDecision.Ignore -> SystemCallInterruptionResult.Ignored(decision.reasonCode)
+            SuspendDecision.Deferred -> SystemCallInterruptionResult.RetryScheduled
             is SuspendDecision.Terminate -> {
                 scheduleInterruptionTermination(decision.callId)
                 SystemCallInterruptionResult.TerminationScheduled
@@ -512,6 +576,16 @@ class CallRepositoryImpl @Inject internal constructor(
                 disconnectOperations.containsKey(session.callId)
             ) {
                 return@withLock ResumeDecision.Ignore("termination_won")
+            }
+            val rejoining = rejoinOwner?.takeIf { it.callId == session.callId }
+            if (rejoining != null) {
+                val pending = rejoining.pendingInterruption
+                if (pending == null || pending.operationId != request.operationId) {
+                    return@withLock ResumeDecision.Ignore("no_system_interruption")
+                }
+                pending.telecomSequence = maxOf(pending.telecomSequence, request.telecomSequence)
+                pending.resumeRequested = true
+                return@withLock ResumeDecision.RetryOwned
             }
             val owner = systemInterruptionOwner
                 ?: return@withLock ResumeDecision.Ignore("no_system_interruption")
@@ -960,7 +1034,11 @@ class CallRepositoryImpl @Inject internal constructor(
         )
     }
 
-    private suspend fun cancelSystemInterruptionLocked() {
+    /**
+     * [resetPresentation] is false when the interruption continues in a successor (rejoin handoff
+     * or replay), so the interrupted presentation never flickers through None.
+     */
+    private suspend fun cancelSystemInterruptionLocked(resetPresentation: Boolean = true) {
         systemInterruptionOwner?.let { owner ->
             owner.enforcementJob?.cancel()
             owner.resumeJob?.cancel()
@@ -969,6 +1047,7 @@ class CallRepositoryImpl @Inject internal constructor(
             owner.finishTelemetry(result = "cancelled")
         }
         systemInterruptionOwner = null
+        if (!resetPresentation) return
         val session = sessionState.value ?: return
         if (session.interruptionState.local != LocalCallInterruption.None) {
             sessionState.emit(
@@ -977,6 +1056,233 @@ class CallRepositoryImpl @Inject internal constructor(
                 ),
             )
         }
+    }
+
+    /**
+     * A recoverable media loss keeps the call (service, Telecom, audio, server state) and starts
+     * the single application-owned rejoin; WAITING calls and ineligible states terminate as before.
+     */
+    private suspend fun handleConnectionLostLocked(
+        current: CallSession,
+        event: MediaCallEvent.ConnectionLost,
+    ): Termination? {
+        val existingOwner = rejoinOwner?.takeIf { it.callId == current.callId }
+        if (existingOwner != null) {
+            // The replacement room died before the owner committed it.
+            existingOwner.lostAgain = true
+            mediaGeneration = null
+            lostMediaGeneration = event.generation
+            sessionState.emit(current.copy(connectionState = CallConnectionState.Reconnecting))
+            return null
+        }
+        val lifecycle = currentLifecycleGeneration
+        val rejoinable = lifecycle != null &&
+            (
+                current.connectionState == CallConnectionState.Connected ||
+                    current.connectionState == CallConnectionState.Reconnecting
+                ) &&
+            (current.timing.isRunning || current.uiSnapshot.remoteParticipantConnected)
+        if (!rejoinable) {
+            return beginTerminationLocked(current.callId, CallConnectionState.Disconnected)
+        }
+
+        val interruption = systemInterruptionOwner?.takeIf {
+            it.callId == current.callId && it.lifecycleGeneration == lifecycle && !it.completed
+        }
+        val pending = interruption?.let {
+            PendingInterruption(
+                operationId = it.operationId,
+                telecomSequence = it.latestTelecomSequence,
+                enableMicrophoneOnResume = it.enableMicrophoneOnResume,
+                resumeRequested = current.interruptionState.local is LocalCallInterruption.Resuming,
+            )
+        }
+        val microphoneEnabled = pending?.enableMicrophoneOnResume
+            ?: current.localAudioState.shouldEnableMicrophoneOnResume()
+        // The interrupted presentation stays continuous through the rejoin; the owner replays it.
+        cancelSystemInterruptionLocked(resetPresentation = false)
+
+        mediaGeneration = null
+        lostMediaGeneration = event.generation
+        val owner = RejoinOwner(
+            id = ++operationId,
+            callId = current.callId,
+            lifecycleGeneration = requireNotNull(lifecycle),
+            microphoneEnabled = microphoneEnabled,
+            pendingInterruption = pending,
+        )
+        rejoinOwner = owner
+        logStage(current.callId, owner.lifecycleGeneration, "rejoin", "begin")
+        val latest = sessionState.value ?: current
+        sessionState.emit(latest.copy(connectionState = CallConnectionState.Reconnecting))
+        owner.job = repositoryScope.launch { runRejoin(owner) }
+        return null
+    }
+
+    private fun RejoinOwner.isCurrentLocked(): Boolean {
+        val session = sessionState.value ?: return false
+        return rejoinOwner === this &&
+            !terminationSignal.isRequested &&
+            session.callId == callId &&
+            currentLifecycleGeneration == lifecycleGeneration &&
+            session.connectionState != CallConnectionState.Terminating &&
+            !session.connectionState.isTerminal &&
+            !disconnectOperations.containsKey(callId)
+    }
+
+    private suspend fun runRejoin(owner: RejoinOwner) {
+        val startedAt = System.nanoTime()
+        val networkJob = repositoryScope.launch {
+            networkAvailability.available.collect { owner.kick.trySend(Unit) }
+        }
+        val outcome = try {
+            withTimeoutOrNull(REJOIN_WINDOW_MILLIS) { rejoinLoop(owner) } ?: RejoinOutcome.Exhausted
+        } finally {
+            networkJob.cancel()
+        }
+        when (outcome) {
+            RejoinOutcome.Succeeded -> logStage(owner.callId, owner.lifecycleGeneration, "rejoin", "end", startedAt)
+            RejoinOutcome.Aborted -> logStage(owner.callId, owner.lifecycleGeneration, "rejoin", "aborted", startedAt)
+            RejoinOutcome.Exhausted,
+            RejoinOutcome.Fatal,
+            -> {
+                logStage(
+                    owner.callId,
+                    owner.lifecycleGeneration,
+                    "rejoin",
+                    if (outcome == RejoinOutcome.Fatal) "fatal" else "exhausted",
+                    startedAt,
+                )
+                val termination = operationMutex.withLock {
+                    if (!owner.isCurrentLocked()) return@withLock null
+                    beginTerminationLocked(
+                        owner.callId,
+                        CallConnectionState.Failed("Voice connection could not be restored"),
+                    )
+                }
+                termination?.let { completeTermination(owner.callId, it) }
+            }
+        }
+    }
+
+    private suspend fun rejoinLoop(owner: RejoinOwner): RejoinOutcome {
+        var failures = 0
+        while (true) {
+            val attempt = attemptRejoin(owner)
+            when (attempt) {
+                RejoinOutcome.Succeeded,
+                RejoinOutcome.Aborted,
+                RejoinOutcome.Fatal,
+                -> return attempt
+                RejoinOutcome.Exhausted -> Unit
+            }
+            val backoff = (REJOIN_BACKOFF_BASE_MILLIS shl minOf(failures, REJOIN_BACKOFF_MAX_SHIFT))
+                .coerceAtMost(REJOIN_BACKOFF_MAX_MILLIS)
+            val jittered = (backoff * rejoinRandom.nextDouble(1.0 - REJOIN_JITTER, 1.0 + REJOIN_JITTER)).toLong()
+            failures++
+            // A network-available signal or termination ends the wait early.
+            withTimeoutOrNull(jittered) { owner.kick.receive() }
+        }
+    }
+
+    /** Exhausted here means "this attempt failed, retry if the window allows". */
+    private suspend fun attemptRejoin(owner: RejoinOwner): RejoinOutcome {
+        val attemptStartedAt = System.nanoTime()
+        try {
+            val snapshot = operationMutex.withLock {
+                if (!owner.isCurrentLocked()) return@withLock null
+                sessionState.value
+            } ?: return RejoinOutcome.Aborted
+
+            // Bounded token fetch; the whole attempt is additionally clipped to the remaining
+            // rejoin window by the enclosing window timeout.
+            val prepared = withTimeout(REJOIN_TOKEN_TIMEOUT_MILLIS) {
+                sessionPreparationCoordinator.prepare(
+                    CallPreparationRequest.Existing(
+                        pairId = snapshot.pairId,
+                        callId = snapshot.callId,
+                        direction = snapshot.direction,
+                        recordingConsent = recordingConsent,
+                        remoteDisplayName = snapshot.remoteDisplayName,
+                    ),
+                )
+            }
+            val command = operationMutex.withLock {
+                if (!owner.isCurrentLocked()) return@withLock null
+                mediaConnection = prepared.mediaConnection
+                MediaCallCommand.Rejoin(
+                    callId = owner.callId,
+                    connection = prepared.mediaConnection,
+                    microphoneEnabled = owner.microphoneEnabled,
+                    suspendedOperationId = owner.pendingInterruption?.operationId,
+                    terminationSignal = owner.terminationSignal,
+                )
+            } ?: return RejoinOutcome.Aborted
+
+            withTimeout(REJOIN_LIVEKIT_TIMEOUT_MILLIS) { callRuntimeController.execute(command) }
+
+            // The provider emits Connected last; wait for the collector to commit it.
+            val committed = withTimeoutOrNull(REJOIN_CONNECTED_WAIT_MILLIS) {
+                sessionState.first { session ->
+                    session?.callId != owner.callId ||
+                        session.connectionState == CallConnectionState.Connected
+                }
+            }
+            if (committed == null) {
+                logStage(owner.callId, owner.lifecycleGeneration, "rejoin.attempt", "connected_missing", attemptStartedAt)
+                return RejoinOutcome.Exhausted
+            }
+
+            val pending = operationMutex.withLock {
+                if (!owner.isCurrentLocked()) return@withLock RejoinCommit.Aborted
+                if (owner.lostAgain || mediaGeneration == null) {
+                    owner.lostAgain = false
+                    return@withLock RejoinCommit.Retry
+                }
+                rejoinOwner = null
+                RejoinCommit.Done(owner.pendingInterruption)
+            }
+            when (pending) {
+                RejoinCommit.Aborted -> return RejoinOutcome.Aborted
+                RejoinCommit.Retry -> return RejoinOutcome.Exhausted
+                is RejoinCommit.Done -> {
+                    pending.interruption?.let { replayInterruption(owner.callId, it) }
+                    return RejoinOutcome.Succeeded
+                }
+            }
+        } catch (throwable: Throwable) {
+            if (throwable is CancellationException) {
+                // An expired rejoin window (outer timeout) must propagate; only termination and
+                // this attempt's own timeout are handled here.
+                currentCoroutineContext().ensureActive()
+                if (throwable is CallTerminationException) return RejoinOutcome.Aborted
+            }
+            logStage(owner.callId, owner.lifecycleGeneration, "rejoin.attempt", "error", attemptStartedAt, throwable)
+            if (owner.terminationSignal.isRequested) return RejoinOutcome.Aborted
+            return if (throwable.isTerminalRejoinFailure()) RejoinOutcome.Fatal else RejoinOutcome.Exhausted
+        }
+    }
+
+    private suspend fun replayInterruption(callId: String, pending: PendingInterruption) {
+        val request = SystemCallInterruptionRequest(
+            callId = callId,
+            operationId = pending.operationId,
+            telecomSequence = pending.telecomSequence,
+        )
+        suspendForSystemCall(request, microphoneOverride = pending.enableMicrophoneOnResume)
+        if (pending.resumeRequested) resumeAfterSystemCall(request)
+    }
+
+    /**
+     * Only authorization failures that survived the shared auth refresh, a missing/ended/conflicting
+     * call, and local "already ended"/identity checks end the rejoin. Timeouts (408), throttling
+     * (429), 5xx and IO errors retry within the window.
+     */
+    private fun Throwable.isTerminalRejoinFailure(): Boolean = when (httpStatusCode()) {
+        401, 403, 404, 409, 410 -> true
+        // CancellationException (e.g. an attempt timeout) is an IllegalStateException too.
+        null -> this is IllegalStateException && this !is CancellationException
+        else -> false
     }
 
     override suspend fun disconnectCall(callId: String): AppResult<Unit> = terminateCall(
@@ -1005,6 +1311,13 @@ class CallRepositoryImpl @Inject internal constructor(
         terminalState: CallConnectionState,
     ): Termination {
         disconnectOperations[callId]?.let { return Termination(it.generation, it.deferred) }
+
+        rejoinOwner?.takeIf { it.callId == callId }?.let { owner ->
+            owner.terminationSignal.request()
+            owner.kick.trySend(Unit)
+            rejoinOwner = null
+        }
+        lostMediaGeneration = null
 
         val session = sessionState.value
         if (session == null || session.callId != callId || session.connectionState.isTerminal) {
@@ -1297,7 +1610,17 @@ class CallRepositoryImpl @Inject internal constructor(
     private companion object {
         const val LOG_TAG = "CallLifecycle"
         const val NANOS_PER_MILLI = 1_000_000L
-        const val CONNECT_TIMEOUT_MILLIS = 15_000L
+        /** Outer safety deadline; individual stages carry their own budgets in the runtime. */
+        const val CONNECT_TIMEOUT_MILLIS = 40_000L
+        const val REJOIN_WINDOW_MILLIS = 45_000L
+        const val REJOIN_TOKEN_TIMEOUT_MILLIS = 10_000L
+        /** Matches the runtime LiveKit stage cap. */
+        const val REJOIN_LIVEKIT_TIMEOUT_MILLIS = 25_000L
+        const val REJOIN_CONNECTED_WAIT_MILLIS = 5_000L
+        const val REJOIN_BACKOFF_BASE_MILLIS = 1_000L
+        const val REJOIN_BACKOFF_MAX_MILLIS = 8_000L
+        const val REJOIN_BACKOFF_MAX_SHIFT = 3
+        const val REJOIN_JITTER = 0.2
         const val CALL_TERMINATION_TIMEOUT_MILLIS = 5_000L
         const val SERVER_END_INITIAL_BACKOFF_MILLIS = 1_000L
         const val SERVER_END_MAX_BACKOFF_MILLIS = 60_000L
@@ -1311,6 +1634,7 @@ private sealed interface SuspendDecision {
     data class Apply(val owner: SystemInterruptionOwner) : SuspendDecision
     data class Terminate(val callId: String) : SuspendDecision
     data class Ignore(val reasonCode: String) : SuspendDecision
+    data object Deferred : SuspendDecision
 }
 
 private sealed interface ResumeDecision {
@@ -1344,6 +1668,35 @@ private class SystemInterruptionOwner(
     var resumeJob: Job? = null
     var completed: Boolean = false
     var telemetryOperation: CallInterruptionTelemetryOperation? = null
+}
+
+/** Application-owned, per-call rejoin of the media room after a recoverable transport loss. */
+private class RejoinOwner(
+    val id: Long,
+    val callId: String,
+    val lifecycleGeneration: Long,
+    val microphoneEnabled: Boolean,
+    var pendingInterruption: PendingInterruption?,
+) {
+    val terminationSignal = CallTerminationSignal()
+    val kick = Channel<Unit>(Channel.CONFLATED)
+    var job: Job? = null
+    var lostAgain: Boolean = false
+}
+
+private class PendingInterruption(
+    val operationId: String,
+    var telecomSequence: Long,
+    val enableMicrophoneOnResume: Boolean,
+    var resumeRequested: Boolean,
+)
+
+private enum class RejoinOutcome { Succeeded, Aborted, Fatal, Exhausted }
+
+private sealed interface RejoinCommit {
+    data object Aborted : RejoinCommit
+    data object Retry : RejoinCommit
+    data class Done(val interruption: PendingInterruption?) : RejoinCommit
 }
 
 private class DisconnectOperation(

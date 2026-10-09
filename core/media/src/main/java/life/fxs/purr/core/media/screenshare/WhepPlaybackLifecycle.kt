@@ -131,9 +131,13 @@ internal class WhepPlaybackLifecycle(
     @Synchronized
     private fun fail(attempt: Attempt, message: String, code: ScreenShareFailureCode) {
         if (active !== attempt) return
-        if (code.reportable) runCatching { failures.report(attempt.request.callId, attempt.request.shareId, code) }
-        mutableStatus.value = WhepPlaybackStatus.Failed(attempt.request, message)
+        mutableStatus.value = WhepPlaybackStatus.Failed(attempt.request, message, code)
         retireActive()
+    }
+
+    /** Reporting is separate from failing so callers can retry before recording a final failure. */
+    fun reportFailure(request: WhepPlaybackRequest, code: ScreenShareFailureCode) {
+        if (code.reportable) runCatching { failures.report(request.callId, request.shareId, code) }
     }
 
     /** Detach immediately; cancelled setup and native close finish outside the UI path. */

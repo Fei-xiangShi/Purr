@@ -1,10 +1,13 @@
 package life.fxs.purr.domain.account.repository
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 import life.fxs.purr.core.common.AppResult
 import life.fxs.purr.domain.account.model.RealtimeState
 
 interface RealtimeRepository {
+    /** True between [start] and [stop]. */
+    val isRunning: StateFlow<Boolean>
     fun observeState(): Flow<RealtimeState>
     fun start()
     fun stop()

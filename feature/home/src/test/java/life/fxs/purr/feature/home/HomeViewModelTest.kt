@@ -3,7 +3,9 @@ package life.fxs.purr.feature.home
 import androidx.lifecycle.viewModelScope
 import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
+import io.mockk.verify
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +39,7 @@ import life.fxs.purr.domain.call.model.CallLifecycleState
 import life.fxs.purr.domain.call.model.CallSession
 import life.fxs.purr.domain.call.model.ParticipantIdentity
 import life.fxs.purr.domain.call.usecase.ObserveCallLifecycleUseCase
+import life.fxs.purr.domain.incomingcall.ApplicationVisibility
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -96,6 +99,8 @@ class HomeViewModelTest {
     private val pairState = MutableStateFlow<PairBond?>(pairBond())
     private val realtimeState = MutableStateFlow(RealtimeState())
     private val callLifecycleState = MutableStateFlow(CallLifecycleState())
+    private val foregroundState = MutableStateFlow(true)
+    private val batteryPromptStore = mockk<BatteryPromptStore>(relaxed = true)
 
     private val observeAuthSessionUseCase = mockk<ObserveAuthSessionUseCase>()
     private val observePairBondUseCase = mockk<ObservePairBondUseCase>()
@@ -405,6 +410,47 @@ class HomeViewModelTest {
         }
     }
 
+    @Test
+    fun `recovery loop pauses in background and resumes in foreground`() = runTest(dispatcher) {
+        withViewModel { viewModel ->
+            runCurrent()
+            coVerify(exactly = 1) { refreshPairBondUseCase.invoke() }
+
+            foregroundState.value = false
+            runCurrent()
+            advanceTimeBy(60_000L)
+            runCurrent()
+            coVerify(exactly = 1) { refreshPairBondUseCase.invoke() }
+
+            foregroundState.value = true
+            runCurrent()
+            advanceTimeBy(10_000L)
+            runCurrent()
+            coVerify(exactly = 2) { refreshPairBondUseCase.invoke() }
+        }
+    }
+
+    @Test
+    fun `battery prompt shows once when not exempt and persists dismissal`() = runTest(dispatcher) {
+        every { batteryPromptStore.isPrompted() } returns false
+        withViewModel { viewModel ->
+            runCurrent()
+            viewModel.onIntent(HomeIntent.CheckBatteryPrompt(ignoringBatteryOptimizations = true))
+            assertThat(viewModel.uiState.value.showBatteryPrompt).isFalse()
+
+            viewModel.onIntent(HomeIntent.CheckBatteryPrompt(ignoringBatteryOptimizations = false))
+            assertThat(viewModel.uiState.value.showBatteryPrompt).isTrue()
+
+            viewModel.onIntent(HomeIntent.BatteryPromptDismissed)
+            assertThat(viewModel.uiState.value.showBatteryPrompt).isFalse()
+            verify(exactly = 1) { batteryPromptStore.markPrompted() }
+
+            every { batteryPromptStore.isPrompted() } returns true
+            viewModel.onIntent(HomeIntent.CheckBatteryPrompt(ignoringBatteryOptimizations = false))
+            assertThat(viewModel.uiState.value.showBatteryPrompt).isFalse()
+        }
+    }
+
     private suspend inline fun withViewModel(block: suspend (HomeViewModel) -> Unit) {
         val viewModel = createViewModel()
         try {
@@ -422,6 +468,10 @@ class HomeViewModelTest {
         observeCallLifecycleUseCase = observeCallLifecycleUseCase,
         refreshActiveCallUseCase = refreshActiveCallUseCase,
         startRealtimeUpdatesUseCase = startRealtimeUpdatesUseCase,
+        applicationVisibility = object : ApplicationVisibility {
+            override val isForeground = foregroundState
+        },
+        batteryPromptStore = batteryPromptStore,
     )
 
     private companion object {
